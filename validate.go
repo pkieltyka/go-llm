@@ -34,16 +34,17 @@ func ValidateRequest(caps []Capability, req *Request) error {
 }
 
 // ValidateStreamRequest checks a request for use with ChatStream.
+//
+// Tools remain gated by CapabilityTools alone: CapabilityToolStreaming
+// describes incremental tool-argument deltas (FS §6), not whether tools may
+// be used with ChatStream, so it is deliberately not checked here. Providers
+// without it deliver tool-call arguments non-incrementally.
 func ValidateStreamRequest(caps []Capability, req *Request) error {
 	if err := ValidateRequest(caps, req); err != nil {
 		return err
 	}
-	capSet := makeCapabilitySet(caps)
-	if !capSet.has(CapabilityStreaming) {
+	if !makeCapabilitySet(caps).has(CapabilityStreaming) {
 		return unsupported(CapabilityStreaming)
-	}
-	if len(req.Tools) > 0 && !capSet.has(CapabilityToolStreaming) {
-		return unsupported(CapabilityToolStreaming)
 	}
 	return nil
 }

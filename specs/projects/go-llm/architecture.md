@@ -161,6 +161,8 @@ mismatch returns `ErrBadRequest` (fail loud, never silently ignore).
 ```go
 type Response struct {
     ID            string
+    Provider      string      // provider that served the request; with Model,
+                              // the source for History.AddResponse provenance (§7)
     Model         string      // model that actually served (OpenRouter fallbacks)
     Parts         []Part
     StopReason    StopReason
@@ -223,7 +225,7 @@ Design notes:
 ```go
 type Event interface{ event() } // sealed
 
-type MessageStart  struct { ID, Model string }
+type MessageStart  struct { ID, Provider, Model string } // Provider feeds Response.Provider via Collect
 type TextDelta     struct { Index int; Text string }
 type ReasoningDelta struct { Index int; Text string }
 type ToolCallStart struct { Index int; ID, Name string }
@@ -240,8 +242,9 @@ func Collect(events iter.Seq2[Event, error]) (*Response, error)
 
 // StreamText filters a stream to plain text deltas.
 // Default: pass-through (one string per TextDelta). Options:
-//   WithDebounce(window time.Duration) — rate-limit text emissions on a
-//     time window, flushing pending text on stream end or error.
+//   WithDebounce(window time.Duration) — buffer deltas and emit the
+//     accumulated text at most once per window (flushed on stream end
+//     or error); rate-limits UI re-renders / network frames.
 func StreamText(events iter.Seq2[Event, error], opts ...StreamTextOption) iter.Seq2[string, error]
 ```
 
@@ -626,12 +629,16 @@ boundary) so the taxonomy can't drift between code paths.
 
 - `capability.go` defines standard constants; provider `Capabilities()`
   returns a fixed slice per provider (not per model).
-- `validate.go` implements `validateRequest(caps []Capability, req *Request) error`
-  shared by all adapters. Checks (each → wrapped `ErrUnsupported`):
-  tools, tool-choice mode, response-format level, reasoning, image/file
-  parts, stop sequences, streaming-specific requirements. Model-level
-  rejections are NOT predicted client-side — provider errors surface
-  normally.
+- `validate.go` implements `ValidateRequest(caps []Capability, req *Request) error`
+  shared by all adapters — exported (with `ValidateStreamRequest`, which
+  adds the streaming-capability check, and `ValidateProviderOptions`) so
+  third-party provider packages get the same pre-flight. Checks (each →
+  wrapped `ErrUnsupported`): tools, tool-choice mode, response-format
+  level, reasoning, image/file parts, stop sequences, streaming-specific
+  requirements. `tool-streaming` is NOT a pre-flight gate — it describes
+  incremental tool-argument deltas, not whether tools work with
+  ChatStream. Model-level rejections are NOT predicted client-side —
+  provider errors surface normally.
 
 ## 7. History Helper
 

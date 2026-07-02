@@ -197,23 +197,16 @@ func TestValidateStreamRequest(t *testing.T) {
 	}
 }
 
-func TestValidateStreamRequestToolStreaming(t *testing.T) {
+func TestValidateStreamRequestAllowsToolsWithoutToolStreaming(t *testing.T) {
+	// tool-streaming means incremental tool-argument deltas, not "tools
+	// usable with ChatStream" — tools are gated by CapabilityTools alone.
 	req := &Request{
 		Model:    "model-a",
 		Messages: []Message{UserText("hello")},
 		Tools:    []Tool{{Name: "lookup"}},
 	}
 
-	err := ValidateStreamRequest([]Capability{CapabilityStreaming, CapabilityTools}, req)
-	if !errors.Is(err, ErrUnsupported) {
-		t.Fatalf("error = %v, want ErrUnsupported", err)
-	}
-	if !strings.Contains(err.Error(), string(CapabilityToolStreaming)) {
-		t.Fatalf("error = %q, want tool-streaming capability", err)
-	}
-
-	caps := []Capability{CapabilityStreaming, CapabilityTools, CapabilityToolStreaming}
-	if err := ValidateStreamRequest(caps, req); err != nil {
+	if err := ValidateStreamRequest([]Capability{CapabilityStreaming, CapabilityTools}, req); err != nil {
 		t.Fatalf("ValidateStreamRequest returned error: %v", err)
 	}
 }

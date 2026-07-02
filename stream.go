@@ -72,6 +72,13 @@ type MessageEnd struct {
 func (MessageEnd) event() {}
 
 // Collect drains a stream into a complete Response.
+//
+// On an in-stream error (including a malformed event) Collect returns the
+// partial Response accumulated so far alongside the error — never nil once
+// MessageStart was seen — so aborted turns can be persisted. When the error
+// arrives before MessageStart and before any content, the Response is nil.
+// Content accumulates keyed by block Index; blocks may interleave and are
+// never assumed contiguous.
 func Collect(events iter.Seq2[Event, error]) (*Response, error) {
 	if events == nil {
 		return nil, fmt.Errorf("%w: nil stream", ErrBadRequest)
@@ -81,16 +88,20 @@ func Collect(events iter.Seq2[Event, error]) (*Response, error) {
 	blocks := map[int]Part{}
 	seenStart := false
 
+	partial := func() *Response {
+		if !seenStart && len(blocks) == 0 {
+			return nil
+		}
+		return finalizeCollectedResponse(resp, blocks)
+	}
+
 	for event, err := range events {
 		if err != nil {
-			if seenStart || len(blocks) > 0 {
-				return finalizeCollectedResponse(resp, blocks), err
-			}
-			return nil, err
+			return partial(), err
 		}
 		event, err = normalizeEvent(event)
 		if err != nil {
-			return finalizeCollectedResponse(resp, blocks), err
+			return partial(), err
 		}
 
 		switch e := event.(type) {
@@ -101,30 +112,30 @@ func Collect(events iter.Seq2[Event, error]) (*Response, error) {
 			resp.Model = e.Model
 		case TextDelta:
 			if err := appendTextDelta(blocks, e.Index, e.Text); err != nil {
-				return finalizeCollectedResponse(resp, blocks), err
+				return partial(), err
 			}
 		case ReasoningDelta:
 			if err := appendReasoningDelta(blocks, e.Index, e.Text); err != nil {
-				return finalizeCollectedResponse(resp, blocks), err
+				return partial(), err
 			}
 		case ToolCallStart:
 			if err := startToolCall(blocks, e); err != nil {
-				return finalizeCollectedResponse(resp, blocks), err
+				return partial(), err
 			}
 		case ToolCallDelta:
 			if err := appendToolCallDelta(blocks, e); err != nil {
-				return finalizeCollectedResponse(resp, blocks), err
+				return partial(), err
 			}
 		case ToolCallEnd:
 			if err := endToolCall(blocks, e.Index); err != nil {
-				return finalizeCollectedResponse(resp, blocks), err
+				return partial(), err
 			}
 		case MessageEnd:
 			resp.StopReason = e.StopReason
 			resp.StopReasonRaw = e.StopReasonRaw
 			resp.Usage = e.Usage
 		default:
-			return finalizeCollectedResponse(resp, blocks), fmt.Errorf("%w: unknown stream event %T", ErrBadRequest, event)
+			return partial(), fmt.Errorf("%w: unknown stream event %T", ErrBadRequest, event)
 		}
 	}
 
@@ -289,9 +300,13 @@ type StreamTextOption func(*streamTextOptions)
 
 type streamTextOptions struct {
 	debounce time.Duration
+	now      func() time.Time // clock override for tests; nil = time.Now
 }
 
-// WithDebounce delays text emission by window and flushes pending text on stream end or error.
+// WithDebounce buffers text deltas and emits the accumulated text at most
+// once per window, rate-limiting UI re-renders without slowing the upstream
+// pull. The first delta flushes immediately; pending text always flushes on
+// MessageEnd, stream end, or error.
 func WithDebounce(window time.Duration) StreamTextOption {
 	return func(opts *streamTextOptions) {
 		opts.debounce = window
@@ -332,11 +347,26 @@ func StreamText(events iter.Seq2[Event, error], opts ...StreamTextOption) iter.S
 		}
 	}
 
+	if options.now == nil {
+		options.now = time.Now
+	}
+
+	// Debounced path: pull events as fast as upstream provides them,
+	// accumulate text deltas, and flush the buffer only when at least one
+	// window has elapsed since the previous flush. The zero lastFlush makes
+	// the first delta flush immediately (leading edge), so time-to-first-text
+	// is unaffected. All pulls stay on this goroutine: racing a timer against
+	// a blocked provider read would require a concurrent next/stop, which
+	// iter.Pull2 explicitly disallows and would weaken stream cleanup on
+	// early exit. Trade-off: if upstream goes quiet while text is buffered,
+	// the tail flushes on the next event or at stream end/error rather than
+	// on a mid-quiet-period timer.
 	return func(yield func(string, error) bool) {
 		next, stop := iter.Pull2(events)
 		defer stop()
 
 		var buffer strings.Builder
+		var lastFlush time.Time
 
 		flush := func() bool {
 			if buffer.Len() == 0 {
@@ -344,16 +374,8 @@ func StreamText(events iter.Seq2[Event, error], opts ...StreamTextOption) iter.S
 			}
 			text := buffer.String()
 			buffer.Reset()
+			lastFlush = options.now()
 			return yield(text, nil)
-		}
-
-		waitAndFlush := func() bool {
-			// Keep upstream pulls synchronous: racing a timer against a blocked
-			// provider read requires a concurrent next/stop, which iter.Pull2
-			// explicitly disallows and would weaken stream cleanup on early exit.
-			timer := time.NewTimer(options.debounce)
-			<-timer.C
-			return flush()
 		}
 
 		for {
@@ -384,8 +406,10 @@ func StreamText(events iter.Seq2[Event, error], opts ...StreamTextOption) iter.S
 					continue
 				}
 				buffer.WriteString(e.Text)
-				if !waitAndFlush() {
-					return
+				if options.now().Sub(lastFlush) >= options.debounce {
+					if !flush() {
+						return
+					}
 				}
 			case MessageEnd:
 				if !flush() {

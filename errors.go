@@ -6,6 +6,10 @@ import (
 	"time"
 )
 
+// Normalized sentinel errors classifying provider failures (FS §16).
+// Match with errors.Is: adapters wrap the matching sentinel as
+// ProviderError.Kind, and ProviderError.Unwrap returns Kind, so
+// errors.Is(err, ErrRateLimited) works through the whole taxonomy.
 var (
 	ErrAuth                = errors.New("llm: authentication failed")
 	ErrPermission          = errors.New("llm: permission denied")
@@ -33,6 +37,8 @@ type ProviderError struct {
 	Kind       error
 }
 
+// Error formats as "llm/<provider>: <status> <code>: <message>", omitting
+// empty fields.
 func (e *ProviderError) Error() string {
 	if e == nil {
 		return "<nil>"
@@ -55,6 +61,8 @@ func (e *ProviderError) Error() string {
 	return prefix + ":" + status + code + ": " + e.Message
 }
 
+// Unwrap returns the normalized sentinel stored in Kind, so errors.Is
+// matches ProviderError against the sentinel taxonomy (architecture §2.6).
 func (e *ProviderError) Unwrap() error {
 	if e == nil {
 		return nil

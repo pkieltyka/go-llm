@@ -34,7 +34,12 @@ type ExtensionPart interface {
 	ExtensionProvider() string
 }
 
-// ExtensionPartBase can be embedded by provider-specific part types.
+// ExtensionPartBase can be embedded by provider-specific part types to
+// satisfy Part's sealed marker method. Embedders MUST also implement
+// ExtensionProvider() string (the full ExtensionPart interface): adapters
+// and canonical serialization identify extension parts only through
+// ExtensionPart, and cannot route or encode a Part that embeds this base
+// without it.
 type ExtensionPartBase struct{}
 
 func (ExtensionPartBase) part() {}
@@ -267,6 +272,10 @@ func clonePart(part Part) Part {
 		copied.Raw = append(json.RawMessage(nil), copied.Raw...)
 		return &copied
 	default:
+		// Extension parts (and any other unknown Part implementations) are
+		// shared by reference: their concrete types live outside this
+		// package, so a deep copy is not possible here. History.Messages
+		// documents this shallow-copy behavior.
 		return part
 	}
 }

@@ -26,7 +26,7 @@ jobs:
         run: go vet ./...
 
       - name: Lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v8
         with:
           version: latest
 
@@ -39,5 +39,12 @@ jobs:
           go-version-input: "1.26.x"
           go-package: ./...
 
+      # go test -fuzz accepts only a single package with a single matching
+      # target, so enumerate packages and fuzz targets explicitly.
       - name: Short fuzz smoke
-        run: go test -run='^$' -fuzz=Fuzz -fuzztime=5s ./...
+        run: |
+          for pkg in $(go list ./...); do
+            for target in $(go test -list '^Fuzz' "$pkg" | grep '^Fuzz' || true); do
+              go test -run='^$' -fuzz="^${target}\$" -fuzztime=5s "$pkg"
+            done
+          done

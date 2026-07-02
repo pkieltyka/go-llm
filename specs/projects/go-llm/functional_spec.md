@@ -189,8 +189,9 @@ Content part types:
 - Convenience accessors: `Text()` (concatenated text), `ToolCalls()`
 - `StopReason` — normalized (§5)
 - `Usage` — normalized (§11)
-- `Model string` — the model that actually served the request (matters for
-  OpenRouter fallbacks)
+- `Provider string` / `Model string` — the provider and model that actually
+  served the request (`Model` matters for OpenRouter fallbacks); the source
+  for `History.AddResponse` provenance stamping (§4.3, §10)
 - `Raw` — access to the raw provider response; provider packages expose
   typed extras (e.g. OpenRouter's `provider`, `native_finish_reason`,
   annotations)
@@ -226,7 +227,8 @@ adapter (OpenRouter, ZAI).
 
 - `ChatStream` returns an iterator of unified events; errors are yielded
   in-stream (`iter.Seq2[Event, error]`; design rationale in architecture.md).
-- Event types: `MessageStart` (id, model), `TextDelta` (index, text),
+- Event types: `MessageStart` (id, provider, model — so `Collect` can
+  populate `Response.Provider`/`Model`), `TextDelta` (index, text),
   `ReasoningDelta` (index, text), `ToolCallStart` (index, id, name),
   `ToolCallDelta` (index, argument JSON fragment), `ToolCallEnd` (index),
   `MessageEnd` (stop reason + usage). All content events carry a block
@@ -239,9 +241,9 @@ adapter (OpenRouter, ZAI).
 - A helper (`llm.Collect`) accumulates any stream into a complete
   `*Response`. A text-only consumer adapter, `llm.StreamText`, filters a
   stream to plain text deltas (`iter.Seq2[string, error]`); its
-  `WithDebounce(window)` option rate-limits text emissions on a time
-  window, flushing pending text on stream end or error (adopted from
-  fugue-labs/gollem, collapsed to one function + options).
+  `WithDebounce(window)` option batches deltas on a time window to
+  rate-limit UI re-renders (adopted from fugue-labs/gollem, collapsed to
+  one function + options).
 - **Per-provider streaming nuances** — normalizing these is a core adapter
   responsibility:
 
@@ -424,7 +426,10 @@ conversations without inventing their own format:
 - An envelope helper encodes `[]Message` with a format `version` field for
   forward migration.
 - `Response.Raw` and `Usage.Raw` (in-memory SDK values) are **not**
-  serialized — documented; everything normalized is.
+  serialized — documented; everything normalized is, including
+  `Response.Provider`/`Model` provenance (mirroring
+  `Message.Provider`/`Model`), so a reloaded `Response` can still stamp
+  history via `AddResponse`.
 
 ## 10B. Middleware
 

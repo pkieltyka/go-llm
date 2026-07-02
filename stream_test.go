@@ -110,11 +110,25 @@ func TestCollectAcceptsPointerEvents(t *testing.T) {
 func TestCollectNilPointerEventReturnsBadRequest(t *testing.T) {
 	var event *TextDelta
 	resp, err := Collect(eventSeq(event))
-	if resp == nil {
-		t.Fatalf("response is nil, want partial empty response")
+	if resp != nil {
+		t.Fatalf("response = %#v, want nil before MessageStart or content", resp)
 	}
 	if !errors.Is(err, ErrBadRequest) {
 		t.Fatalf("error = %v, want ErrBadRequest", err)
+	}
+}
+
+func TestCollectMalformedEventAfterStartReturnsPartialResponse(t *testing.T) {
+	resp, err := Collect(eventSeq(
+		MessageStart{ID: "msg_1", Provider: "test", Model: "model-a"},
+		TextDelta{Index: 0, Text: "partial"},
+		TextDelta{Index: -1, Text: "bad"},
+	))
+	if !errors.Is(err, ErrBadRequest) {
+		t.Fatalf("error = %v, want ErrBadRequest", err)
+	}
+	if resp == nil || resp.ID != "msg_1" || resp.Text() != "partial" {
+		t.Fatalf("partial response = %+v, want msg_1 with text %q", resp, "partial")
 	}
 }
 
@@ -158,64 +172,98 @@ func TestStreamTextAcceptsPointerTextDeltas(t *testing.T) {
 }
 
 func TestStreamTextDebounce(t *testing.T) {
+	// With a window far larger than the stream duration, the first delta
+	// flushes immediately (leading edge) and every later delta coalesces
+	// into the single MessageEnd flush.
 	var got []string
 	for text, err := range StreamText(eventSeq(
 		MessageStart{ID: "msg_1", Model: "model-a"},
 		TextDelta{Index: 0, Text: "hel"},
 		ReasoningDelta{Index: 1, Text: "ignored"},
-		TextDelta{Index: 0, Text: "lo"},
+		TextDelta{Index: 0, Text: "lo "},
+		TextDelta{Index: 0, Text: "wor"},
+		TextDelta{Index: 0, Text: "ld"},
 		MessageEnd{StopReason: StopReasonEndTurn},
-	), WithDebounce(time.Millisecond)) {
+	), WithDebounce(time.Hour)) {
 		if err != nil {
 			t.Fatalf("StreamText error: %v", err)
 		}
 		got = append(got, text)
 	}
 
-	if !slices.Equal(got, []string{"hel", "lo"}) {
-		t.Fatalf("text chunks = %#v, want [hel lo]", got)
+	if !slices.Equal(got, []string{"hel", "lo world"}) {
+		t.Fatalf("text chunks = %#v, want [hel, lo world]", got)
 	}
 }
 
-func TestStreamTextDebounceFlushesDuringQuietPeriod(t *testing.T) {
-	release := make(chan struct{})
-	got := make(chan string, 1)
-	errs := make(chan error, 1)
-	done := make(chan struct{})
+func TestStreamTextDebounceFlushesOncePerWindow(t *testing.T) {
+	// The fake clock advances between yields, which is safe because
+	// StreamText pulls events on the same goroutine that reads the clock.
+	current := time.Unix(1000, 0)
+	clock := func(o *streamTextOptions) {
+		o.now = func() time.Time { return current }
+	}
 
 	stream := func(yield func(Event, error) bool) {
-		if !yield(TextDelta{Index: 0, Text: "hello"}, nil) {
+		if !yield(TextDelta{Index: 0, Text: "a"}, nil) { // leading-edge flush
 			return
 		}
-		<-release
-		yield(MessageEnd{StopReason: StopReasonEndTurn}, nil)
-	}
-
-	go func() {
-		defer close(done)
-		for text, err := range StreamText(stream, WithDebounce(10*time.Millisecond)) {
-			if err != nil {
-				errs <- err
-				return
-			}
-			got <- text
+		current = current.Add(5 * time.Millisecond) // within window
+		if !yield(TextDelta{Index: 0, Text: "b"}, nil) {
 			return
 		}
-	}()
-
-	select {
-	case err := <-errs:
-		t.Fatalf("StreamText returned error: %v", err)
-	case text := <-got:
-		if text != "hello" {
-			t.Fatalf("text = %q, want hello", text)
+		current = current.Add(20 * time.Millisecond) // window elapsed
+		if !yield(TextDelta{Index: 0, Text: "c"}, nil) {
+			return
 		}
-	case <-time.After(500 * time.Millisecond):
-		t.Fatalf("debounced text did not flush during quiet period")
+		current = current.Add(3 * time.Millisecond) // within window
+		if !yield(TextDelta{Index: 0, Text: "d"}, nil) {
+			return
+		}
+		yield(MessageEnd{StopReason: StopReasonEndTurn}, nil) // terminal flush
 	}
 
-	close(release)
-	<-done
+	var got []string
+	for text, err := range StreamText(stream, WithDebounce(10*time.Millisecond), clock) {
+		if err != nil {
+			t.Fatalf("StreamText error: %v", err)
+		}
+		got = append(got, text)
+	}
+
+	if !slices.Equal(got, []string{"a", "bc", "d"}) {
+		t.Fatalf("text chunks = %#v, want [a, bc, d]", got)
+	}
+}
+
+func TestStreamTextDebounceFlushesBufferedTextBeforeError(t *testing.T) {
+	streamErr := &ProviderError{Provider: "test", Kind: ErrOverloaded, Message: "busy"}
+	stream := func(yield func(Event, error) bool) {
+		if !yield(TextDelta{Index: 0, Text: "a"}, nil) {
+			return
+		}
+		if !yield(TextDelta{Index: 0, Text: "b"}, nil) {
+			return
+		}
+		yield(nil, streamErr)
+	}
+
+	var got []string
+	var gotErr error
+	for text, err := range StreamText(stream, WithDebounce(time.Hour)) {
+		if err != nil {
+			gotErr = err
+			continue
+		}
+		got = append(got, text)
+	}
+
+	if !slices.Equal(got, []string{"a", "b"}) {
+		t.Fatalf("text chunks = %#v, want [a, b]", got)
+	}
+	if !errors.Is(gotErr, ErrOverloaded) {
+		t.Fatalf("error = %v, want ErrOverloaded", gotErr)
+	}
 }
 
 func TestStreamTextDebounceEarlyExitDoesNotResumeUpstream(t *testing.T) {
