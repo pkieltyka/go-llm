@@ -1,5 +1,5 @@
 ---
-status: draft
+status: complete
 ---
 
 # Architecture: go-llm
@@ -26,6 +26,7 @@ go-llm/
 ├── parse.go                                      # Parse[T] structured-output helper
 ├── schema/                                       # schema-from-struct + arg validation (stdlib-only)
 ├── llmtest/                                      # scriptable fake Provider
+├── internal/e2e/                                 # live e2e scenario harness (build tag: live)
 ├── providers/
 │   ├── anthropic/                                # wraps anthropic-sdk-go
 │   ├── openai/                                   # openaicompat + OpenAI dialect
@@ -584,9 +585,51 @@ the reference third-party `Provider` implementation.
   of `Name/Capabilities/Models`.
 - **`llmtest` self-tests** double as the `Provider` interface conformance
   suite.
-- **Live smoke tests** (`//go:build live`): one chat + one stream + one tool
-  call per provider; skipped unless the provider's API key env var is set.
-  Never run in CI by default.
+- **Live e2e suite** (`internal/e2e`, `//go:build live`): a
+  capability-driven scenario harness run against the real provider APIs.
+  One scenario per standard capability, written once and parameterized by
+  `llm.Provider` — the runner iterates `provider.Capabilities()` and
+  executes exactly the declared scenarios, so capability declarations are
+  themselves verified against reality. Scenarios (real prompts, loose
+  assertions — contains-word / non-nil / >0, never exact-match):
+  - chat ("reply with exactly one word: pong"), streaming (≥2 deltas,
+    usage on `MessageEnd`, coherent `Collect`)
+  - tools: forced call → parseable args → tool-result round-trip second
+    turn; parallel-tools variant
+  - structured output + `Parse[T]` (contact extraction → schema-valid)
+  - effort/reasoning: `high` → `Reasoning` parts present; `none` → absent
+  - reasoning replay: two-turn same-provider round-trip of raw payloads
+  - multimodal: bundled red-square PNG → answer contains "red"
+  - prompt caching (Anthropic): >4K-token cached system prompt, second
+    call shows `CacheReadTokens > 0`
+  - usage/cost: tokens > 0; `CostUSD` non-nil on OpenRouter
+  - live error mapping: bogus model → `ErrNotFound`/`ErrBadRequest`;
+    invalid key → `ErrAuth`
+  - models listing non-empty and containing the model under test
+  - cross-provider handoff: tool-using conversation started on provider A
+    continues on provider B without error
+  Cost discipline: cheapest suitable model per provider pinned in one
+  constants file, tight `MaxTokens`. Never runs in CI by default.
+  **Credentials/config**: the harness loads `gollm-test.json` from the
+  repo root — gitignored, with `gollm-test.json.sample` committed:
+  ```json
+  {
+    "providers": {
+      "anthropic":  {"api_key": "sk-ant-..."},
+      "openai":     {"api_key": "sk-..."},
+      "openrouter": {"api_key": "sk-or-...", "model": "optional-override"},
+      "zai":        {"api_key": "...", "base_url": "optional"}
+    }
+  }
+  ```
+  Per-provider fields: `api_key` (required to run), optional `model`
+  (overrides the pinned cheap default) and `base_url`. Providers missing
+  from the file fall back to their env var (`ANTHROPIC_API_KEY`, …);
+  still missing → that provider's scenarios **skip with a visible SKIP**,
+  never fail. The library itself never reads this file (FS §17).
+- **Fixture recording**: the e2e harness accepts a `-record` flag that
+  captures live wire payloads into the offline fixture corpus — fixtures
+  stay honest as providers evolve instead of being hand-edited.
 - Tooling: stdlib `testing` + `go-cmp`; `go vet` + `golangci-lint`; race
   detector on. Coverage target: ≥85% on mapping/adapters, no vanity target
   on plumbing.

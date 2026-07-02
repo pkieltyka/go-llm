@@ -472,6 +472,10 @@ mid-stream errors normalize identically to pre-stream errors.
   adapter retries 408/429/5xx and connection errors with exponential
   backoff, honoring `Retry-After`. Default max retries: 2 (SDK convention).
 - All calls take `context.Context`; no global state.
+- go-llm **never reads configuration files** — credentials come from
+  explicit options or environment variables only. (The repository's own
+  live e2e suite reads a gitignored `gollm-test.json` for test keys — a
+  test-harness convention, not library behavior; see architecture §9.)
 
 ## 17A. Testing Support (`llmtest`)
 
