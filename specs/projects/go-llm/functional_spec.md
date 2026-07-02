@@ -64,7 +64,9 @@ Decisions:
 - Reasoning / thinking (unified config + normalized output)
 - Prompt caching (unified cache hints + normalized cache usage)
 - Retries with backoff; rate-limit awareness (Retry-After)
-- Conversation history helper (in-memory message management only)
+- Conversation history helper (in-memory message management only) + a
+  minimal `Session` convenience wrapper — §10, §10D
+- Offline model lookup + context-window accounting (`ContextUsage`) — §13
 - Unified errors (normalized top layer + provider cause underneath)
 - Normalized usage (tokens) and cost (USD)
 - Capabilities discovery
@@ -94,7 +96,12 @@ Decisions:
   needs an agent loop to load them; provider *server-side* skills —
   Anthropic container skills, OpenAI hosted `skills` tool — are reachable
   via provider extensions, shapes too divergent to unify in v1)
-- Conversation persistence, summarization, cross-session memory (→ `go-agent`)
+- Conversation persistence, compaction/summarization (no
+  `Session.Compact()` — it's an LLM call + policy; go-llm ships the
+  primitives: `ContextUsage` trigger, `Chat`/`Parse` for the summary,
+  `Messages()` + rebuild for the splice; Anthropic *server-side*
+  compaction reachable via `anthropic.Options`), cross-session memory
+  (→ `go-agent`)
 - MCP client support (revisit later)
 - Provider pricing/catalog maintenance beyond a best-effort, overridable
   price table (see §11)
@@ -232,9 +239,9 @@ adapter (OpenRouter, ZAI).
 - A helper (`llm.Collect`) accumulates any stream into a complete
   `*Response`. A text-only consumer adapter, `llm.StreamText`, filters a
   stream to plain text deltas (`iter.Seq2[string, error]`); its
-  `WithDebounce(window)` option batches deltas on a time window to
-  rate-limit UI re-renders (adopted from fugue-labs/gollem, collapsed to
-  one function + options).
+  `WithDebounce(window)` option rate-limits text emissions on a time
+  window, flushing pending text on stream end or error (adopted from
+  fugue-labs/gollem, collapsed to one function + options).
 - **Per-provider streaming nuances** — normalizing these is a core adapter
   responsibility:
 
@@ -452,6 +459,24 @@ message splicing (history splicing is `History`'s job), no few-shot
 machinery — those are `go-agent`/app concerns. This is ergonomics over
 `text/template`, nothing more.
 
+## 10D. Session (convenience wrapper)
+
+A thin, optional wrapper tying together what multi-turn callers otherwise
+wire up by hand — sugar, not a runtime:
+
+- `NewSession(provider, model, opts...)` — options for `System`, `Effort`,
+  default `MaxTokens`; a `SessionID` is auto-generated (session affinity
+  §9A for free) unless overridden.
+- `Chat` / `ChatStream` — build the `Request` from session defaults +
+  `History`, append the user turn and the assistant response
+  automatically (streams append on completion via `Collect`).
+- `History()`, `Messages()` (serialize via §10A yourself), cumulative
+  `Usage()` across the session, and `ContextUsage()` (§13) for
+  window-remaining checks.
+
+Hard lines (documented): no persistence methods, no `Compact()`, no
+memory, not goroutine-safe — those live in `go-agent`, built on this.
+
 ## 11. Usage & Cost
 
 Every response (and `MessageEnd` stream event) carries a normalized `Usage`:
@@ -504,6 +529,22 @@ same-model handoff across providers) where the provider reports them:
 - OpenRouter: `GET /models` (rich: pricing, context length, modalities)
 - ZAI: no documented listing endpoint — returns a curated static list
   shipped with the provider package (documented as such)
+
+**Offline lookup & context accounting** (no network; from the embedded
+models snapshot §11):
+
+- `llm.LookupModelInfo(provider, modelID) (ModelInfo, bool)` — context
+  window, max output, pricing, canonical ID from the embedded table.
+- `Usage.ContextUsage(window) ContextUsage` — `{UsedTokens, Window,
+  Remaining, UsedPercent}`. Correctly sums prompt occupancy as
+  `InputTokens + CacheReadTokens + CacheWriteTokens (+ OutputTokens)` —
+  cached tokens are *not* included in `InputTokens`, the classic
+  miscalculation this helper exists to prevent. The practical pattern:
+  the last response's `ContextUsage` ≈ current conversation size; use it
+  as the compaction/pruning trigger (in `go-agent` or your app).
+- `Session.ContextUsage()` composes the two (last-turn usage + embedded
+  window for the session's model; `ok=false` when the model is unknown
+  to the table).
 
 ## 14. Provider-Specific Extensions
 

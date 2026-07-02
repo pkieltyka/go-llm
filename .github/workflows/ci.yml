@@ -1,0 +1,43 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: true
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
+      - name: Race tests
+        run: go test -race ./...
+
+      - name: Vulnerability check
+        uses: golang/govulncheck-action@v1
+        with:
+          go-version-input: "1.26.x"
+          go-package: ./...
+
+      - name: Short fuzz smoke
+        run: go test -run='^$' -fuzz=Fuzz -fuzztime=5s ./...

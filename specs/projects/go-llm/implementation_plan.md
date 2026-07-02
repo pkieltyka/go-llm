@@ -18,7 +18,7 @@ visibly and the phase still completes — never fail a phase on missing keys.
 
 ## Phases
 
-- [ ] **Phase 1: Repo scaffolding + core vocabulary (package `llm`)**
+- [x] **Phase 1: Repo scaffolding + core vocabulary (package `llm`)**
   - `git init`, `go.mod` (`github.com/pkieltyka/go-llm`, Go 1.26), CI
     workflow (vet + lint + race tests + `govulncheck` + short fuzz),
     Dependabot config for SDK bumps (the wrapped SDKs move weekly),
@@ -62,6 +62,11 @@ visibly and the phase still completes — never fail a phase on missing keys.
   - `prompt.go` (ARCH §2.10, FS §10C): `PromptTemplate` — strict Format,
     immutable Partial. Tests: missing-var error, partial merge precedence,
     struct + map vars.
+  - `session.go` + context accounting (ARCH §7 Session, FS §10D/§13):
+    `Session` wrapper (auto `SessionID`, cumulative usage, stream
+    auto-append), `LookupModelInfo` (embedded snapshot),
+    `Usage.ContextUsage`. Tests: session turn flow incl. tool results,
+    context-usage math (cache tokens counted), unknown-model ok=false.
   - `llmtest` package (ARCH §7B, FS §17A) — FIFO scripted steps, request
     recording, real `iter.Seq2` streams, goroutine-safe.
   - `Parse[T]` (ARCH §2.9, FS §8): mode resolution (native json-schema →
