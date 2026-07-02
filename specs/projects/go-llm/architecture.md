@@ -28,11 +28,11 @@ go-llm/
 ├── llmtest/                                      # scriptable fake Provider
 ├── internal/e2e/                                 # live e2e scenario harness (build tag: live)
 ├── providers/
-│   ├── anthropic/                                # wraps anthropic-sdk-go
-│   ├── openai/                                   # openaicompat + OpenAI dialect
+│   ├── anthropic/                                # wraps anthropic-sdk-go (Messages API, direct)
+│   ├── openai/                                   # wraps openai-go Responses API (direct)
 │   ├── openrouter/                               # openaicompat + OpenRouter dialect
 │   ├── zai/                                      # openaicompat + ZAI dialect
-│   └── internal/openaicompat/                    # shared OpenAI-compatible adapter
+│   └── internal/openaicompat/                    # shared chat-completions-shaped adapter
 └── go.mod
 ```
 
@@ -46,8 +46,8 @@ Dependencies (pinned at implementation time):
 
 | Dependency | Where | Purpose |
 |---|---|---|
-| `github.com/anthropics/anthropic-sdk-go` | `providers/anthropic` | Official Anthropic SDK |
-| `github.com/openai/openai-go` (latest major) | `providers/{openai,openrouter,zai}` via openaicompat | Official OpenAI SDK; base for compatible providers |
+| `github.com/anthropics/anthropic-sdk-go` (v1.55.x verified 2026-07) | `providers/anthropic` | Official Anthropic SDK — Messages API confirmed as the current recommended client surface |
+| `github.com/openai/openai-go/v3` (v3.41.x verified 2026-07) | `providers/openai` (Responses surface, direct) + `providers/{openrouter,zai}` via openaicompat (Chat Completions surface) | Official OpenAI SDK — one dependency serves both surfaces |
 | `github.com/google/go-cmp` | tests only | Diffs in table tests |
 
 Go version: 1.26.
@@ -337,10 +337,53 @@ remaining: append the assistant turn + a correction user message, retry.
 - `Models()`: `GET /v1/models` via SDK, mapped to `ModelInfo` (context
   window, max output, capabilities available on that endpoint).
 
-### 3.2 OpenAI-compatible providers (shared adapter + Dialect)
+### 3.2 OpenAI (direct wrap, Responses API)
 
-`providers/internal/openaicompat` implements one adapter over `openai-go`;
-OpenAI, OpenRouter, and ZAI each supply a `Dialect`:
+`providers/openai` wraps `openai-go`'s **Responses** surface directly
+(`client.Responses.New` / `NewStreaming`) — OpenAI's recommended API for
+new projects, and the only one returning reasoning content and preserving
+reasoning across tool-call turns. Decision record:
+`provider_capabilities.md` → Decision note.
+
+- **Request build**: `Messages` → `input` items (`ToolResultPart` →
+  `function_call_output` items keyed by `call_id`); `System` →
+  `instructions`; `MaxTokens` → `max_output_tokens`; `Effort` →
+  `reasoning: {effort, summary: "auto"}` (`none` supported natively);
+  `ResponseFormat` → `text: {format}`; tools → flattened function shape
+  (`strict` default-on per Responses convention, disabled when
+  `Tool.Strict` is false); `SessionID` → `prompt_cache_key`.
+- **Statelessness**: always `store: false` +
+  `include: ["reasoning.encrypted_content"]` unless `openai.Options`
+  explicitly opts into server-side state (`Store`, `PreviousResponseID`,
+  `Conversation`).
+- **Response map**: `output` items → parts in order — `reasoning` item →
+  `ReasoningPart{Text: joined summary, Raw: full item JSON incl.
+  encrypted_content}`; `message`/`output_text` → `TextPart` (annotations
+  preserved in extras); `function_call` → `ToolCallPart{ID: call_id}`.
+  Stop reason from `status` + `incomplete_details` (FS §5 note). Usage
+  from `input_tokens`/`output_tokens` (+ `cached_tokens`,
+  `reasoning_tokens` details).
+- **Replay**: `ReasoningPart.Raw` with `Provider == "openai"` re-emits the
+  reasoning item verbatim in `input` — reasoning continuity in tool loops
+  with zero stored state; foreign reasoning parts are dropped.
+- **Stream map**: semantic events → unified events —
+  `response.output_text.delta` → `TextDelta`,
+  `response.reasoning_summary_text.delta` → `ReasoningDelta`,
+  `response.output_item.added(function_call)` → `ToolCallStart`,
+  `response.function_call_arguments.delta` → `ToolCallDelta`,
+  `response.output_item.done` → `ToolCallEnd`, `response.completed` →
+  `MessageEnd` (usage), `response.failed`/`error` → normalized in-stream
+  error. Accumulation keys off `(output_index, content_index)`.
+- **Errors**: `*openai.Error` → `ProviderError` (type/code/param preserved).
+- `Models()`: `GET /models`; `Client()` returns the SDK client (raw access
+  incl. Chat Completions for legacy knobs).
+
+### 3.3 OpenAI-compatible providers — OpenRouter & ZAI (shared adapter + Dialect)
+
+`providers/internal/openaicompat` implements one adapter over `openai-go`'s
+Chat Completions surface; OpenRouter and ZAI each supply a `Dialect`
+(chat completions is OpenRouter's canonical surface — its `/responses`
+endpoint is beta — and ZAI's only OpenAI-style surface):
 
 ```go
 package openaicompat
@@ -373,13 +416,13 @@ type Dialect interface {
 ```
 
 The adapter owns everything common: message/part conversion, tools, response
-format, streaming loop (`stream_options.include_usage` always set),
-tool-call-delta index tracking, `Collect`-equivalence, retries config, and
-the `Provider` interface plumbing. Dialects stay small and declarative.
+format, streaming loop (`stream_options.include_usage` set where a dialect
+requires it; OpenAI's `obfuscation` chunk field tolerated), tool-call-delta
+index tracking, `Collect`-equivalence, retries config, and the `Provider`
+interface plumbing. Dialects stay small and declarative.
 
 Dialect specifics (surface per functional spec §14):
 
-- **openai**: near-empty dialect; `prompt_cache_key` from `SessionID`.
 - **openrouter**: attribution headers at construction; `session_id`,
   `models`, `provider`, `plugins`, `reasoning{...}` via extra fields;
   detects mid-stream error chunks (`finish_reason == "error"` or `error`
@@ -395,12 +438,12 @@ Dialect specifics (surface per functional spec §14):
 
 **SSE comment lines** (OpenRouter keep-alives): the SSE spec says comment
 lines are ignored, and Stainless SDK decoders follow it. **Verification item
-for phase 1**: a recorded-fixture test proving `openai-go` tolerates
+(resolved in the OpenRouter implementation phase)**: a recorded-fixture test proving `openai-go` tolerates
 `: OPENROUTER PROCESSING` lines; if it doesn't, mitigation is an
 `http.RoundTripper` wrapper in openaicompat that strips comment lines —
 isolated, no public API impact.
 
-### 3.3 Construction & configuration
+### 3.4 Construction & configuration
 
 Every provider package:
 
@@ -421,7 +464,7 @@ No global state; constructors return errors (e.g. missing API key) rather
 than panicking. Retries live **only** in the SDK layer — go-llm never adds a
 second retry loop.
 
-## 4. Request Pipeline (both adapter families)
+## 4. Request Pipeline (all providers)
 
 ```
 Chat/ChatStream(ctx, req)
@@ -454,8 +497,9 @@ boundary) so the taxonomy can't drift between code paths.
 - `validate.go` implements `validateRequest(caps []Capability, req *Request) error`
   shared by all adapters. Checks (each → wrapped `ErrUnsupported`):
   tools, tool-choice mode, response-format level, reasoning, image/file
-  parts, streaming-specific requirements. Model-level rejections are NOT
-  predicted client-side — provider errors surface normally.
+  parts, stop sequences, streaming-specific requirements. Model-level
+  rejections are NOT predicted client-side — provider errors surface
+  normally.
 
 ## 7. History Helper
 
@@ -541,9 +585,11 @@ the reference third-party `Provider` implementation.
    `SetExtraFields`; non-standard response fields via preserved raw JSON
    (`.JSON.ExtraFields` / `RawJSON()`). This is the load-bearing mechanism
    for OpenRouter/ZAI dialects and gets dedicated fixture tests.
-6. **Auto-set flags.** `stream_options.include_usage` (OpenAI dialect),
-   `tool_stream` (ZAI, when streaming+tools) — set in the adapter, invisible
-   to callers, covered by request-build golden tests.
+6. **Auto-set flags.** `store: false` + `include:
+   ["reasoning.encrypted_content"]` (OpenAI Responses), `tool_stream`
+   (ZAI, when streaming+tools), `stream_options.include_usage` (CC dialects
+   where required) — set in the adapter, invisible to callers, covered by
+   request-build golden tests.
 7. **Serialization forward-compatibility.** Unknown part types decode to
    `UnknownPart` (raw JSON preserved, re-marshaled verbatim, skipped by
    adapters) instead of erroring — histories written by a newer go-llm
@@ -561,7 +607,7 @@ the reference third-party `Provider` implementation.
 - **Golden request-build tests** (per provider): `llm.Request` → serialized
   SDK params JSON compared against golden files. Covers effort mapping,
   cache hints, tools, extras, defaults (MaxTokens, include_usage,
-  tool_stream).
+  tool_stream, OpenAI `store: false` + encrypted-reasoning `include`).
 - **Response/stream fixture tests**: recorded provider JSON/SSE payloads
   replayed via `httptest.Server` → assert parts, stop reasons, usage, and
   unified event sequences. Fixtures include: OpenRouter comment keep-alives,

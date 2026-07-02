@@ -70,34 +70,40 @@ visibly and the phase still completes — never fail a phase on missing keys.
   - ⏸ **Checkpoint: ask the user for their Anthropic API key**, then run
     the e2e suite vs Anthropic.
 
-- [ ] **Phase 5: openaicompat adapter + OpenAI provider**
-  - `providers/internal/openaicompat` per ARCH §3.2: `Dialect` interface,
-    shared message/tool/format conversion, streaming loop
-    (`include_usage` auto-set), tool-call index state machine (ARCH §8.1),
-    extra-fields plumbing (ARCH §8.5), pipeline (ARCH §4).
-  - `providers/openai`: near-empty dialect; `prompt_cache_key` from
-    `SessionID` (FS §9A); `openai.Options`; `Models()`.
-  - Tests: adapter goldens + fixtures, streaming tool-call fixtures,
-    Collect-equivalence, error mapping.
+- [ ] **Phase 5: OpenAI provider (Responses API, direct wrap)**
+  - `providers/openai` per ARCH §3.2: input-item request build
+    (`instructions`, `max_output_tokens`, flattened tools,
+    `text.format`, `reasoning: {effort, summary}`), stateless defaults
+    (`store: false` + encrypted reasoning `include`), output-item →
+    parts mapping (reasoning items → `ReasoningPart` w/ encrypted
+    round-trip), semantic-event stream mapping, status → stop reasons
+    (FS §5 note), `openai.Options`, `Models()`, `Client()`.
+  - Tests: request-build goldens, response/stream fixtures (reasoning
+    items + summaries, function calls, incomplete statuses),
+    Collect-equivalence, reasoning-replay round-trip, error mapping.
   - ⏸ **Checkpoint: ask the user for their OpenAI API key**, then run the
     e2e suite vs OpenAI.
 
-- [ ] **Phase 6: OpenRouter provider**
-  - `providers/openrouter` dialect per FS §14/§6/§16 + ARCH §3.2:
+- [ ] **Phase 6: openaicompat adapter + OpenRouter provider**
+  - `providers/internal/openaicompat` per ARCH §3.3: `Dialect` interface,
+    shared message/tool/format conversion, streaming loop, tool-call index
+    state machine (ARCH §8.1), extra-fields plumbing (ARCH §8.5),
+    pipeline (ARCH §4).
+  - `providers/openrouter` dialect per FS §14/§6/§16 + ARCH §3.3:
     attribution headers, `session_id`, routing/plugins/reasoning extras,
     `usage.cost` → `CostUSD`, typed `ResponseExtras` + accessor,
     mid-stream error chunks, warm-up empty-choices → `ErrServer` (FS §18),
     rich `Models()`.
   - **Resolve the flagged verification item**: fixture test that
     `openai-go` tolerates SSE comment keep-alives; add the RoundTripper
-    strip mitigation only if it fails (ARCH §3.2).
+    strip mitigation only if it fails (ARCH §3.3).
   - Tests: fixtures incl. keep-alive lines + mid-stream error + fallback
     `model` echo; moderation-metadata error mapping.
   - ⏸ **Checkpoint: ask the user for their OpenRouter API key**, then run
     the e2e suite vs OpenRouter (incl. cost-reporting scenario).
 
 - [ ] **Phase 7: ZAI provider**
-  - `providers/zai` dialect per FS §14/§6/§16 + ARCH §3.2: thinking/
+  - `providers/zai` dialect per FS §14/§6/§16 + ARCH §3.3: thinking/
     effort/do_sample/request_id/user_id extras, `tool_stream` auto-set,
     `reasoning_content` (message + delta), business-code error table,
     base URL selector (General/CodingPlan), curated static `Models()`
@@ -124,3 +130,15 @@ visibly and the phase still completes — never fail a phase on missing keys.
 
 Batch APIs, fallback/router wrapper, token counting, stream tee, MCP —
 per FS §3 out-of-scope and review decisions.
+
+Response-cache middleware (exact-match; key = hash of provider name +
+canonically-serialized `Request` per FS §10A; replay streams via collected
+response): valuable for dev loops and resumable pipelines, near-zero hits
+in conversational traffic — ship later as an example or v1.x subpackage on
+top of `llm.Wrap`, never as core default behavior.
+
+Generic public OpenAI-compatible provider (`openaicompatible.New(baseURL,
+...)` over the openaicompat adapter, for Ollama/vLLM/Groq/Together/etc.):
+v1.x candidate — the adapter already exists internally; exposing it is an
+API-surface + testing-matrix decision, not an engineering one. Until then,
+"other" providers implement the public `Provider` interface directly.

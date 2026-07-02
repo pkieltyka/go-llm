@@ -24,7 +24,7 @@ Target Go version: **1.26.x** (latest). Streaming uses standard iterators
 | Provider | Implementation | Notes |
 |---|---|---|
 | Anthropic | Wraps official `anthropic-sdk-go` | Messages API |
-| OpenAI | Wraps official `openai-go` | Chat Completions API |
+| OpenAI | Wraps official `openai-go` (direct) | **Responses API** — OpenAI's recommended surface for new projects; enables reasoning continuity + content (see provider_capabilities.md) |
 | OpenRouter | Shared OpenAI-compatible adapter (via `openai-go`), preset base URL + auth + typed extensions | `https://openrouter.ai/api/v1` |
 | ZAI | Shared OpenAI-compatible adapter, preset base URL + auth + typed extensions | `https://api.z.ai/api/paas/v4/` (also coding-plan base URL constant) |
 | Custom | Public `Provider` interface — anyone can implement and register their own | |
@@ -39,9 +39,17 @@ Decisions:
   dependencies**. SDK dependencies live in provider subpackages
   (`providers/anthropic`, `providers/openai`, `providers/openrouter`,
   `providers/zai`).
+- The OpenAI provider targets the **Responses API** (verified July 2026:
+  "Responses is recommended for all new projects"; Chat Completions never
+  returns reasoning content and discards reasoning between tool-call
+  turns). Stateless operation: the adapter sets `store: false` and
+  round-trips encrypted reasoning items. Chat Completions remains fully
+  supported upstream; legacy-only knobs are reachable via the raw client.
 - OpenRouter and ZAI are **presets over one shared OpenAI-compatible
-  adapter**, each adding typed provider-specific options and response
-  mappings (researched from their current docs; see §6 and §14).
+  (chat-completions-shaped) adapter**, each adding typed provider-specific
+  options and response mappings (researched from their current docs; see
+  §6 and §14). Chat completions is OpenRouter's canonical surface (its
+  `/responses` endpoint is beta) and ZAI's only OpenAI-style surface.
 
 ## 3. In Scope / Out of Scope
 
@@ -76,6 +84,10 @@ Decisions:
   not preclude adding a batch surface later)
 - RAG helpers (chunking, vector stores, retrieval glue)
 - Prompt templating (Go's `text/template` already covers it; app-level concern)
+- Skills (prompt bundles with progressive disclosure → `go-agent`, which
+  needs an agent loop to load them; provider *server-side* skills —
+  Anthropic container skills, OpenAI hosted `skills` tool — are reachable
+  via provider extensions, shapes too divergent to unify in v1)
 - Conversation persistence, summarization, cross-session memory (→ `go-agent`)
 - MCP client support (revisit later)
 - Provider pricing/catalog maintenance beyond a best-effort, overridable
@@ -112,7 +124,9 @@ Unified request fields (all optional unless noted):
 - `Temperature`, `TopP` — optional pointers (unset ≠ zero); passed through;
   provider-specific range constraints are the provider's problem (errors
   surface normally)
-- `StopSequences []string`
+- `StopSequences []string` — capability-gated (`stop-sequences`): the
+  OpenAI Responses API has no stop parameter → setting it on OpenAI
+  returns `ErrUnsupported`; ZAI caps at 4 entries (pass-through)
 - `Tools []Tool`, `ToolChoice` — §7
 - `ResponseFormat` — §8
 - `Effort` — reasoning/thinking effort level (§9)
@@ -170,6 +184,14 @@ The raw provider value is always preserved alongside.
 | OpenRouter `error`, ZAI `network_error` | `error` |
 | Anything unrecognized | `other` (raw preserved) |
 
+OpenAI (Responses) has no `finish_reason` — the adapter maps
+`status`/`incomplete_details.reason`: `completed` → `end_turn` (or
+`tool_use` when `function_call` items are present), `incomplete` +
+`max_output_tokens` → `max_tokens`, `incomplete` + `content_filter` →
+`content_filter`, `failed` → `error`. The `OpenAI` entries in the table
+above are chat-completions vocabulary, which applies to the CC-shaped
+adapter (OpenRouter, ZAI).
+
 ## 6. Streaming
 
 - `ChatStream` returns an iterator of unified events; errors are yielded
@@ -185,9 +207,10 @@ The raw provider value is always preserved alongside.
 | Provider | Wire format | Nuances the adapter handles |
 |---|---|---|
 | Anthropic | SSE with typed events (`message_start`, `content_block_start/delta/stop`, `message_delta`, `message_stop`) | Block-indexed deltas (text, `input_json_delta` for tool args, `thinking_delta`); usage on `message_delta`; thinking blocks precede text |
-| OpenAI | SSE `chat.completion.chunk` + `data: [DONE]` | Usage only in final chunk and **only if** `stream_options: {include_usage: true}` — the adapter sets this automatically; tool-call deltas indexed via `delta.tool_calls[].index` |
-| OpenRouter | OpenAI-style SSE | SSE **comment keep-alives** (`: OPENROUTER PROCESSING`) must be skipped; **mid-stream errors** arrive as an HTTP-200 chunk with `finish_reason: "error"` + `error{}` object → normalized in-stream error; usage+cost auto-included in final chunk; `reasoning`/`reasoning_details` on deltas |
-| ZAI | OpenAI-style SSE + `data: [DONE]` | Reasoning streams as `delta.reasoning_content` (arrives **before** `delta.content`) → `ReasoningDelta`; tool-argument streaming requires `tool_stream: true` — set automatically when streaming with tools; usage included in final chunk by default |
+| OpenAI (Responses) | SSE **semantic typed events** (`response.output_text.delta`, `response.function_call_arguments.delta`, `response.reasoning_summary_text.delta`, `response.output_item.added/done`, `response.completed`, …) | Deltas keyed by output-item/content index (no `choices[].delta`); reasoning summary deltas → `ReasoningDelta`; usage arrives on `response.completed`; `response.failed`/`error` events → normalized in-stream error |
+| CC-shaped adapter (OpenRouter, ZAI) | SSE `chat.completion.chunk` + `data: [DONE]` | Tool-call deltas indexed via `delta.tool_calls[].index`; `stream_options.include_usage` set where a dialect requires it (OpenRouter auto-includes usage; ZAI includes by default); OpenAI's `obfuscation` chunk field tolerated |
+| OpenRouter (dialect specifics) | as CC-shaped row | SSE **comment keep-alives** (`: OPENROUTER PROCESSING`) must be skipped; **mid-stream errors** arrive as an HTTP-200 chunk with `finish_reason: "error"` + `error{}` object → normalized in-stream error; usage+cost auto-included in final chunk; `reasoning`/`reasoning_details` on deltas |
+| ZAI (dialect specifics) | as CC-shaped row | Reasoning streams as `delta.reasoning_content` (arrives **before** `delta.content`) → `ReasoningDelta`; tool-argument streaming requires `tool_stream: true` — set automatically when streaming with tools; usage included in final chunk by default |
 
 - Usage always surfaces on the `MessageEnd` event regardless of where the
   provider reports it.
@@ -218,9 +241,11 @@ The raw provider value is always preserved alongside.
 - Parallel tool calls are supported; the conversation helper (§10) appends
   all tool results as a **single** message (an Anthropic API requirement,
   and best practice everywhere).
-- Provider-hosted tools (Anthropic web search, ZAI `web_search`/`retrieval`
-  tool types, OpenRouter plugins) are **not unified** in v1 — they are
-  reachable via provider extensions (§14). Anthropic's `pause_turn` from
+- Provider-hosted tools (Anthropic server tools, OpenAI Responses hosted
+  tools, ZAI `web_search`/`retrieval` tool types, OpenRouter plugins) are
+  **not unified** in v1 — they are reachable via provider extensions (§14);
+  all four have hosted web search in incompatible shapes (v2 unification
+  candidate, see provider_capabilities.md). Anthropic's `pause_turn` from
   server tools is normalized to `StopReason: paused`.
 
 ## 8. Structured Output
@@ -228,8 +253,9 @@ The raw provider value is always preserved alongside.
 Two levels, capability-flagged separately:
 
 - `json-schema` — full schema-constrained output: Anthropic
-  `output_config.format`, OpenAI/OpenRouter `response_format: json_schema`.
-- `json-mode` — valid-JSON-but-unschema'd: OpenAI/ZAI `json_object`.
+  `output_config.format`, OpenAI `text: {format: json_schema}` (Responses),
+  OpenRouter `response_format: json_schema`.
+- `json-mode` — valid-JSON-but-unschema'd: ZAI `json_object`.
 
 `ResponseFormat` carries name + schema + strict flag (schema variant) or
 JSON-mode marker. Requesting a level a provider lacks → `ErrUnsupported`.
@@ -268,22 +294,22 @@ Mapping:
 | Provider | Mapping |
 |---|---|
 | Anthropic | adaptive thinking + `output_config.effort`; `display` summarized so reasoning content is returned |
-| OpenAI | `reasoning_effort` |
+| OpenAI | `reasoning: {effort, summary: "auto"}` (Responses) — summaries → `ReasoningPart.Text`, full reasoning items (incl. `encrypted_content`) → `ReasoningPart.Raw` |
 | OpenRouter | `reasoning: {effort}` (its `exclude`/`max_tokens` variants live in `openrouter.Options`) |
 | ZAI | `thinking: {type: enabled/disabled}` + `reasoning_effort` (GLM-5.2) |
 
 **Per-provider effort level support** (adapters map the unified level to the
 nearest supported native level; the table is documented in code):
 
-| Unified level | Anthropic (`output_config.effort`) | OpenAI (`reasoning_effort`) | OpenRouter (`reasoning.effort`) | ZAI (`reasoning_effort`, GLM-5.2 only) |
+| Unified level | Anthropic (`output_config.effort`) | OpenAI (`reasoning.effort`, Responses) | OpenRouter (`reasoning.effort`) | ZAI (`reasoning_effort`, GLM-5.2 only) |
 |---|---|---|---|---|
 | `minimal` | `low` (nearest) | `minimal` | `minimal` | `minimal` |
 | `low` | `low` | `low` | `low` | `low` |
 | `medium` | `medium` | `medium` | `medium` | `medium` |
 | `high` | `high` | `high` | `high` | `high` |
-| `xhigh` | `xhigh` (Opus 4.7+/Sonnet 5/Fable; else `high`) | `high` (nearest) | `xhigh` | `xhigh` |
-| `max` | `max` (4.6+; else `high`) | `high` (nearest) | `max` | `max` |
-| `none` | thinking disabled/omitted | `none`/omit | `enabled: false` | `thinking: disabled` |
+| `xhigh` | `xhigh` (Opus 4.7+/Sonnet 5/Fable; else `high`) | `xhigh` (gpt-5.2+; older models reject → provider error) | `xhigh` | `xhigh` |
+| `max` | `max` (4.6+; else `high`) | `xhigh` (nearest) | `max` | `max` |
+| `none` | thinking disabled/omitted | `none` (gpt-5.1+) | `enabled: false` | `thinking: disabled` |
 
 Rules: nearest-level mapping is deterministic and documented; go-llm does
 not maintain per-model capability tables — if a *model* rejects a level the
@@ -377,8 +403,8 @@ Cost sourcing:
 - `Capabilities() []Capability` where `Capability` is a typed string.
 - Standard constants in core: `streaming`, `tools`, `tool-choice-required`,
   `tool-streaming`, `parallel-tools`, `strict-tools`, `json-schema`,
-  `json-mode`, `reasoning`, `image-input`, `pdf-input`, `prompt-caching`,
-  `session-affinity`, `cost-reporting`, `models-listing`.
+  `json-mode`, `reasoning`, `image-input`, `pdf-input`, `stop-sequences`,
+  `prompt-caching`, `session-affinity`, `cost-reporting`, `models-listing`.
 - Provider-specific capabilities are namespaced strings, e.g.
   `openrouter/routing`, `openrouter/plugins`, `zai/web-search-tool`,
   `zai/video-input`.
@@ -428,8 +454,15 @@ conflict. Initial extension surface (from docs research, mid-2026):
 in the unified surface (e.g. fine-grained cache TTLs beyond the unified
 hint, service tiers), raw SDK access via `Client()`.
 
-**OpenAI** (`openai.Options`): equivalent pass-through for OpenAI-specific
-fields; raw SDK access via `Client()`.
+**OpenAI** (`openai.Options`): Responses-specific pass-through — `store`
+(go-llm defaults it to `false`), `previous_response_id` / `conversation`,
+`include`, `background`, hosted tools (web_search, file_search,
+code_interpreter, computer_use, image_generation, remote MCP, shell,
+skills, apply_patch, tool_search), `verbosity`,
+`metadata`, `service_tier`, `safety_identifier`, `prompt_cache_retention`;
+raw SDK access via `Client()` (which also reaches Chat Completions for
+legacy-only knobs: `n`, `seed`, `logit_bias`, `logprobs`, penalties, audio,
+`prediction`).
 
 ## 15. Prompt Caching
 
@@ -502,6 +535,11 @@ code (and `go-agent`) can be tested offline:
 - **Reasoning round-trip**: replaying history containing `Reasoning` parts
   re-emits the preserved raw payloads for the same provider; other providers
   receive only what their API accepts (raw payloads dropped).
+- **OpenAI statelessness**: the adapter always sends `store: false` +
+  `include: ["reasoning.encrypted_content"]` — no server-side conversation
+  state unless explicitly opted into via `openai.Options`. Encrypted
+  reasoning items round-trip through `ReasoningPart.Raw`, giving OpenAI
+  turn-to-turn reasoning continuity in tool loops with zero stored state.
 - **Tool-call arguments** are always parsed/emitted as JSON — no raw string
   matching guarantees (providers vary in escaping).
 - **Sampling range differences** (e.g. ZAI temperature ∈ [0,1]) are passed
