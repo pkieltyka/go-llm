@@ -1,5 +1,5 @@
 ---
-status: draft
+status: complete
 ---
 
 # Functional Spec: go-llm
@@ -41,7 +41,7 @@ Decisions:
   `providers/zai`).
 - OpenRouter and ZAI are **presets over one shared OpenAI-compatible
   adapter**, each adding typed provider-specific options and response
-  mappings (researched from their current docs; see §6).
+  mappings (researched from their current docs; see §6 and §14).
 
 ## 3. In Scope / Out of Scope
 
@@ -61,6 +61,12 @@ Decisions:
 - Normalized usage (tokens) and cost (USD)
 - Capabilities discovery
 - `Models()` listing of available models per configured provider
+- Canonical JSON serialization of messages/responses (persistence-safe;
+  reasoning raw payloads survive round-trips) — §10A
+- Generic structured-output helper `Parse[T]` with schema-from-struct — §8
+- Tool schema generation from Go types + tool-argument validation — §7
+- Client-level middleware (chat/stream interceptor seam) — §10B
+- `llmtest` fake provider for downstream testing — §17A
 
 **Out of scope (v1):**
 
@@ -86,7 +92,7 @@ architecture.md):
 - `Capabilities() []Capability` — see §12
 - `Models(ctx) ([]ModelInfo, error)` — see §13
 - `Chat(ctx, Request) (*Response, error)` — blocking completion
-- `ChatStream(ctx, Request) Stream` — streaming completion (iterator-based)
+- `ChatStream(ctx, Request) iter.Seq2[Event, error]` — streaming completion
 
 Escape hatch: each provider package exposes its concrete type; a type
 assertion gives access to the raw underlying SDK client at runtime
@@ -99,7 +105,8 @@ Unified request fields (all optional unless noted):
 - `Model string` — **required**; provider-native model ID passed verbatim
   (no aliasing layer)
 - `Messages []Message` — **required**
-- `System` — system prompt (text; multiple parts allowed)
+- `System string` — system prompt text; `SystemCache *CacheHint` optionally
+  marks it for provider-side prompt caching (§15)
 - `MaxTokens int` — optional; for providers that require it (Anthropic),
   the adapter applies a documented, configurable default (16384) when unset
 - `Temperature`, `TopP` — optional pointers (unset ≠ zero); passed through;
@@ -134,7 +141,7 @@ Content part types:
 
 ### 4.4 Response
 
-- `Content []Part` — ordered parts (text, tool calls, thinking)
+- `Parts []Part` — ordered parts (text, tool calls, reasoning)
 - Convenience accessors: `Text()` (concatenated text), `ToolCalls()`
 - `StopReason` — normalized (§5)
 - `Usage` — normalized (§11)
@@ -166,8 +173,7 @@ The raw provider value is always preserved alongside.
 ## 6. Streaming
 
 - `ChatStream` returns an iterator of unified events; errors are yielded
-  in-stream (`iter.Seq2[Event, error]` or equivalent stream object — final
-  shape in architecture.md).
+  in-stream (`iter.Seq2[Event, error]`; design rationale in architecture.md).
 - Event types: `MessageStart` (id, model), `TextDelta`, `ReasoningDelta`,
   `ToolCallStart` (index, id, name), `ToolCallDelta` (argument JSON
   fragment), `ToolCallEnd`, `MessageEnd` (stop reason + usage).
@@ -195,6 +201,17 @@ The raw provider value is always preserved alongside.
 - `Tool` = name, description, JSON Schema input (any JSON-marshalable
   value or raw `json.RawMessage`), optional `Strict` flag (mapped to
   Anthropic/OpenAI strict mode where supported).
+- **Schema from Go types**: `InputSchema` may be generated from a Go struct
+  via the `schema` subpackage (reflection over `json` +
+  `description`/`enum` tags), emitting the strict-mode-compliant subset
+  providers accept. Hand-written JSON Schema remains first-class.
+- **Argument validation**: an opt-in helper validates model-emitted tool
+  arguments against the tool's schema before the caller dispatches them —
+  uniform protection against malformed tool calls across providers.
+- **Annotations**: optional, MCP-aligned behavioral hints on `Tool`
+  (`ReadOnly`, `Destructive`, `Idempotent`, `OpenWorld`). Informational
+  only — never sent to providers; consumed by callers (e.g. `go-agent`
+  approval policies, MCP interop).
 - `ToolChoice`: `auto` | `none` | `required` | `tool(name)`. Capability-gated:
   ZAI supports only `auto`; anything else returns `ErrUnsupported` before any
   network call.
@@ -219,6 +236,18 @@ JSON-mode marker. Requesting a level a provider lacks → `ErrUnsupported`.
 OpenRouter note: schema support varies by upstream provider; the OpenRouter
 extension offers `provider.require_parameters` to route only to providers
 honoring it.
+
+**Generic helper — `llm.Parse[T]`**: derives the JSON schema from `T` (same
+generator as tool schemas), sets `ResponseFormat`, calls the provider, and
+unmarshals the response into `T`.
+
+- On `json-schema` providers the schema is enforced server-side.
+- On `json-mode`-only providers (ZAI) it falls back to JSON mode plus
+  schema guidance appended to the system prompt, with client-side
+  validation.
+- Optional bounded retry (`WithParseRetries(n)`, default 0): on
+  invalid/unparseable output, the failed turn plus a correction message is
+  appended and the request retried, up to `n` times.
 
 ## 9. Effort (Reasoning / Thinking Control)
 
@@ -290,6 +319,39 @@ A minimal in-memory helper (no persistence, no summarization):
 
 That is the entire feature. Persistence and memory strategies belong to
 `go-agent`.
+
+## 10A. Canonical Serialization
+
+`Message`, `Part`, `Response`, and `Usage` have a **canonical, versioned
+JSON encoding** so applications (and `go-agent`) can persist and reload
+conversations without inventing their own format:
+
+- Parts serialize with a `"type"` discriminator (`text`, `image`, `file`,
+  `tool_call`, `tool_result`, `reasoning`, …).
+- The round trip is **lossless for replay**: `ReasoningPart.Raw` and
+  `.Provider` survive marshal → unmarshal → marshal byte-identically, so
+  same-provider reasoning replay (§18) works on reloaded history.
+- Provider extension parts serialize under a namespaced type
+  (`"zai/video_url"`); provider packages register their part types for
+  decoding.
+- An envelope helper encodes `[]Message` with a format `version` field for
+  forward migration.
+- `Response.Raw` and `Usage.Raw` (in-memory SDK values) are **not**
+  serialized — documented; everything normalized is.
+
+## 10B. Middleware
+
+A single, minimal interceptor seam (validated by convergent designs in
+eino and gollem):
+
+- `Middleware` provides optional wrappers for `Chat` and `ChatStream`
+  (wrapping a stream iterator is a plain function decoration — no teeing
+  machinery).
+- Applied by **composition**, not provider support:
+  `llm.Wrap(provider, mw...)` returns a decorated `Provider`. Adapters know
+  nothing about middleware.
+- Use cases: logging, tracing, redaction, request mutation, usage
+  aggregation. go-llm ships the seam, not the integrations.
 
 ## 11. Usage & Cost
 
@@ -410,6 +472,19 @@ mid-stream errors normalize identically to pre-stream errors.
   adapter retries 408/429/5xx and connection errors with exponential
   backoff, honoring `Retry-After`. Default max retries: 2 (SDK convention).
 - All calls take `context.Context`; no global state.
+
+## 17A. Testing Support (`llmtest`)
+
+A small `llmtest` package ships a scriptable fake `Provider` so downstream
+code (and `go-agent`) can be tested offline:
+
+- Enqueue canned responses, canned event streams, or errors — consumed in
+  order by `Chat`/`ChatStream`.
+- Records every received `*Request` for assertions.
+- Configurable `Name`/`Capabilities` to exercise capability-gated paths.
+- Implements the full `Provider` interface — it is also a permanent
+  dogfooding check that the interface stays implementable outside the
+  built-in providers.
 
 ## 18. Edge Cases & Behaviors
 
