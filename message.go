@@ -271,6 +271,16 @@ func clonePart(part Part) Part {
 		copied := *p
 		copied.Raw = append(json.RawMessage(nil), copied.Raw...)
 		return &copied
+	case UnknownPart:
+		p.Data = append(json.RawMessage(nil), p.Data...)
+		return p
+	case *UnknownPart:
+		if p == nil {
+			return p
+		}
+		copied := *p
+		copied.Data = append(json.RawMessage(nil), copied.Data...)
+		return &copied
 	default:
 		// Extension parts (and any other unknown Part implementations) are
 		// shared by reference: their concrete types live outside this

@@ -287,19 +287,24 @@ with the capability name: `fmt.Errorf("%w: tool-choice-required (zai)", ErrUnsup
 - Every `Part` type implements `MarshalJSON` emitting a `"type"`
   discriminator; `Message.UnmarshalJSON` dispatches on it. Discriminators:
   `text`, `image`, `file`, `tool_call`, `tool_result`, `reasoning`.
-- `ReasoningPart` round-trips `raw` (as `json.RawMessage`, byte-preserved)
-  and `provider` — the invariant that keeps same-provider replay working on
-  reloaded history (tested as a property, §9).
+- `ReasoningPart` round-trips `raw` (as `json.RawMessage`, byte-preserved
+  by the canonical helper APIs) and `provider` — the invariant that keeps
+  same-provider replay working on reloaded history (tested as a property,
+  §9). Direct `encoding/json` marshaling remains available for ordinary
+  JSON interop, but the standard library compacts and HTML-escapes
+  `MarshalJSON` output, so it is not the raw-byte persistence contract.
 - Extension parts serialize as `"<provider>/<kind>"` (e.g. `zai/video_url`).
   Provider packages register decoders in `init()` via
-  `llm.RegisterPartType(name string, decode func(json.RawMessage) (Part, error))`.
+  `llm.RegisterPartType(name string, decode func(json.RawMessage) (Part, error)) error`.
   Unknown types decode to an `UnknownPart{Type string; Data json.RawMessage}`
   (preserved on re-marshal, skipped by adapters) — forward-compatible, never
   lossy.
-- Envelope helpers: `llm.MarshalMessages([]Message) ([]byte, error)` /
-  `UnmarshalMessages` wrap `{"version": 1, "messages": [...]}`.
-- `Response` marshals everything normalized; `Response.Raw` and `Usage.Raw`
-  are excluded (documented).
+- Raw-preserving helpers: `llm.MarshalMessage(Message) ([]byte, error)`,
+  `llm.UnmarshalMessage`, `llm.MarshalMessages([]Message) ([]byte, error)` /
+  `UnmarshalMessages` for `{"version": 1, "messages": [...]}`, and
+  `llm.MarshalResponse(*Response) ([]byte, error)` / `UnmarshalResponse`.
+- `Response` helper serialization includes everything normalized;
+  `Response.Raw` and `Usage.Raw` are excluded (documented).
 
 ### 2.8 Middleware (`middleware.go`)
 
@@ -835,10 +840,11 @@ via `llm.StreamText` or collect for `--json`/`--no-stream`), `models.go`
   (incl. ZAI business codes, OpenRouter 402/403-with-metadata).
 - **Validation tests**: capability mismatches → `ErrUnsupported`.
 - **Serialization round-trip property**: for every fixture response and
-  hand-built message set, `marshal → unmarshal → marshal` is byte-identical,
-  `ReasoningPart.Raw` survives untouched, and `Message.Provider/Model`
-  provenance round-trips; unknown-part-type fixtures decode to
-  `UnknownPart` and re-marshal verbatim.
+  hand-built message set, canonical-helper
+  `marshal → unmarshal → marshal` is byte-identical, `ReasoningPart.Raw`
+  survives untouched, and `Message.Provider/Model` provenance round-trips;
+  unknown-part-type fixtures decode to `UnknownPart` and re-marshal
+  verbatim.
 - **Partial-Collect tests**: streams that error mid-way return the partial
   `*Response` plus the error; interleaved-block fixtures (non-contiguous
   indices) accumulate correctly.

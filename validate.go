@@ -163,7 +163,7 @@ func validatePart(caps capabilitySet, part Part) error {
 	switch p := part.(type) {
 	case nil:
 		return fmt.Errorf("%w: nil part", ErrBadRequest)
-	case TextPart, ToolCallPart, ReasoningPart:
+	case TextPart, ToolCallPart, ReasoningPart, UnknownPart:
 		return nil
 	case *TextPart:
 		if p == nil {
@@ -176,6 +176,10 @@ func validatePart(caps capabilitySet, part Part) error {
 	case *ReasoningPart:
 		if p == nil {
 			return fmt.Errorf("%w: nil reasoning part", ErrBadRequest)
+		}
+	case *UnknownPart:
+		if p == nil {
+			return fmt.Errorf("%w: nil unknown part", ErrBadRequest)
 		}
 	case ImagePart:
 		if !caps.has(CapabilityImageInput) {

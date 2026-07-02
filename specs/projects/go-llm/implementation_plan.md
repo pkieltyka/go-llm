@@ -34,7 +34,7 @@ visibly and the phase still completes — never fail a phase on missing keys.
   - Unit tests: Collect event-accumulation, validation → `ErrUnsupported`,
     error wrapping (`errors.Is`/`As`), History (incl. tool-result grouping).
 
-- [ ] **Phase 2: Serialization + `schema` subpackage**
+- [x] **Phase 2: Serialization + `schema` subpackage**
   - Canonical JSON per ARCH §2.7 / FS §10A: part discriminators,
     `RegisterPartType`, `UnknownPart`, versioned envelope helpers,
     `Response`/`Usage` marshaling (Raw excluded).

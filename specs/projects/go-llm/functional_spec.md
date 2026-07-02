@@ -413,13 +413,18 @@ That is the entire feature. Persistence and memory strategies belong to
 
 `Message`, `Part`, `Response`, and `Usage` have a **canonical, versioned
 JSON encoding** so applications (and `go-agent`) can persist and reload
-conversations without inventing their own format:
+conversations without inventing their own format. Raw-byte-preserving
+persistence uses the `MarshalMessage` / `MarshalMessages` /
+`MarshalResponse` helper APIs; direct `encoding/json` marshaling is only
+ordinary JSON interop because the standard library compacts and HTML-escapes
+`MarshalJSON` output.
 
 - Parts serialize with a `"type"` discriminator (`text`, `image`, `file`,
   `tool_call`, `tool_result`, `reasoning`, …).
-- The round trip is **lossless for replay**: `ReasoningPart.Raw` and
-  `.Provider` survive marshal → unmarshal → marshal byte-identically, so
-  same-provider reasoning replay (§18) works on reloaded history.
+- The helper round trip is **lossless for replay**: `ReasoningPart.Raw` and
+  `.Provider` survive helper marshal → unmarshal → helper marshal
+  byte-identically, so same-provider reasoning replay (§18) works on
+  reloaded history.
 - Provider extension parts serialize under a namespaced type
   (`"zai/video_url"`); provider packages register their part types for
   decoding.
