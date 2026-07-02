@@ -78,6 +78,7 @@ Decisions:
 - Observability: `slog` logging, usage-telemetry aggregation, wire-level
   debug capture — §17B
 - `llmtest` fake provider for downstream testing — §17A
+- `cmd/llm-cli` — a curl-like command-line frontend to the library — §19
 
 **Out of scope (v1):**
 
@@ -668,3 +669,41 @@ responsibility.
 - **Single-choice contract**: go-llm always requests and consumes exactly
   one completion choice (`n` is not part of the unified surface; adapters
   read choice 0).
+
+## 19. `llm-cli` — Command-Line Frontend
+
+A small CLI at `cmd/llm-cli` — "the curl of go-llm": try the library
+directly, demo it, and permanently dogfood it (the CLI is the library's
+first real consumer and exercises the public API only — no internal
+imports).
+
+Usage shape (single-shot, stateless, streams to stdout by default):
+
+```
+llm-cli -p anthropic -m claude-opus-4-8 "explain me this error: ..."
+echo "long doc" | llm-cli -p openai -m gpt-5.5 -s "summarize stdin"
+llm-cli -p zai -m glm-4.7 --effort high --json "..."
+llm-cli models -p openrouter
+```
+
+- **Prompt sources**: positional arg, stdin (piped), or both (stdin
+  appended as a text part) — curl-style composability.
+- **Flags**: `-p/--provider` (anthropic|openai|openrouter|zai),
+  `-m/--model`, `-s/--system`, `--effort`, `--max-tokens`, `--temp`,
+  `--image <path|url>` / `--file <path|url>` (repeatable),
+  `--schema <file.json>` (structured output; prints validated JSON),
+  `--no-stream` (buffer and print complete response), `--json` (emit the
+  full canonical `Response` JSON incl. usage/cost), `--usage` (usage +
+  cost summary to stderr), `--debug` (wire capture to stderr via
+  `DebugToLogger`), `--api-key`, `--base-url`, `--timeout`.
+- **Commands**: default = chat; `models` = list models for a provider.
+- **Keys** from provider env vars (library convention) or `--api-key`;
+  the CLI never reads config files (consistent with §17; `gollm-test.json`
+  is e2e-only).
+- **Tool calls are printed, not executed**: with `--tool <file.json>`
+  (repeatable tool declarations), a `tool_use` stop prints the tool calls
+  as JSON and exits — execution loops are `go-agent` territory; the CLI
+  stays a client.
+- **Constraints**: stdlib `flag` only (no CLI-framework dependency in the
+  module), errors to stderr with the normalized error text, exit code 0
+  on success / 1 on error, streaming output unbuffered.

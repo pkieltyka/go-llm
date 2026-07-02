@@ -8,7 +8,8 @@ Ordered by dependency; each phase is one reviewable unit ending green
 (`go vet`, `golangci-lint`, `go test -race ./...`). Section references:
 FS = functional_spec.md, ARCH = architecture.md.
 
-**Human checkpoints — API keys.** Phases 4–8 end with live e2e runs. Before
+**Human checkpoints — API keys.** Provider phases (4–7) and the release
+phase (9) end with live e2e runs. Before
 each, the implementer must **pause and ask the user** to put that provider's
 API key into `gollm-test.json` (copied from the committed
 `gollm-test.json.sample`; file is gitignored — ARCH §9). Env vars work as
@@ -138,12 +139,25 @@ visibly and the phase still completes — never fail a phase on missing keys.
   - ⏸ **Checkpoint: ask the user for their ZAI API key**, then run the
     e2e suite vs ZAI.
 
-- [ ] **Phase 8: Docs, examples, release readiness**
+- [ ] **Phase 8: `cmd/llm-cli`**
+  - CLI per FS §19 / ARCH §7C: chat (positional + stdin prompts,
+    streaming by default, `--no-stream`/`--json` canonical output),
+    `models` subcommand, attachments (`--image`/`--file`), `--schema`
+    structured output, `--tool` (print tool calls, never execute),
+    `--usage` + `--debug` (dogfoods `UsageTracker` fields +
+    `DebugToLogger`), Ctrl-C cancellation via `signal.NotifyContext`.
+  - Constraints enforced: stdlib `flag` only; public go-llm API only
+    (needing an internal import = spec bug to surface, not work around).
+  - Tests: flag→`Request` construction tables against `llmtest`; manual
+    smoke against any provider whose key is already in `gollm-test.json`
+    (no new checkpoint — reuse keys provided in phases 4–7).
+
+- [ ] **Phase 9: Docs, examples, release readiness**
   - README (sharply differentiated first line — naming collision note;
-    pre-1.0 API-stability policy stated), godoc pass on all exported
-    symbols, `example_test.go` runnable examples (chat, stream, tools,
-    Parse, history, middleware, observability, provider switch/replay),
-    `examples/` programs.
+    pre-1.0 API-stability policy stated; `llm-cli` install + usage
+    section), godoc pass on all exported symbols, `example_test.go`
+    runnable examples (chat, stream, tools, Parse, history, middleware,
+    observability, provider switch/replay), `examples/` programs.
   - ⏸ **Checkpoint: confirm all four provider keys are present in
     `gollm-test.json`**, then run the full e2e matrix — including the
     cross-provider handoff scenario — plus a `-record` pass to refresh the

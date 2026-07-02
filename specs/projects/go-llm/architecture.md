@@ -33,6 +33,7 @@ go-llm/
 ├── parse.go                                      # Parse[T] structured-output helper
 ├── schema/                                       # schema-from-struct + arg validation (stdlib-only)
 ├── llmtest/                                      # scriptable fake Provider
+├── cmd/llm-cli/                                  # curl-like CLI frontend (stdlib flag; public API only)
 ├── internal/e2e/                                 # live e2e scenario harness (build tag: live)
 ├── providers/
 │   ├── anthropic/                                # wraps anthropic-sdk-go (Messages API, direct)
@@ -617,7 +618,7 @@ boundary) so the taxonomy can't drift between code paths.
   `generated_at` stamp. The root package `go:embed`s it and parses
   **lazily** (`sync.Once` on first pricing/`Models()` use — no `init()`
   cost, one immutable table). The library never fetches at runtime.
-  Snapshot refresh is a phase-8 release step and documented maintenance
+  Snapshot refresh is a release-phase step and documented maintenance
   task. `PriceTableDate` is read from `generated_at`. Users override via
   `WithPriceTable`.
 
@@ -709,6 +710,29 @@ test loudly. `ChatStream` yields enqueued events as a real
 `iter.Seq2[Event, error]` (honoring context cancellation) so consumer
 streaming code is exercised realistically. Goroutine-safe. Also serves as
 the reference third-party `Provider` implementation.
+
+## 7C. `cmd/llm-cli`
+
+Design per FS §19. Structure: a single `main` package —
+`main.go` (flag parsing, provider construction from `-p` via a small
+factory switch), `run.go` (chat: build `Request` from flags/stdin, stream
+via `llm.StreamText` or collect for `--json`/`--no-stream`), `models.go`
+(models subcommand, table output). Rules:
+
+- Imports **only the public go-llm API** (root `llm`, `providers/*`,
+  `schema`) — the CLI doubles as a public-API-sufficiency check; needing
+  an internal import is a spec bug.
+- stdlib `flag` with a manual subcommand split (`models` | default chat);
+  no third-party CLI deps in the module.
+- `--json` output is the canonical serialization (§2.7) — so CLI output
+  is machine-consumable and round-trips through `UnmarshalMessages`
+  tooling.
+- `--usage` prints via `Usage` fields (+ estimated cost); `--debug` wires
+  `WithDebugCapture(DebugToLogger(stderr slog))`.
+- Context: `signal.NotifyContext` for Ctrl-C — cancels the stream cleanly
+  (exercises the cancellation contract).
+- Tests: flag→Request construction table tests against `llmtest`; smoke
+  runs are covered by the live e2e phase (the CLI itself stays thin).
 
 ## 8. Technical Challenges (solved here)
 
