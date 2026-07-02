@@ -39,13 +39,20 @@ visibly and the phase still completes — never fail a phase on missing keys.
     `Response`/`Usage` marshaling (Raw excluded).
   - `schema/` per ARCH §7A / FS §7–8: `For[T]`, `MustFor[T]`,
     `ValidateArgs` (strict-mode subset; errors on unsupported types).
-  - Tests: round-trip byte-identity property (incl. `ReasoningPart.Raw`),
-    unknown-part preservation, schema generator goldens, `ValidateArgs`
-    tables.
+  - Tests: round-trip byte-identity property (incl. `ReasoningPart.Raw`
+    and `Message.Provider/Model` provenance), unknown-part preservation,
+    schema generator goldens, `ValidateArgs` tables.
 
 - [ ] **Phase 3: Core utilities — pricing, middleware, observability, `llmtest`, `Parse[T]`**
-  - `pricing.go` + `pricing_table.go` snapshot (ARCH §5, FS §11) with
-    `PriceTableDate`; prefix-fallback lookup; cost estimation helper.
+  - `pricing.go` + `models_table.go` + **snapshot pipeline** (ARCH §5,
+    FS §11): `scripts/snapshot-models-table.ts` (tsx + package.json,
+    dev-only) — fetches models.dev/api.json + OpenRouter models, trims to
+    our providers/fields, applies `scripts/overrides.json`, writes
+    `models/models-table.json` with `generated_at`; root package
+    `go:embed`s it, lazy-parses via `sync.Once`; prefix + canonical-ID
+    fallback lookup; cost estimation helper; add `scripts/node_modules/`
+    to `.gitignore`. Tests: snapshot parse, lookup fallbacks, lazy-init
+    race (via `-race`).
   - `Middleware` + `Wrap` decorator (ARCH §2.8, FS §10B).
   - `observe.go` (ARCH §2.8A, FS §17B): `UsageTracker` + middleware,
     `WireCapture` + `NewWireTap` redacting transport, `DebugToLogger`.
@@ -71,8 +78,9 @@ visibly and the phase still completes — never fail a phase on missing keys.
     drop — FS §18), error mapping, `Models()`, `Client()` escape hatch,
     `anthropic.Options` extensions (FS §14), extension-part registration
     pattern established.
-  - Wire `WithLogger` + `WithDebugCapture` (ARCH §2.8A) — pattern
-    established here, repeated in every provider phase.
+  - Wire `WithLogger` + `WithDebugCapture` (ARCH §2.8A) and
+    `WithAPIKeyFunc` (ARCH §3.4) — pattern established here, repeated in
+    every provider phase.
   - Tests: request-build goldens, response/stream fixtures (thinking +
     tool use + refusal + parallel tools), Collect-equivalence, error
     tables.
@@ -84,8 +92,9 @@ visibly and the phase still completes — never fail a phase on missing keys.
 
 - [ ] **Phase 5: OpenAI provider (Responses API, direct wrap)**
   - `providers/openai` per ARCH §3.2: input-item request build
-    (`instructions`, `max_output_tokens`, flattened tools,
-    `text.format`, `reasoning: {effort, summary}`), stateless defaults
+    (`instructions`, `max_output_tokens`, flattened tools with fail-open
+    strict-schema sanitization — FS §8, `text.format`,
+    `reasoning: {effort, summary}`), stateless defaults
     (`store: false` + encrypted reasoning `include`), output-item →
     parts mapping (reasoning items → `ReasoningPart` w/ encrypted
     round-trip), semantic-event stream mapping, status → stop reasons
@@ -98,9 +107,11 @@ visibly and the phase still completes — never fail a phase on missing keys.
 
 - [ ] **Phase 6: openaicompat adapter + OpenRouter provider**
   - `providers/internal/openaicompat` per ARCH §3.3: `Dialect` interface,
-    shared message/tool/format conversion, streaming loop, tool-call index
-    state machine (ARCH §8.1), extra-fields plumbing (ARCH §8.5),
-    pipeline (ARCH §4).
+    quirks expressed as the declarative `Compat` struct where practical
+    (positions the deferred `openaicompatible.New`), shared
+    message/tool/format conversion with fail-open schema adaptation,
+    streaming loop, tool-call index state machine (ARCH §8.1),
+    extra-fields plumbing (ARCH §8.5), pipeline (ARCH §4).
   - `providers/openrouter` dialect per FS §14/§6/§16 + ARCH §3.3:
     attribution headers, `session_id`, routing/plugins/reasoning extras,
     `usage.cost` → `CostUSD`, typed `ResponseExtras` + accessor,
@@ -151,7 +162,13 @@ in conversational traffic — ship later as an example or v1.x subpackage on
 top of `llm.Wrap`, never as core default behavior.
 
 Generic public OpenAI-compatible provider (`openaicompatible.New(baseURL,
-...)` over the openaicompat adapter, for Ollama/vLLM/Groq/Together/etc.):
-v1.x candidate — the adapter already exists internally; exposing it is an
-API-surface + testing-matrix decision, not an engineering one. Until then,
-"other" providers implement the public `Provider` interface directly.
+compat)` over the openaicompat adapter, for Ollama/vLLM/Groq/Together/etc.,
+taking the declarative `Compat` struct — ARCH §3.3): v1.x candidate — the
+adapter already exists internally; exposing it is an API-surface +
+testing-matrix decision, not an engineering one. Until then, "other"
+providers implement the public `Provider` interface directly.
+
+Multi-API-key round-robin with per-key backoff (oh-my-pi pattern): a
+middleware candidate for v1.x — per-provider key pools sit naturally on
+the `llm.Wrap` seam; typed `ErrRateLimited.RetryAfter` gives it clean
+signals.

@@ -151,10 +151,15 @@ Unified request fields (all optional unless noted):
 
 ### 4.3 Messages and content parts
 
-`Message` = role + ordered content parts.
+`Message` = role + ordered content parts + optional provenance.
 
 Roles: `user`, `assistant`, `tool` (tool results), `system` (only where a
 provider models it as a message; normally use the request-level `System`).
+
+**Provenance** (pi-validated): assistant messages carry optional
+`Provider`/`Model` metadata — stamped by `History.AddResponse`, preserved
+by serialization (§10A) — so persisted history is self-describing and
+cross-provider replay decisions don't depend on external state.
 
 Content part types:
 
@@ -162,7 +167,8 @@ Content part types:
 - `Image` — URL or raw bytes + media type
 - `File` — document input (PDF etc.) where supported
 - `ToolCall` — assistant-issued tool invocation (id, name, JSON arguments)
-- `ToolResult` — result for a tool call (tool-call id, content, `IsError`)
+- `ToolResult` — result for a tool call (tool-call id, tool name, content,
+  `IsError`)
 - `Reasoning` — reasoning/thinking output; carries normalized text **plus
   opaque raw payload** (e.g. Anthropic thinking-block signatures, OpenRouter
   `reasoning_details`) so multi-turn round-tripping works when messages are
@@ -212,9 +218,16 @@ adapter (OpenRouter, ZAI).
 
 - `ChatStream` returns an iterator of unified events; errors are yielded
   in-stream (`iter.Seq2[Event, error]`; design rationale in architecture.md).
-- Event types: `MessageStart` (id, model), `TextDelta`, `ReasoningDelta`,
-  `ToolCallStart` (index, id, name), `ToolCallDelta` (argument JSON
-  fragment), `ToolCallEnd`, `MessageEnd` (stop reason + usage).
+- Event types: `MessageStart` (id, model), `TextDelta` (index, text),
+  `ReasoningDelta` (index, text), `ToolCallStart` (index, id, name),
+  `ToolCallDelta` (index, argument JSON fragment), `ToolCallEnd` (index),
+  `MessageEnd` (stop reason + usage). All content events carry a block
+  index — content blocks are **not** guaranteed contiguous (the Responses
+  API interleaves output items; pi hit this in production).
+- **Partial content is never lost**: an in-stream error terminates the
+  sequence, and `llm.Collect` returns the partial `*Response` accumulated
+  so far *alongside* the error — callers (and `go-agent`) can persist
+  aborted/failed turns.
 - A helper (`llm.Collect`) accumulates any stream into a complete
   `*Response`. A text-only consumer adapter, `llm.StreamText`, filters a
   stream to plain text deltas (`iter.Seq2[string, error]`); its
@@ -282,6 +295,10 @@ Two levels, capability-flagged separately:
 
 `ResponseFormat` carries name + schema + strict flag (schema variant) or
 JSON-mode marker. Requesting a level a provider lacks → `ErrUnsupported`.
+Adapters **adapt schemas to provider dialects fail-open**: strict-mode
+sanitization (e.g. OpenAI strict rejects `format`/`pattern`) degrades to
+`strict: false` rather than failing the request (oh-my-pi's
+production-proven behavior); the same applies to `Tool.InputSchema`.
 OpenRouter note: schema support varies by upstream provider; the OpenRouter
 extension offers `provider.require_parameters` to route only to providers
 honoring it.
@@ -370,9 +387,14 @@ A minimal in-memory helper (no persistence, no summarization):
 
 - Append user messages
 - Append an assistant `*Response` (correctly carrying tool calls and
-  reasoning parts, preserving raw payloads for replay)
+  reasoning parts, preserving raw payloads for replay, stamping
+  `Provider`/`Model` provenance — §4.3)
 - Append tool results (grouped into one message)
 - Produce `[]Message` for the next request
+- Optional mode (`WithForeignReasoningAsText()`, off by default): on
+  cross-provider replay, degrade foreign reasoning to plain text instead
+  of dropping it — keeps prior reasoning visible to the new model at the
+  cost of tokens (pi's default behavior; ours is opt-in)
 
 That is the entire feature. Persistence and memory strategies belong to
 `go-agent`.
@@ -445,8 +467,13 @@ Cost sourcing:
    response) — used verbatim.
 2. **Estimated** — an optional, user-overridable price table
    (per provider/model: USD per MTok input/output/cache-read/cache-write).
-   go-llm ships a best-effort snapshot with a clearly documented snapshot
-   date; estimates are marked as estimates. No table entry → `CostUSD` nil.
+   The shipped table is a **trimmed JSON snapshot of the
+   community-maintained models.dev database** plus a hand-maintained
+   overrides file (pi's production experience: upstream metadata needs a
+   patch table), refreshed by a dev-time script, embedded via `go:embed`,
+   parsed lazily on first use, and stamped with a generation date. The
+   library never fetches model data at runtime. Estimates are marked as
+   estimates. No table entry → `CostUSD` nil.
 
 ## 12. Capabilities
 
@@ -465,8 +492,11 @@ Cost sourcing:
 ## 13. Models Listing
 
 `Models(ctx)` returns `[]ModelInfo` — `ID` (always), plus best-effort
-`DisplayName`, `ContextWindow`, `MaxOutputTokens`, `Pricing` where the
-provider reports them:
+`DisplayName`, `ContextWindow`, `MaxOutputTokens`, `Pricing`, and
+`CanonicalID` (the upstream model identity behind an aggregator entry,
+e.g. OpenRouter's `anthropic/claude-x` → `claude-x`; populated from the
+generated catalog where known — enables pricing/capability lookup and
+same-model handoff across providers) where the provider reports them:
 
 - Anthropic: `GET /v1/models` (rich capability data)
 - OpenAI: `GET /models` (IDs, minimal metadata)
@@ -549,8 +579,9 @@ mid-stream errors normalize identically to pre-stream errors.
 
 - Per-provider constructors with functional options: `WithAPIKey` (env-var
   fallback: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`,
-  `ZAI_API_KEY`), `WithBaseURL`, `WithHTTPClient`, `WithMaxRetries`,
-  `WithTimeout`.
+  `ZAI_API_KEY`), `WithAPIKeyFunc(func(ctx) (string, error))` for
+  rotating/expiring credentials (OAuth-era tokens, gateways),
+  `WithBaseURL`, `WithHTTPClient`, `WithMaxRetries`, `WithTimeout`.
 - Retries: delegated to the wrapped SDKs where available; the shared
   adapter retries 408/429/5xx and connection errors with exponential
   backoff, honoring `Retry-After`. Default max retries: 2 (SDK convention).
