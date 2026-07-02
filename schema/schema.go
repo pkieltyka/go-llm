@@ -4,16 +4,21 @@ package schema
 
 import (
 	"bytes"
+	"encoding"
 	"encoding/json"
 	"fmt"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 )
 
 const draft2020Schema = "https://json-schema.org/draft/2020-12/schema"
 
 var jsonSchemaerType = reflect.TypeOf((*JSONSchemaer)(nil)).Elem()
+var jsonMarshalerType = reflect.TypeOf((*json.Marshaler)(nil)).Elem()
+var textMarshalerType = reflect.TypeOf((*encoding.TextMarshaler)(nil)).Elem()
+var rawMessageType = reflect.TypeOf(json.RawMessage{})
 
 // JSONSchemaer lets a type provide its own schema instead of using reflection.
 type JSONSchemaer interface {
@@ -43,6 +48,10 @@ func For[T any](opts ...Option) (json.RawMessage, error) {
 	}
 
 	typ := reflect.TypeOf((*T)(nil)).Elem()
+	return forType(typ, cfg)
+}
+
+func forType(typ reflect.Type, cfg options) (json.RawMessage, error) {
 	if raw, ok, err := schemaFromSelfDescriber(typ); ok || err != nil {
 		return raw, err
 	}
@@ -89,6 +98,18 @@ func (b *schemaBuilder) schemaForType(typ reflect.Type) (map[string]any, error) 
 		}
 		return schemaObjectFromRaw(raw)
 	}
+	if typ == rawMessageType {
+		return nil, fmt.Errorf("schema: json.RawMessage is unsupported; implement JSONSchemaer for an explicit schema")
+	}
+	if implementsJSONMarshaler(typ) {
+		return nil, fmt.Errorf("schema: %s implements json.Marshaler; implement JSONSchemaer for an explicit schema", typ)
+	}
+	if implementsTextMarshaler(typ) {
+		return nil, fmt.Errorf("schema: %s implements encoding.TextMarshaler; implement JSONSchemaer for an explicit schema", typ)
+	}
+	if typ.Kind() == reflect.Slice && typ.Elem().Kind() == reflect.Uint8 {
+		return map[string]any{"type": "string"}, nil
+	}
 
 	switch typ.Kind() {
 	case reflect.Bool:
@@ -130,38 +151,16 @@ func (b *schemaBuilder) schemaForStruct(typ reflect.Type) (map[string]any, error
 	defer delete(b.stack, typ)
 
 	properties := make(map[string]any)
-	var required []string
+	requiredSet := make(map[string]struct{})
 
-	for i := range typ.NumField() {
-		field := typ.Field(i)
-		if field.PkgPath != "" {
-			continue
-		}
-
-		name, omitEmpty, skip := jsonFieldName(field)
-		if skip {
-			continue
-		}
-
-		fieldSchema, err := b.schemaForType(field.Type)
-		if err != nil {
-			return nil, fmt.Errorf("schema: field %s: %w", field.Name, err)
-		}
-
-		tagOptions, err := applyJSONSchemaTag(field.Tag.Get("jsonschema"), fieldSchema)
-		if err != nil {
-			return nil, fmt.Errorf("schema: field %s: %w", field.Name, err)
-		}
-		if b.options.modifier != nil {
-			b.options.modifier(field, fieldSchema)
-		}
-
-		properties[name] = fieldSchema
-		if fieldRequired(field.Type, omitEmpty, tagOptions) {
-			required = append(required, name)
-		}
+	if err := b.addStructFields(typ, true, properties, requiredSet); err != nil {
+		return nil, err
 	}
 
+	required := make([]string, 0, len(requiredSet))
+	for name := range requiredSet {
+		required = append(required, name)
+	}
 	sort.Strings(required)
 	out := map[string]any{
 		"type":                 "object",
@@ -172,6 +171,68 @@ func (b *schemaBuilder) schemaForStruct(typ reflect.Type) (map[string]any, error
 		out["required"] = required
 	}
 	return out, nil
+}
+
+func (b *schemaBuilder) addStructFields(typ reflect.Type, requiredParent bool, properties map[string]any, requiredSet map[string]struct{}) error {
+	for i := range typ.NumField() {
+		field := typ.Field(i)
+		if !fieldVisibleToJSON(field) {
+			continue
+		}
+
+		name, omitEmpty, stringOpt, skip, tagged := jsonFieldName(field)
+		if skip {
+			continue
+		}
+		if stringOpt {
+			return fmt.Errorf("schema: field %s uses json string option; implement JSONSchemaer for an explicit schema", field.Name)
+		}
+
+		if shouldFlattenAnonymousField(field, tagged) {
+			tagOptions, err := parseJSONSchemaTag(field.Tag.Get("jsonschema"))
+			if err != nil {
+				return fmt.Errorf("schema: field %s: %w", field.Name, err)
+			}
+			if tagOptions.hasFieldAnnotations() {
+				return fmt.Errorf("schema: field %s: jsonschema annotations are unsupported on flattened embedded fields", field.Name)
+			}
+
+			embeddedType := indirectType(field.Type)
+			if b.stack[embeddedType] {
+				return fmt.Errorf("schema: recursive type %s is unsupported", embeddedType)
+			}
+			b.stack[embeddedType] = true
+			embeddedRequired := requiredParent && fieldRequired(field.Type, omitEmpty, tagOptions)
+			err = b.addStructFields(embeddedType, embeddedRequired, properties, requiredSet)
+			delete(b.stack, embeddedType)
+			if err != nil {
+				return err
+			}
+			continue
+		}
+
+		fieldSchema, err := b.schemaForType(field.Type)
+		if err != nil {
+			return fmt.Errorf("schema: field %s: %w", field.Name, err)
+		}
+
+		tagOptions, err := applyJSONSchemaTag(field.Tag.Get("jsonschema"), fieldSchema)
+		if err != nil {
+			return fmt.Errorf("schema: field %s: %w", field.Name, err)
+		}
+		if b.options.modifier != nil {
+			b.options.modifier(field, fieldSchema)
+		}
+
+		if _, exists := properties[name]; exists {
+			return fmt.Errorf("schema: duplicate JSON field %q", name)
+		}
+		properties[name] = fieldSchema
+		if requiredParent && fieldRequired(field.Type, omitEmpty, tagOptions) {
+			requiredSet[name] = struct{}{}
+		}
+	}
+	return nil
 }
 
 func schemaFromSelfDescriber(typ reflect.Type) (json.RawMessage, bool, error) {
@@ -217,17 +278,42 @@ func compactRaw(raw json.RawMessage) (json.RawMessage, bool, error) {
 }
 
 type fieldTagOptions struct {
-	required bool
-	optional bool
+	required    bool
+	optional    bool
+	description *string
+	enum        []string
+	format      *string
+	enumSet     bool
 }
 
 func applyJSONSchemaTag(tag string, schema map[string]any) (fieldTagOptions, error) {
+	opts, err := parseJSONSchemaTag(tag)
+	if err != nil {
+		return opts, err
+	}
+	if opts.description != nil {
+		schema["description"] = *opts.description
+	}
+	if opts.enumSet {
+		enum, err := enumValuesForSchema(schema, opts.enum)
+		if err != nil {
+			return opts, err
+		}
+		schema["enum"] = enum
+	}
+	if opts.format != nil {
+		schema["format"] = *opts.format
+	}
+	return opts, nil
+}
+
+func parseJSONSchemaTag(tag string) (fieldTagOptions, error) {
 	var opts fieldTagOptions
 	if tag == "" {
 		return opts, nil
 	}
 
-	for _, raw := range strings.Split(tag, ",") {
+	for _, raw := range splitEscaped(tag, ',') {
 		item := strings.TrimSpace(raw)
 		if item == "" {
 			continue
@@ -249,16 +335,18 @@ func applyJSONSchemaTag(tag string, schema map[string]any) (fieldTagOptions, err
 
 		switch key {
 		case "description":
-			schema["description"] = value
+			description := unescapeTagValue(value)
+			opts.description = &description
 		case "enum":
-			values := strings.Split(value, "|")
-			enum := make([]any, len(values))
-			for i, v := range values {
-				enum[i] = v
+			values := splitEscaped(value, '|')
+			opts.enum = opts.enum[:0]
+			for _, v := range values {
+				opts.enum = append(opts.enum, unescapeTagValue(v))
 			}
-			schema["enum"] = enum
+			opts.enumSet = true
 		case "format":
-			schema["format"] = value
+			format := unescapeTagValue(value)
+			opts.format = &format
 		default:
 			return opts, fmt.Errorf("unsupported jsonschema tag %q", key)
 		}
@@ -267,6 +355,48 @@ func applyJSONSchemaTag(tag string, schema map[string]any) (fieldTagOptions, err
 		return opts, fmt.Errorf("field cannot be both required and optional")
 	}
 	return opts, nil
+}
+
+func (opts fieldTagOptions) hasFieldAnnotations() bool {
+	return opts.description != nil || opts.enumSet || opts.format != nil
+}
+
+func enumValuesForSchema(schema map[string]any, values []string) ([]any, error) {
+	typ, _ := schema["type"].(string)
+	enum := make([]any, len(values))
+	switch typ {
+	case "string":
+		for i, v := range values {
+			enum[i] = v
+		}
+	case "integer":
+		for i, v := range values {
+			n, err := strconv.ParseInt(v, 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("enum value %q is not an integer", v)
+			}
+			enum[i] = n
+		}
+	case "number":
+		for i, v := range values {
+			n, err := strconv.ParseFloat(v, 64)
+			if err != nil {
+				return nil, fmt.Errorf("enum value %q is not a number", v)
+			}
+			enum[i] = n
+		}
+	case "boolean":
+		for i, v := range values {
+			b, err := strconv.ParseBool(v)
+			if err != nil {
+				return nil, fmt.Errorf("enum value %q is not a boolean", v)
+			}
+			enum[i] = b
+		}
+	default:
+		return nil, fmt.Errorf("enum is unsupported for schema type %q", typ)
+	}
+	return enum, nil
 }
 
 func fieldRequired(typ reflect.Type, omitEmpty bool, tag fieldTagOptions) bool {
@@ -279,28 +409,117 @@ func fieldRequired(typ reflect.Type, omitEmpty bool, tag fieldTagOptions) bool {
 	return typ.Kind() != reflect.Pointer && !omitEmpty
 }
 
-func jsonFieldName(field reflect.StructField) (name string, omitEmpty bool, skip bool) {
+func jsonFieldName(field reflect.StructField) (name string, omitEmpty bool, stringOpt bool, skip bool, tagged bool) {
 	tag := field.Tag.Get("json")
 	if tag == "-" {
-		return "", false, true
+		return "", false, false, true, false
 	}
 	if tag == "" {
-		return field.Name, false, false
+		return field.Name, false, false, false, false
 	}
 
 	parts := strings.Split(tag, ",")
 	if parts[0] == "-" {
-		return "", false, true
+		return "", false, false, true, false
 	}
 	name = parts[0]
 	if name == "" {
 		name = field.Name
+	} else {
+		tagged = true
 	}
 	for _, opt := range parts[1:] {
-		if opt == "omitempty" {
+		switch opt {
+		case "omitempty":
 			omitEmpty = true
-			break
+		case "string":
+			stringOpt = true
 		}
 	}
-	return name, omitEmpty, false
+	return name, omitEmpty, stringOpt, false, tagged
+}
+
+func fieldVisibleToJSON(field reflect.StructField) bool {
+	if field.PkgPath == "" {
+		return true
+	}
+	if !field.Anonymous {
+		return false
+	}
+	return indirectType(field.Type).Kind() == reflect.Struct
+}
+
+func shouldFlattenAnonymousField(field reflect.StructField, tagged bool) bool {
+	if !field.Anonymous || tagged {
+		return false
+	}
+	typ := indirectType(field.Type)
+	return typ.Kind() == reflect.Struct && !implementsJSONMarshaler(typ) && !implementsTextMarshaler(typ)
+}
+
+func indirectType(typ reflect.Type) reflect.Type {
+	for typ.Kind() == reflect.Pointer {
+		typ = typ.Elem()
+	}
+	return typ
+}
+
+func implementsJSONMarshaler(typ reflect.Type) bool {
+	return typ.Implements(jsonMarshalerType) || reflect.PointerTo(typ).Implements(jsonMarshalerType)
+}
+
+func implementsTextMarshaler(typ reflect.Type) bool {
+	return typ.Implements(textMarshalerType) || reflect.PointerTo(typ).Implements(textMarshalerType)
+}
+
+func splitEscaped(s string, delim byte) []string {
+	var parts []string
+	var b strings.Builder
+	escaped := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if escaped {
+			b.WriteByte('\\')
+			b.WriteByte(c)
+			escaped = false
+			continue
+		}
+		if c == '\\' {
+			escaped = true
+			continue
+		}
+		if c == delim {
+			parts = append(parts, b.String())
+			b.Reset()
+			continue
+		}
+		b.WriteByte(c)
+	}
+	if escaped {
+		b.WriteByte('\\')
+	}
+	parts = append(parts, b.String())
+	return parts
+}
+
+func unescapeTagValue(s string) string {
+	var b strings.Builder
+	escaped := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if escaped {
+			b.WriteByte(c)
+			escaped = false
+			continue
+		}
+		if c == '\\' {
+			escaped = true
+			continue
+		}
+		b.WriteByte(c)
+	}
+	if escaped {
+		b.WriteByte('\\')
+	}
+	return b.String()
 }

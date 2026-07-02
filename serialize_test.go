@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 )
 
 func init() {
@@ -39,13 +40,37 @@ func (p registeredPart) MarshalJSON() ([]byte, error) {
 	})
 }
 
+type extensionWithoutTypePart struct {
+	ExtensionPartBase
+}
+
+func (extensionWithoutTypePart) ExtensionProvider() string { return "test" }
+
+func (extensionWithoutTypePart) MarshalJSON() ([]byte, error) {
+	return []byte(`{"value":"missing type"}`), nil
+}
+
+type extensionWrongProviderPart struct {
+	ExtensionPartBase
+}
+
+func (extensionWrongProviderPart) ExtensionProvider() string { return "test" }
+
+func (extensionWrongProviderPart) MarshalJSON() ([]byte, error) {
+	return []byte(`{"type":"other/part","value":"wrong provider"}`), nil
+}
+
 func TestMarshalMessagesRoundTripByteIdentity(t *testing.T) {
+	file := FileData([]byte{4, 5, 6}, "text/plain", "note.txt")
+	file.Cache = &CacheHint{TTL: 5 * time.Minute}
+
 	msgs := []Message{
 		{
 			Role: RoleUser,
 			Parts: []Part{
 				TextPart{Text: "hello", Cache: &CacheHint{}},
 				ImageData([]byte{1, 2, 3}, "image/png"),
+				file,
 			},
 		},
 		{
@@ -102,6 +127,9 @@ func TestMarshalMessagesRoundTripByteIdentity(t *testing.T) {
 	}
 	if !bytes.Contains(first, []byte(`"raw":{ "encrypted": "<payload>", "index": 1 }`)) {
 		t.Fatalf("serialized reasoning raw was not byte-preserved: %s", first)
+	}
+	if !bytes.Contains(first, []byte(`"type":"file"`)) || !bytes.Contains(first, []byte(`"ttl_ns":300000000000`)) {
+		t.Fatalf("serialized file/cache part missing from corpus: %s", first)
 	}
 }
 
@@ -180,6 +208,8 @@ func TestRegisterPartTypeReturnsErrors(t *testing.T) {
 		{name: "empty", decode: func(json.RawMessage) (Part, error) { return Text("x"), nil }},
 		{name: "nil decoder", typ: "test/nil"},
 		{name: "built in", typ: "text", decode: func(json.RawMessage) (Part, error) { return Text("x"), nil }},
+		{name: "not namespaced", typ: "testregistered", decode: func(json.RawMessage) (Part, error) { return Text("x"), nil }},
+		{name: "empty namespace kind", typ: "test/", decode: func(json.RawMessage) (Part, error) { return Text("x"), nil }},
 		{name: "duplicate", typ: "test/registered", decode: func(json.RawMessage) (Part, error) { return Text("x"), nil }},
 	}
 
@@ -190,6 +220,52 @@ func TestRegisterPartTypeReturnsErrors(t *testing.T) {
 				t.Fatalf("error = %v, want ErrBadRequest", err)
 			}
 		})
+	}
+}
+
+func TestMarshalMessagesValidatesExtensionPartType(t *testing.T) {
+	tests := []struct {
+		name string
+		part Part
+	}{
+		{name: "missing type", part: extensionWithoutTypePart{}},
+		{name: "wrong provider", part: extensionWrongProviderPart{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := MarshalMessages([]Message{{Role: RoleUser, Parts: []Part{tt.part}}})
+			if !errors.Is(err, ErrBadRequest) {
+				t.Fatalf("error = %v, want ErrBadRequest", err)
+			}
+		})
+	}
+}
+
+func TestMarshalUnknownPartRequiresReloadableType(t *testing.T) {
+	tests := []UnknownPart{
+		{Data: json.RawMessage(`{"payload":true}`)},
+		{Type: "future/part", Data: json.RawMessage(`{"type":"other/part","payload":true}`)},
+		{},
+	}
+
+	for _, part := range tests {
+		_, err := MarshalMessages([]Message{{Role: RoleUser, Parts: []Part{part}}})
+		if !errors.Is(err, ErrBadRequest) {
+			t.Fatalf("part %+v error = %v, want ErrBadRequest", part, err)
+		}
+	}
+}
+
+func TestUnmarshalMessagesChecksVersionBeforeMessages(t *testing.T) {
+	input := []byte(`{"version":2,"messages":[{"role":"user","parts":[{"text":"missing type"}]}]}`)
+
+	_, err := UnmarshalMessages(input)
+	if !errors.Is(err, ErrBadRequest) {
+		t.Fatalf("error = %v, want ErrBadRequest", err)
+	}
+	if err == nil || !bytes.Contains([]byte(err.Error()), []byte("unsupported message envelope version 2")) {
+		t.Fatalf("error = %v, want unsupported version before part decode", err)
 	}
 }
 

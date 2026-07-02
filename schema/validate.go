@@ -11,7 +11,10 @@ import (
 	llm "github.com/pkieltyka/go-llm"
 )
 
-// ValidateArgs checks model-emitted tool arguments against a tool's JSON Schema.
+// ValidateArgs checks model-emitted tool arguments against the supported
+// strict-mode JSON Schema subset: type, required, properties,
+// additionalProperties, items, and enum. Annotation keywords such as
+// description and format are accepted in schemas but not enforced here.
 func ValidateArgs(t llm.Tool, args json.RawMessage) error {
 	if t.InputSchema == nil {
 		return fmt.Errorf("%w: tool %q has no input schema", llm.ErrBadRequest, t.Name)

@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"reflect"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -63,6 +66,9 @@ func RegisterPartType(name string, decode func(json.RawMessage) (Part, error)) e
 	if _, ok := builtinPartTypes[name]; ok {
 		return fmt.Errorf("%w: cannot register built-in part type %q", ErrBadRequest, name)
 	}
+	if err := validateExtensionPartTypeName(name); err != nil {
+		return err
+	}
 
 	partTypeRegistry.Lock()
 	defer partTypeRegistry.Unlock()
@@ -76,8 +82,10 @@ func RegisterPartType(name string, decode func(json.RawMessage) (Part, error)) e
 // MarshalMessages serializes messages in a versioned persistence envelope.
 func MarshalMessages(msgs []Message) ([]byte, error) {
 	var b bytes.Buffer
-	b.WriteString(`{"version":1,"messages":`)
-	rawMessages, err := marshalMessagesArray(cloneMessages(msgs))
+	b.WriteString(`{"version":`)
+	b.WriteString(strconv.Itoa(messageEnvelopeVersion))
+	b.WriteString(`,"messages":`)
+	rawMessages, err := marshalMessagesArray(msgs)
 	if err != nil {
 		return nil, err
 	}
@@ -89,18 +97,24 @@ func MarshalMessages(msgs []Message) ([]byte, error) {
 // MarshalMessage serializes one message without encoding/json post-processing,
 // preserving raw replay payload bytes inside parts.
 func MarshalMessage(msg Message) ([]byte, error) {
-	msgs := cloneMessages([]Message{msg})
-	return marshalMessage(msgs[0])
+	return marshalMessage(msg)
 }
 
 // UnmarshalMessages decodes a versioned persistence envelope.
 func UnmarshalMessages(data []byte) ([]Message, error) {
+	var header struct {
+		Version int `json:"version"`
+	}
+	if err := json.Unmarshal(data, &header); err != nil {
+		return nil, err
+	}
+	if header.Version != messageEnvelopeVersion {
+		return nil, fmt.Errorf("%w: unsupported message envelope version %d", ErrBadRequest, header.Version)
+	}
+
 	var env messageEnvelope
 	if err := json.Unmarshal(data, &env); err != nil {
 		return nil, err
-	}
-	if env.Version != messageEnvelopeVersion {
-		return nil, fmt.Errorf("%w: unsupported message envelope version %d", ErrBadRequest, env.Version)
 	}
 	return cloneMessages(env.Messages), nil
 }
@@ -578,7 +592,17 @@ func marshalUnknownPart(p UnknownPart) (json.RawMessage, error) {
 		if !json.Valid(p.Data) {
 			return nil, fmt.Errorf("%w: invalid unknown part JSON", ErrBadRequest)
 		}
+		typ, err := partTypeFromRaw(p.Data)
+		if err != nil {
+			return nil, err
+		}
+		if p.Type != "" && p.Type != typ {
+			return nil, fmt.Errorf("%w: unknown part type %q does not match raw type %q", ErrBadRequest, p.Type, typ)
+		}
 		return cloneRaw(p.Data), nil
+	}
+	if p.Type == "" {
+		return nil, fmt.Errorf("%w: unknown part type is required", ErrBadRequest)
 	}
 	var b bytes.Buffer
 	b.WriteString(`{"type":`)
@@ -665,7 +689,14 @@ func marshalPart(part Part) (json.RawMessage, error) {
 		return p.MarshalJSON()
 	}
 
+	if isNilPart(part) {
+		return nil, fmt.Errorf("%w: nil extension part", ErrBadRequest)
+	}
 	if marshaler, ok := part.(json.Marshaler); ok {
+		extension, ok := part.(ExtensionPart)
+		if !ok {
+			return nil, fmt.Errorf("%w: extension part %T must implement ExtensionPart", ErrBadRequest, part)
+		}
 		raw, err := marshaler.MarshalJSON()
 		if err != nil {
 			return nil, err
@@ -673,9 +704,65 @@ func marshalPart(part Part) (json.RawMessage, error) {
 		if !json.Valid(raw) {
 			return nil, fmt.Errorf("%w: part %T marshaled invalid JSON", ErrBadRequest, part)
 		}
+		if err := validateMarshaledExtensionPart(extension, raw); err != nil {
+			return nil, err
+		}
 		return cloneRaw(raw), nil
 	}
 	return nil, fmt.Errorf("%w: part %T does not implement json.Marshaler", ErrBadRequest, part)
+}
+
+func validateExtensionPartTypeName(name string) error {
+	if strings.TrimSpace(name) != name || strings.Count(name, "/") != 1 {
+		return fmt.Errorf("%w: extension part type %q must use provider/kind namespace", ErrBadRequest, name)
+	}
+	provider, kind, _ := strings.Cut(name, "/")
+	if provider == "" || kind == "" {
+		return fmt.Errorf("%w: extension part type %q must use provider/kind namespace", ErrBadRequest, name)
+	}
+	return nil
+}
+
+func validateMarshaledExtensionPart(part ExtensionPart, raw json.RawMessage) error {
+	provider := part.ExtensionProvider()
+	if provider == "" {
+		return fmt.Errorf("%w: extension part %T returned empty provider", ErrBadRequest, part)
+	}
+	typ, err := partTypeFromRaw(raw)
+	if err != nil {
+		return err
+	}
+	if err := validateExtensionPartTypeName(typ); err != nil {
+		return err
+	}
+	typeProvider, _, _ := strings.Cut(typ, "/")
+	if typeProvider != provider {
+		return fmt.Errorf("%w: extension part %T type %q does not match provider %q", ErrBadRequest, part, typ, provider)
+	}
+	return nil
+}
+
+func partTypeFromRaw(raw json.RawMessage) (string, error) {
+	var header struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(raw, &header); err != nil {
+		return "", fmt.Errorf("%w: part payload must be an object with a type", ErrBadRequest)
+	}
+	if header.Type == "" {
+		return "", fmt.Errorf("%w: part type is required", ErrBadRequest)
+	}
+	return header.Type, nil
+}
+
+func isNilPart(part Part) bool {
+	value := reflect.ValueOf(part)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 func writeComma(b *bytes.Buffer, first *bool) {
