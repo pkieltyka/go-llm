@@ -1,5 +1,5 @@
 ---
-status: draft
+status: complete
 ---
 
 # Implementation Plan: go-llm
@@ -24,8 +24,9 @@ visibly and the phase still completes — never fail a phase on missing keys.
     `.gitignore` (incl. `.specs_skill_state/` and `gollm-test.json`).
   - Core types per ARCH §2.1–2.6: message/parts + constructors,
     `Request`/`Tool`/`ToolChoice`/`ResponseFormat`/`Effort`/`CacheHint`,
-    `Response`/`Usage`/`StopReason`, `Event` types + `Collect`
-    (ARCH §2.5), error sentinels + `ProviderError` (ARCH §2.6),
+    `Response`/`Usage`/`StopReason`, `Event` types + `Collect` +
+    `StreamText`/`WithDebounce` (ARCH §2.5), error sentinels +
+    `ProviderError` (ARCH §2.6),
     `Capability` constants + `CustomCapabilities` + `validateRequest`
     (ARCH §6, FS §12), `History` (ARCH §7), `Provider` interface +
     `ModelInfo` (ARCH §2.4).
@@ -55,8 +56,9 @@ visibly and the phase still completes — never fail a phase on missing keys.
     struct + map vars.
   - `llmtest` package (ARCH §7B, FS §17A) — FIFO scripted steps, request
     recording, real `iter.Seq2` streams, goroutine-safe.
-  - `Parse[T]` (ARCH §2.9, FS §8): json-schema path, json-mode fallback,
-    `WithParseRetries`.
+  - `Parse[T]` (ARCH §2.9, FS §8): mode resolution (native json-schema →
+    forced-tool extraction → json-mode + guidance), `WithParseMode`,
+    `WithParseRetries`, `WithParseValidator`.
   - Tests: middleware ordering/pass-through, llmtest self-tests
     (= Provider conformance suite), Parse paths against llmtest, pricing
     lookup tables.
