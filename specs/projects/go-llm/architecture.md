@@ -729,6 +729,9 @@ via `llm.StreamText` or collect for `--json`/`--no-stream`), `models.go`
   tooling.
 - `--usage` prints via `Usage` fields (+ estimated cost); `--debug` wires
   `WithDebugCapture(DebugToLogger(stderr slog))`.
+- `--load`/`--save` use `UnmarshalMessages`/`MarshalMessages` + `History`
+  verbatim — the CLI is the serialization + cross-provider-replay demo.
+- `--version` via `runtime/debug.ReadBuildInfo`.
 - Context: `signal.NotifyContext` for Ctrl-C — cancels the stream cleanly
   (exercises the cancellation contract).
 - Tests: flag→Request construction table tests against `llmtest`; smoke

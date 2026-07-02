@@ -694,9 +694,18 @@ llm-cli models -p openrouter
   `--schema <file.json>` (structured output; prints validated JSON),
   `--no-stream` (buffer and print complete response), `--json` (emit the
   full canonical `Response` JSON incl. usage/cost), `--usage` (usage +
-  cost summary to stderr), `--debug` (wire capture to stderr via
-  `DebugToLogger`), `--api-key`, `--base-url`, `--timeout`.
-- **Commands**: default = chat; `models` = list models for a provider.
+  cost summary to stderr), `--reasoning` (print reasoning deltas to
+  stderr as they stream), `--cache-system` (set `SystemCache` — pair with
+  `--usage` to observe cache hits), `--session-id`, `--debug` (wire
+  capture to stderr via `DebugToLogger`), `--api-key`, `--base-url`,
+  `--timeout`, `--version`.
+- **Conversation files** — multi-turn the curl way (state in files, not
+  the process): `--load <file>` prepends a saved conversation (canonical
+  envelope, §10A), `--save <file>` writes the updated conversation after
+  the response. Loading with a *different* `-p` exercises cross-provider
+  history replay directly from the shell.
+- **Commands**: default = chat; `models` = list models for a provider
+  (table; `--json` for machine output).
 - **Keys** from provider env vars (library convention) or `--api-key`;
   the CLI never reads config files (consistent with §17; `gollm-test.json`
   is e2e-only).

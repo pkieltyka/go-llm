@@ -144,8 +144,11 @@ visibly and the phase still completes — never fail a phase on missing keys.
     streaming by default, `--no-stream`/`--json` canonical output),
     `models` subcommand, attachments (`--image`/`--file`), `--schema`
     structured output, `--tool` (print tool calls, never execute),
-    `--usage` + `--debug` (dogfoods `UsageTracker` fields +
-    `DebugToLogger`), Ctrl-C cancellation via `signal.NotifyContext`.
+    **`--load`/`--save` conversation files** (canonical envelope;
+    cross-provider replay from the shell), `--reasoning`,
+    `--cache-system`, `--session-id`, `--usage` + `--debug` (dogfoods
+    `UsageTracker` fields + `DebugToLogger`), Ctrl-C cancellation via
+    `signal.NotifyContext`.
   - Constraints enforced: stdlib `flag` only; public go-llm API only
     (needing an internal import = spec bug to surface, not work around).
   - Tests: flag→`Request` construction tables against `llmtest`; manual
