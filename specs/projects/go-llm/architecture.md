@@ -23,6 +23,8 @@ go-llm/
 ├── validate.go                                   # capability/request validation
 ├── serialize.go                                  # canonical JSON for Message/Part/Response
 ├── middleware.go                                 # Middleware + Wrap decorator
+├── observe.go                                    # UsageTracker, WireCapture, DebugToLogger, wiretap transport
+├── prompt.go                                     # PromptTemplate (minimal text/template wrapper)
 ├── parse.go                                      # Parse[T] structured-output helper
 ├── schema/                                       # schema-from-struct + arg validation (stdlib-only)
 ├── llmtest/                                      # scriptable fake Provider
@@ -219,6 +221,13 @@ type MessageEnd    struct { StopReason StopReason; StopReasonRaw string; Usage U
 
 // Collect drains a stream into a complete Response.
 func Collect(events iter.Seq2[Event, error]) (*Response, error)
+
+// StreamText filters a stream to plain text deltas.
+// Default: pass-through (one string per TextDelta). Options:
+//   WithDebounce(window time.Duration) — buffer deltas and emit the
+//     accumulated text at most once per window (flushed on stream end
+//     or error); rate-limits UI re-renders / network frames.
+func StreamText(events iter.Seq2[Event, error], opts ...StreamTextOption) iter.Seq2[string, error]
 ```
 
 `Collect` is also the internal building block for testing adapters: every
@@ -296,21 +305,105 @@ func Wrap(p Provider, mw ...Middleware) Provider
 Wrapping a stream is plain function decoration over the returned iterator
 (observe/transform events as they pass) — no teeing machinery needed.
 
+### 2.8A Observability (`observe.go`)
+
+All stdlib (`log/slog`, `net/http`, `sync`); silent by default; per FS §17B.
+
+```go
+// Wire-level debug capture — one per HTTP attempt, secrets always redacted.
+type WireCapture struct {
+    Provider        string
+    Method, URL     string
+    RequestHeaders  http.Header   // Authorization / x-api-key / cookies redacted
+    RequestBody     []byte
+    Status          int
+    ResponseHeaders http.Header
+    ResponseBody    []byte        // buffered; SSE bodies tee'd and included
+    StartedAt       time.Time
+    Duration        time.Duration
+    Err             error         // transport-level error, if any
+}
+
+// DebugToLogger adapts a logger into a capture fn (payloads at Debug).
+func DebugToLogger(l *slog.Logger) func(WireCapture)
+
+// NewWireTap wraps an http.RoundTripper with capture + redaction.
+// Providers install it around the SDK transport when WithDebugCapture is set.
+func NewWireTap(next http.RoundTripper, provider string, fn func(WireCapture)) http.RoundTripper
+
+// Usage telemetry — aggregates via the middleware seam.
+type UsageTracker struct{ /* mutex + per provider/model buckets */ }
+
+func NewUsageTracker() *UsageTracker
+func (t *UsageTracker) Middleware() Middleware   // counts Chat + Stream (usage from MessageEnd)
+func (t *UsageTracker) Stats() UsageStats        // snapshot
+
+type UsageStats struct {
+    Calls, Errors int64
+    Usage         Usage                     // summed (CostUSD summed when known)
+    TotalDuration time.Duration
+    ByProviderModel map[string]UsageStats   // key "provider/model"
+}
+```
+
+Implementation notes: captured bodies are capped (default 8 MiB per
+direction, configurable) with an explicit truncation marker — a debug tap
+on a 128K-token stream must not balloon memory; SSE response bodies are
+tee'd — the capture is
+emitted when the body is closed, so streaming latency is unaffected;
+provider logging (`WithLogger`) is emitted at the pipeline boundary (§4)
+inside each adapter, giving it access to normalized stop reason + usage;
+wire capture sits *below* SDK retries, so each attempt appears once.
+
 ### 2.9 Parse[T] (`parse.go`)
 
 ```go
 func Parse[T any](ctx context.Context, p Provider, req *Request,
-    opts ...ParseOption) (T, *Response, error)
+    opts ...ParseOption[T]) (T, *Response, error)
 
-func WithParseRetries(n int) ParseOption // default 0
+func WithParseRetries[T any](n int) ParseOption[T]              // default 0
+func WithParseMode[T any](m ParseMode) ParseOption[T]           // ModeNative | ModeTool | ModeJSON; default auto
+func WithParseValidator[T any](fn func(T) error) ParseOption[T] // semantic check, feeds retry
 ```
 
+(`ParseOption[T]` is generic so the validator is typed; the small
+call-site cost — `llm.WithParseRetries[Person](2)` — buys compile-time
+safety.)
+
 Flow: derive schema via `schema.For[T]()` (unless `req.ResponseFormat` is
-already set) → capability switch: `json-schema` → server-enforced;
-`json-mode` only → JSON mode + schema guidance appended to `System` +
-client-side validation; neither → `ErrUnsupported` → call `p.Chat` →
-`json.Unmarshal` into `T`. On unmarshal/validation failure with retries
-remaining: append the assistant turn + a correction user message, retry.
+already set) → mode resolution per FS §8 (auto: native `json-schema` →
+forced-tool extraction via a synthetic tool + forced tool choice, result
+read from the tool-call arguments → JSON mode + schema guidance appended
+to `System` + client-side validation; none available → `ErrUnsupported`)
+→ call `p.Chat` → `json.Unmarshal` into `T` → optional validator. On
+unmarshal/validation failure with retries remaining: append the assistant
+turn + a correction user message, retry.
+
+### 2.10 PromptTemplate (`prompt.go`)
+
+Thin, immutable wrapper over stdlib `text/template` (FS §10C):
+
+```go
+type PromptTemplate struct{ /* parsed *template.Template + bound vars */ }
+
+func NewPromptTemplate(name, text string) (*PromptTemplate, error)
+func MustPromptTemplate(name, text string) *PromptTemplate
+
+// Format renders with missingkey=error (strict): a referenced variable
+// with no value fails loud instead of emitting "<no value>".
+// vars: map[string]any or a struct.
+func (t *PromptTemplate) Format(vars any) (string, error)
+
+// Partial returns a NEW template with vars pre-bound; bound vars merge
+// with Format-time vars (Format-time wins). The receiver is unchanged.
+func (t *PromptTemplate) Partial(vars any) *PromptTemplate
+
+func (t *PromptTemplate) Name() string
+```
+
+Implementation: `Partial` stores a merged vars map — no re-parsing, no
+text manipulation. Scope guard per FS §10C: registry/versioning/alt
+syntaxes/message splicing are explicitly rejected feature requests.
 
 ## 3. Provider Implementation Architecture
 
@@ -457,6 +550,8 @@ WithHTTPClient(*http.Client)
 WithMaxRetries(int)       // default 2, delegated to the SDK's retry layer
 WithTimeout(time.Duration)
 WithPriceTable(llm.PriceTable)   // cost estimation override
+WithLogger(*slog.Logger)         // operational logging (FS §17B); default silent
+WithDebugCapture(func(llm.WireCapture)) // wire-level trace tap (FS §17B)
 WithDefaultMaxTokens(int)        // anthropic only
 ```
 
@@ -525,11 +620,22 @@ accept (see functional spec §8):
 package schema
 
 // For generates a JSON Schema for T: objects from structs (json tags;
-// fields required unless pointer or `,omitempty`), strings/numbers/bools,
-// slices, maps[string]X, nested structs. Tags: `description:"..."` and
-// `enum:"a,b,c"`. Always emits additionalProperties: false.
-func For[T any]() (json.RawMessage, error)
-func MustFor[T any]() json.RawMessage
+// fields required unless pointer or `,omitempty` — overridable via the
+// required/optional flags), strings/numbers/bools, slices, maps[string]X,
+// nested structs. Field tags use the ecosystem-standard `jsonschema` key
+// (invopop/eino/fugue convention), key=value pairs:
+//   `jsonschema:"description=City name,enum=a|b|c,format=date-time,required"`
+// Unsupported constraint keys (minimum, maxLength, …) return errors —
+// providers reject them in strict mode anyway. Emits the Draft 2020-12
+// subset, inlined (no $ref), always additionalProperties: false.
+func For[T any](opts ...Option) (json.RawMessage, error)
+func MustFor[T any](opts ...Option) json.RawMessage
+
+// WithModifier is a per-field escape hatch applied during reflection.
+func WithModifier(fn func(field reflect.StructField, s map[string]any)) Option
+
+// Types may self-describe, bypassing reflection entirely.
+type JSONSchemaer interface{ JSONSchema() json.RawMessage }
 
 // ValidateArgs checks model-emitted tool arguments against a tool's schema
 // (types, required fields, enums — the supported subset, not full JSON
@@ -626,9 +732,16 @@ the reference third-party `Provider` implementation.
   (required/optional, enums, nesting, error cases for unsupported types);
   `ValidateArgs` table tests (valid, missing required, wrong type, bad enum).
 - **Parse[T] tests**: run against `llmtest.Provider` — json-schema path,
-  json-mode fallback path, retry-on-invalid path, retries-exhausted error.
+  forced-tool extraction path, json-mode fallback path, mode override,
+  validator-feeds-retry path, retry-on-invalid path, retries-exhausted
+  error.
 - **Middleware tests**: `Wrap` ordering, chat and stream wrappers, pass-through
   of `Name/Capabilities/Models`.
+- **Observability tests**: logger output assertions via a captured slog
+  handler (summary fields, levels, silence-by-default); `UsageTracker`
+  aggregation across concurrent Chat + Stream calls (race detector);
+  wiretap redaction (no secret ever appears in a capture), SSE tee
+  correctness, one capture per retry attempt.
 - **`llmtest` self-tests** double as the `Provider` interface conformance
   suite.
 - **Live e2e suite** (`internal/e2e`, `//go:build live`): a
@@ -676,14 +789,21 @@ the reference third-party `Provider` implementation.
 - **Fixture recording**: the e2e harness accepts a `-record` flag that
   captures live wire payloads into the offline fixture corpus — fixtures
   stay honest as providers evolve instead of being hand-edited.
-- Tooling: stdlib `testing` + `go-cmp`; `go vet` + `golangci-lint`; race
-  detector on. Coverage target: ≥85% on mapping/adapters, no vanity target
-  on plumbing.
+- **Fuzz targets** (native `go test -fuzz`): `UnmarshalMessages` (persisted
+  histories are untrusted input — apps load them from DBs/files),
+  `schema.ValidateArgs` (model-emitted JSON is untrusted), and
+  `schema.For` over generated struct shapes. Fuzz corpora checked in;
+  short fuzz runs in CI.
+- Tooling: stdlib `testing` + `go-cmp`; `go vet` + `golangci-lint` +
+  `govulncheck`; race detector on. Coverage target: ≥85% on
+  mapping/adapters, no vanity target on plumbing.
 
 ## 10. Non-Goals Reaffirmed
 
-No built-in logging or metrics — the middleware seam (`llm.Wrap`) and
-`WithHTTPClient` are the instrumentation points; go-llm ships the seam, not
-integrations. No global registries (the sole exception: the part-type
-decoder registry for serialization, write-once at `init()`). No model
-capability database, no silent parameter clamping.
+Observability is built in but **silent by default** (FS §17B: `slog`
+logging, `UsageTracker`, wire capture — all stdlib-only); what stays out
+of core are third-party *integrations* (OpenTelemetry exporters, metrics
+backends), which build on those seams. No global logger. No global
+registries (the sole exception: the part-type decoder registry for
+serialization, write-once at `init()`). No model capability database, no
+silent parameter clamping.

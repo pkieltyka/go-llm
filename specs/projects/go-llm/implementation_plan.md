@@ -19,8 +19,9 @@ visibly and the phase still completes — never fail a phase on missing keys.
 
 - [ ] **Phase 1: Repo scaffolding + core vocabulary (package `llm`)**
   - `git init`, `go.mod` (`github.com/pkieltyka/go-llm`, Go 1.26), CI
-    workflow (vet + lint + race tests), `.gitignore` (incl.
-    `.specs_skill_state/` and `gollm-test.json`).
+    workflow (vet + lint + race tests + `govulncheck` + short fuzz),
+    Dependabot config for SDK bumps (the wrapped SDKs move weekly),
+    `.gitignore` (incl. `.specs_skill_state/` and `gollm-test.json`).
   - Core types per ARCH §2.1–2.6: message/parts + constructors,
     `Request`/`Tool`/`ToolChoice`/`ResponseFormat`/`Effort`/`CacheHint`,
     `Response`/`Usage`/`StopReason`, `Event` types + `Collect`
@@ -41,10 +42,17 @@ visibly and the phase still completes — never fail a phase on missing keys.
     unknown-part preservation, schema generator goldens, `ValidateArgs`
     tables.
 
-- [ ] **Phase 3: Core utilities — pricing, middleware, `llmtest`, `Parse[T]`**
+- [ ] **Phase 3: Core utilities — pricing, middleware, observability, `llmtest`, `Parse[T]`**
   - `pricing.go` + `pricing_table.go` snapshot (ARCH §5, FS §11) with
     `PriceTableDate`; prefix-fallback lookup; cost estimation helper.
   - `Middleware` + `Wrap` decorator (ARCH §2.8, FS §10B).
+  - `observe.go` (ARCH §2.8A, FS §17B): `UsageTracker` + middleware,
+    `WireCapture` + `NewWireTap` redacting transport, `DebugToLogger`.
+    Tests: slog handler assertions, concurrent tracker aggregation,
+    redaction guarantees, SSE tee.
+  - `prompt.go` (ARCH §2.10, FS §10C): `PromptTemplate` — strict Format,
+    immutable Partial. Tests: missing-var error, partial merge precedence,
+    struct + map vars.
   - `llmtest` package (ARCH §7B, FS §17A) — FIFO scripted steps, request
     recording, real `iter.Seq2` streams, goroutine-safe.
   - `Parse[T]` (ARCH §2.9, FS §8): json-schema path, json-mode fallback,
@@ -61,6 +69,8 @@ visibly and the phase still completes — never fail a phase on missing keys.
     drop — FS §18), error mapping, `Models()`, `Client()` escape hatch,
     `anthropic.Options` extensions (FS §14), extension-part registration
     pattern established.
+  - Wire `WithLogger` + `WithDebugCapture` (ARCH §2.8A) — pattern
+    established here, repeated in every provider phase.
   - Tests: request-build goldens, response/stream fixtures (thinking +
     tool use + refusal + parallel tools), Collect-equivalence, error
     tables.
@@ -116,10 +126,11 @@ visibly and the phase still completes — never fail a phase on missing keys.
     e2e suite vs ZAI.
 
 - [ ] **Phase 8: Docs, examples, release readiness**
-  - README (sharply differentiated first line — naming collision note),
-    godoc pass on all exported symbols, `example_test.go` runnable
-    examples (chat, stream, tools, Parse, history, middleware, provider
-    switch/replay), `examples/` programs.
+  - README (sharply differentiated first line — naming collision note;
+    pre-1.0 API-stability policy stated), godoc pass on all exported
+    symbols, `example_test.go` runnable examples (chat, stream, tools,
+    Parse, history, middleware, observability, provider switch/replay),
+    `examples/` programs.
   - ⏸ **Checkpoint: confirm all four provider keys are present in
     `gollm-test.json`**, then run the full e2e matrix — including the
     cross-provider handoff scenario — plus a `-record` pass to refresh the

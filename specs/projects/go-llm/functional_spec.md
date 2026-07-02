@@ -74,6 +74,9 @@ Decisions:
 - Generic structured-output helper `Parse[T]` with schema-from-struct — §8
 - Tool schema generation from Go types + tool-argument validation — §7
 - Client-level middleware (chat/stream interceptor seam) — §10B
+- Minimal `PromptTemplate` helper (`text/template` wrapper) — §10C
+- Observability: `slog` logging, usage-telemetry aggregation, wire-level
+  debug capture — §17B
 - `llmtest` fake provider for downstream testing — §17A
 
 **Out of scope (v1):**
@@ -83,7 +86,9 @@ Decisions:
 - Batch APIs (deferred; candidate for v1.x — the `Provider` interface must
   not preclude adding a batch surface later)
 - RAG helpers (chunking, vector stores, retrieval glue)
-- Prompt templating (Go's `text/template` already covers it; app-level concern)
+- Prompt-template *machinery* beyond the minimal helper in §10C: template
+  registries, versioning, alternate syntaxes (Jinja/f-string), few-shot
+  machinery, message splicing (→ `go-agent` / app layer)
 - Skills (prompt bundles with progressive disclosure → `go-agent`, which
   needs an agent loop to load them; provider *server-side* skills —
   Anthropic container skills, OpenAI hosted `skills` tool — are reachable
@@ -109,6 +114,17 @@ architecture.md):
 Escape hatch: each provider package exposes its concrete type; a type
 assertion gives access to the raw underlying SDK client at runtime
 (e.g. `p.(*anthropic.Provider).Client()`).
+
+Interface contract (binding for custom providers too):
+
+- **Goroutine-safe**: a `Provider` must be safe for concurrent use — one
+  instance, many goroutines (the wrapped SDK clients already are).
+- **Streams are single-use**: the iterator returned by `ChatStream` may
+  be ranged once; a second range yields a single `ErrBadRequest`-wrapped
+  error, never silent emptiness.
+- **No panics**: the library never panics on user input or provider
+  behavior; the only panicking functions are the documented `Must*`
+  variants.
 
 ### 4.2 Request
 
@@ -200,7 +216,11 @@ adapter (OpenRouter, ZAI).
   `ToolCallStart` (index, id, name), `ToolCallDelta` (argument JSON
   fragment), `ToolCallEnd`, `MessageEnd` (stop reason + usage).
 - A helper (`llm.Collect`) accumulates any stream into a complete
-  `*Response`.
+  `*Response`. A text-only consumer adapter, `llm.StreamText`, filters a
+  stream to plain text deltas (`iter.Seq2[string, error]`); its
+  `WithDebounce(window)` option batches deltas on a time window to
+  rate-limit UI re-renders (adopted from fugue-labs/gollem, collapsed to
+  one function + options).
 - **Per-provider streaming nuances** — normalizing these is a core adapter
   responsibility:
 
@@ -225,9 +245,12 @@ adapter (OpenRouter, ZAI).
   value or raw `json.RawMessage`), optional `Strict` flag (mapped to
   Anthropic/OpenAI strict mode where supported).
 - **Schema from Go types**: `InputSchema` may be generated from a Go struct
-  via the `schema` subpackage (reflection over `json` +
-  `description`/`enum` tags), emitting the strict-mode-compliant subset
-  providers accept. Hand-written JSON Schema remains first-class.
+  via the `schema` subpackage — reflection over `json` + ecosystem-standard
+  `jsonschema:"description=…,enum=a|b|c,required|optional"` tags (the
+  invopop/eino/fugue-convergent convention), with a per-field modifier
+  option and a `JSONSchemaer` self-describe hook — emitting the
+  strict-mode-compliant subset providers accept. Hand-written JSON Schema
+  remains first-class.
 - **Argument validation**: an opt-in helper validates model-emitted tool
   arguments against the tool's schema before the caller dispatches them —
   uniform protection against malformed tool calls across providers.
@@ -267,13 +290,21 @@ honoring it.
 generator as tool schemas), sets `ResponseFormat`, calls the provider, and
 unmarshals the response into `T`.
 
-- On `json-schema` providers the schema is enforced server-side.
-- On `json-mode`-only providers (ZAI) it falls back to JSON mode plus
-  schema guidance appended to the system prompt, with client-side
-  validation.
+- Mode resolution, best-first (override via `WithParseMode`):
+  1. **native** — `json-schema` capability: schema enforced server-side;
+  2. **forced-tool extraction** — provider has tools + forced tool choice:
+     the schema is bound as a single synthetic tool, tool choice forced,
+     and the arguments parsed as the result. The convergent "most
+     reliable" pattern across eino and fugue-labs/gollem; useful e.g. on
+     OpenRouter when the upstream model lacks schema support;
+  3. **json-mode + guidance** — JSON mode plus schema guidance appended to
+     the system prompt with client-side validation (ZAI, where tool
+     forcing is unavailable).
 - Optional bounded retry (`WithParseRetries(n)`, default 0): on
   invalid/unparseable output, the failed turn plus a correction message is
   appended and the request retried, up to `n` times.
+- Optional semantic validation (`WithParseValidator(func(T) error)`): a
+  validator failure feeds the same bounded retry with the error text.
 
 ## 9. Effort (Reasoning / Thinking Control)
 
@@ -376,8 +407,27 @@ eino and gollem):
 - Applied by **composition**, not provider support:
   `llm.Wrap(provider, mw...)` returns a decorated `Provider`. Adapters know
   nothing about middleware.
-- Use cases: logging, tracing, redaction, request mutation, usage
-  aggregation. go-llm ships the seam, not the integrations.
+- Use cases: tracing, redaction, request mutation, custom policies. For
+  logging/telemetry/debugging, go-llm ships stdlib-only built-ins on top
+  of this seam and the providers (§17B); third-party integrations
+  (OpenTelemetry, metrics backends) build on those.
+
+## 10C. Prompt Templates (minimal)
+
+A deliberately thin, stdlib-only helper over `text/template` for
+parameterizing prompts inside the library's own vocabulary:
+
+- `NewPromptTemplate(name, text)` / `MustPromptTemplate` — parses a
+  standard `text/template`.
+- `Format(vars)` — renders to a string (for `System` or `UserText`);
+  **strict**: missing variables error (fail loud, no `<no value>`).
+- `Partial(vars)` — returns a new template with some variables pre-bound
+  (merged at `Format` time; call-time vars win). Templates are immutable.
+
+Hard scope line: no registry, no versioning, no alternate syntaxes, no
+message splicing (history splicing is `History`'s job), no few-shot
+machinery — those are `go-agent`/app concerns. This is ergonomics over
+`text/template`, nothing more.
 
 ## 11. Usage & Cost
 
@@ -523,6 +573,43 @@ code (and `go-agent`) can be tested offline:
   dogfooding check that the interface stays implementable outside the
   built-in providers.
 
+## 17B. Observability: Logging, Telemetry, Debugging
+
+Three layers — all stdlib-only, all **silent by default**, no globals:
+
+**Logging (`log/slog`).** Every provider constructor accepts
+`WithLogger(*slog.Logger)`. With a logger set, adapters log: call
+summaries at `Debug` (provider, model, duration, stop reason, usage,
+request id where available), retries and rate-limit waits at `Warn`,
+request failures at `Error`. No logger (the default) = fully silent.
+
+**Telemetry (usage aggregation).** `llm.NewUsageTracker()` returns a
+goroutine-safe aggregator whose `Middleware()` plugs into `llm.Wrap`:
+per provider/model — call counts, success/error counts, token sums
+(input/output/cache read+write/reasoning), cost sums, durations. Streams
+are covered (usage observed on `MessageEnd`). `Stats()` returns a
+snapshot suitable for feeding any metrics system. OpenTelemetry and
+metrics-backend *integrations* are deliberately not in core — the
+tracker, middleware seam, and wire capture are their raw material.
+Budget **enforcement** (halting/refusing calls once a token or cost cap
+is hit) is workload policy → `go-agent`; it composes as a few-line
+middleware over `UsageTracker.Stats()`, and Anthropic's server-side task
+budgets remain reachable via `anthropic.Options`. go-llm's job is that
+the numbers are always accurate and available; spending decisions belong
+to the caller.
+
+**Debugging (wire capture / trace mode).** Every provider constructor
+accepts `WithDebugCapture(fn func(WireCapture))` — a transport-level tap
+beneath the SDK that hands the callback the exact HTTP exchange per
+attempt: method, URL, redacted request headers, request body, status,
+response headers, buffered response body (SSE streams included), timing,
+and transport error. Sensitive headers (`Authorization`, `x-api-key`,
+cookies) are **always redacted** — not optional. Each SDK retry attempt
+is captured separately. `llm.DebugToLogger(l)` adapts a logger into a
+capture fn (full payloads at `Debug`) for instant trace mode. Bodies may
+contain user data — storage/retention is the application's
+responsibility.
+
 ## 18. Edge Cases & Behaviors
 
 - **Feature/provider mismatch** → `ErrUnsupported` before the network call
@@ -547,3 +634,6 @@ code (and `go-agent`) can be tested offline:
   layer. go-llm does not silently clamp.
 - **Verbatim model IDs**: no validation of model names client-side;
   unknown model → provider's `ErrNotFound`/`ErrBadRequest`.
+- **Single-choice contract**: go-llm always requests and consumes exactly
+  one completion choice (`n` is not part of the unified surface; adapters
+  read choice 0).
