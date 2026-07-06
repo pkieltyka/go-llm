@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"city\":\"Montreal\",\"count\":2,\"blob\":\"Z28=\",\"meta\":{\"priority\":1}}")

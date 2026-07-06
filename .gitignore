@@ -1,0 +1,8 @@
+.specs_skill_state/
+gollm-test.json
+scripts/node_modules/
+
+bin/
+coverage.out
+*.test
+*.prof

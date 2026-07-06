@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"version\":1,\"messages\":[{\"role\":\"user\",\"parts\":[{\"type\":\"future/part\",\"payload\":{\"html\":\"<tag>\"}}]}]}")

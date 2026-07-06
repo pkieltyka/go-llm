@@ -1,0 +1,41 @@
+{
+  "providers": {
+    "anthropic": {
+      "type": "api_key",
+      "key": "",
+      "model": "",
+      "base_url": ""
+    },
+    "openai": {
+      "type": "api_key",
+      "key": "",
+      "model": "",
+      "base_url": ""
+    },
+    "openai-codex": {
+      "type": "oauth",
+      "access": "",
+      "refresh": "",
+      "expires": 0,
+      "accountId": "",
+      "model": "",
+      "base_url": ""
+    },
+    "openrouter": {
+      "type": "api_key",
+      "key": "",
+      "model": "",
+      "base_url": ""
+    },
+    "zai": {
+      "type": "api_key",
+      "key": "",
+      "model": "",
+      "base_url": ""
+    },
+    "vllm": {
+      "model": "",
+      "base_url": ""
+    }
+  }
+}

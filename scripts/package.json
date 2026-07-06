@@ -1,0 +1,10 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "snapshot-models-table": "tsx snapshot-models-table.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.0"
+  }
+}

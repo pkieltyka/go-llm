@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"version\":1,\"messages\":[{\"role\":\"user\",\"parts\":[{\"type\":\"file\",\"data\":\"ZmlsZQ==\",\"media_type\":\"text/plain\",\"name\":\"note.txt\",\"cache\":{\"ttl_ns\":5}}]}]}")

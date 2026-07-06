@@ -1,0 +1,51 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+          cache: true
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+          args: --default=none --enable=govet --enable=ineffassign --enable=unused ./...
+
+      - name: Race tests
+        run: go test -race ./...
+
+      - name: Coverage floors
+        run: ./scripts/check-coverage.sh
+
+      - name: Vulnerability check
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.5.0 ./...
+
+      # go test -fuzz accepts only a single package with a single matching
+      # target, so enumerate packages and fuzz targets explicitly.
+      - name: Short fuzz smoke
+        run: |
+          for pkg in $(go list ./...); do
+            for target in $(go test -list '^Fuzz' "$pkg" | grep '^Fuzz' || true); do
+              go test -run='^$' -fuzz="^${target}\$" -fuzztime=5s "$pkg"
+            done
+          done
