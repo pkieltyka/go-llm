@@ -10,10 +10,6 @@ and stops there. No agent loops, no prompt frameworks, no magic. The core
 package has **zero third-party dependencies**; official vendor SDKs are used
 where they exist and pulled in only by the provider package you import.
 
-> **Naming note:** the module path is `github.com/pkieltyka/go-llm`. The name
-> is plain and shared by unrelated projects — include the module path when
-> searching or filing issues.
-
 ## Highlights
 
 - **One `llm.Provider` interface** — blocking `Chat` and streaming
