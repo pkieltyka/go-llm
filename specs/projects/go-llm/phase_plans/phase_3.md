@@ -16,7 +16,7 @@ root module dependency-free at runtime.
 ## Steps
 
 1. Add model/pricing snapshot support:
-   - Create `models/models-table.json` with the embedded snapshot shape:
+   - Create `models.json` with the embedded snapshot shape:
      `generated_at` plus provider/model rows carrying ID, canonical ID,
      display name, context window, max output tokens, and MTok pricing.
    - Add `models_table.go` with `//go:embed`, lazy `sync.Once` parsing,
@@ -32,7 +32,7 @@ root module dependency-free at runtime.
    - Create `scripts/overrides.json` for hand-maintained patches.
    - Create `scripts/snapshot-models-table.ts` that fetches models.dev and
      OpenRouter models, trims to go-llm fields/providers, applies overrides,
-     and writes `models/models-table.json`.
+     and writes `models.json`.
 3. Add provider middleware:
    - Create `middleware.go` with `ChatFunc`, `StreamFunc`, `Middleware`,
      and `Wrap(p Provider, mw ...Middleware) Provider`.

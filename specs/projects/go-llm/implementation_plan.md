@@ -56,7 +56,7 @@ visibly and the phase still completes — never fail a phase on missing keys.
     FS §11): `scripts/snapshot-models-table.ts` (tsx + package.json,
     dev-only) — fetches models.dev/api.json + OpenRouter models, trims to
     our providers/fields, applies `scripts/overrides.json`, writes
-    `models/models-table.json` with `generated_at`; root package
+    `models.json` with `generated_at`; root package
     `go:embed`s it, lazy-parses via `sync.Once`; prefix + canonical-ID
     fallback lookup; cost estimation helper; add `scripts/node_modules/`
     to `.gitignore`. Tests: snapshot parse, lookup fallbacks, lazy-init

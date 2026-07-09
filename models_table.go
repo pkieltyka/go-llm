@@ -1,14 +1,14 @@
 package llm
 
 import (
-	"embed"
+	_ "embed"
 	"encoding/json"
 	"strings"
 	"sync"
 )
 
-//go:embed models/models-table.json
-var embeddedModelsTable embed.FS
+//go:embed models.json
+var embeddedModelsJSON []byte
 
 var defaultModelTable = struct {
 	once sync.Once
@@ -63,12 +63,7 @@ func LookupModelInfo(provider, modelID string) (ModelInfo, bool) {
 
 func loadDefaultModelTable() (parsedModelTable, error) {
 	defaultModelTable.once.Do(func() {
-		raw, err := embeddedModelsTable.ReadFile("models/models-table.json")
-		if err != nil {
-			defaultModelTable.err = err
-			return
-		}
-		defaultModelTable.data, defaultModelTable.err = parseModelTable(raw)
+		defaultModelTable.data, defaultModelTable.err = parseModelTable(embeddedModelsJSON)
 	})
 	return defaultModelTable.data, defaultModelTable.err
 }

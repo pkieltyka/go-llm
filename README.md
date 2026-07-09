@@ -274,11 +274,12 @@ p.EnqueueResponse(&llm.Response{Parts: []llm.Part{llm.Text(`{"ok":true}`)}})
 
 Script responses, streams, and errors; assert on the requests your code made
 via `p.Requests()`. See [`examples/testing`](examples/testing) for a complete
-worked example. Repository checks:
+worked example. Repository commands:
 
 ```sh
-go vet ./...
-go test -race ./...
+make build       # go build ./...
+make test        # offline tests with the race detector
+make models      # refresh the embedded root models.json snapshot
 ```
 
 Live end-to-end tests are behind the `live` build tag and read credentials
@@ -286,7 +287,7 @@ from `gollm-test.json` (copy `gollm-test.json.sample`; missing credentials
 skip visibly, never fail):
 
 ```sh
-go test ./internal/e2e -tags live
+make e2e-test
 ```
 
 ## Examples

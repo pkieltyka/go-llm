@@ -63,12 +63,11 @@ go test ./internal/e2e -tags live -run TestLiveOpenAI -record
 Refresh the generated model table before tagging:
 
 ```sh
-cd scripts
-pnpm install
-pnpm exec tsx snapshot-models-table.ts
+make models
 ```
 
-Commit `models/models-table.json` with the refreshed `generated_at` stamp and any intentional `scripts/overrides.json` changes.
+Commit `models.json` with the refreshed `generated_at` stamp and any
+intentional `scripts/overrides.json` changes.
 
 ## Coverage
 

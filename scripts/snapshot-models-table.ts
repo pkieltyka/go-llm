@@ -20,7 +20,7 @@ type ModelRow = {
 
 const providers = new Set(["anthropic", "openai", "openrouter", "zai"]);
 const root = resolve(dirname(new URL(import.meta.url).pathname), "..");
-const outputPath = resolve(root, "models/models-table.json");
+const outputPath = resolve(root, "models.json");
 const overridesPath = resolve(root, "scripts/overrides.json");
 
 async function main() {
