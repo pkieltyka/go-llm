@@ -39,6 +39,7 @@ func New(opts ...Option) (*Provider, error) {
 	for _, opt := range opts {
 		opt(&cfg)
 	}
+	cfg.resolveAPIKey()
 	compatCfg, err := cfg.chatcompletionsConfig()
 	if err != nil {
 		return nil, err

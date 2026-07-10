@@ -25,6 +25,7 @@ const (
 )
 
 var record = flag.Bool("record", false, "record redacted live provider fixtures")
+var recordAllowIncomplete = flag.Bool("record-allow-incomplete", false, "acknowledge replacement with an intentionally partial recording")
 
 func TestLiveAnthropic(t *testing.T) {
 	root, err := RepoRoot(".")
@@ -54,17 +55,21 @@ func TestLiveAnthropic(t *testing.T) {
 		reasoningModel = anthropicReasoningModel
 	}
 
-	var captures []llm.WireCapture
+	captures := &CaptureLog{}
+	secrets := NewSecretSet(providerCfg.Auth.Key, providerCfg.Auth.Access, providerCfg.Auth.Refresh, providerCfg.Auth.AccountID, os.Getenv("ANTHROPIC_API_KEY"))
+	var scenarioReport ScenarioReport
+	if *record {
+		path := filepath.Join(root, "internal", "e2e", "fixtures", "anthropic", "live.json")
+		ScheduleFixtureRecording(t, path, captures, secrets, &scenarioReport, *recordAllowIncomplete)
+	}
 	opts := []anthropic.Option{
 		anthropic.WithMaxRetries(0),
-		anthropic.WithWireCapture(func(c llm.WireCapture) {
-			captures = append(captures, c)
-		}),
+		anthropic.WithWireCapture(captures.Capture),
 	}
 	if providerCfg.Auth.Type == "oauth" {
 		// Persist rotated refresh tokens back to gollm-test.json — dropping
 		// them strands the stored credential after the provider refreshes.
-		onRefresh := PersistOnRefresh(filepath.Join(root, "gollm-test.json"), "anthropic", t.Logf)
+		onRefresh := PersistOnRefresh(filepath.Join(root, "gollm-test.json"), "anthropic", t.Logf, secrets)
 		opts = append(opts, anthropic.WithOAuth(providerCfg.Auth, onRefresh))
 	} else {
 		opts = append(opts, anthropic.WithAPIKey(providerCfg.Auth.Key))
@@ -76,18 +81,10 @@ func TestLiveAnthropic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("anthropic.New returned error: %v", err)
 	}
-	if *record {
-		t.Cleanup(func() {
-			path := filepath.Join(root, "internal", "e2e", "fixtures", "anthropic", "live.json")
-			if err := WriteFixture(path, captures, providerCfg.Auth.Key, providerCfg.Auth.Access, providerCfg.Auth.Refresh, providerCfg.Auth.AccountID, os.Getenv("ANTHROPIC_API_KEY")); err != nil {
-				t.Fatalf("WriteFixture returned error: %v", err)
-			}
-		})
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
-	RunScenarios(ctx, t, p, model, []Scenario{
+	ctx = RecordingContext(ctx, captures, secrets)
+	scenarioReport = RunScenarios(ctx, t, p, model, []Scenario{
 		{Name: "chat", Run: liveChatScenario},
 		{Name: "stream", Capability: llm.CapabilityStreaming, Run: liveStreamScenario},
 		{Name: "models", Capability: llm.CapabilityModelsListing, Run: liveModelsScenario},

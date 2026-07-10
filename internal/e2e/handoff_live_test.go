@@ -17,6 +17,11 @@ import (
 	"github.com/pkieltyka/go-llm/providers/vllm"
 )
 
+func recordingSecrets(ctx context.Context) *SecretSet {
+	secrets, _ := ctx.Value(recordingSecretsContextKey{}).(*SecretSet)
+	return secrets
+}
+
 // liveCrossProviderHandoffScenario implements ARCH §9's cross-provider
 // handoff check: a tool-using conversation started on the scenario's provider
 // is round-tripped through the canonical persistence envelope
@@ -26,7 +31,11 @@ import (
 // (no 400) and produces a sane completion.
 func liveCrossProviderHandoffScenario(ctx context.Context, t *testing.T, source llm.Provider, model string) {
 	t.Helper()
-	target, targetModel := handoffContinuationProvider(t, source.Name())
+	secrets := recordingSecrets(ctx)
+	if secrets == nil {
+		t.Fatal("cross-provider handoff requires a recording secret set in context")
+	}
+	target, targetModel := handoffContinuationProvider(t, source.Name(), secrets)
 	t.Logf("handoff: %s(%s) -> %s(%s)", source.Name(), model, target.Name(), targetModel)
 
 	tools := []llm.Tool{{
@@ -100,7 +109,7 @@ func liveCrossProviderHandoffScenario(ctx context.Context, t *testing.T, source 
 // handoffContinuationProvider builds the first configured provider other than
 // sourceName, in a fixed priority order. It skips the scenario visibly when
 // fewer than two providers are configured.
-func handoffContinuationProvider(t *testing.T, sourceName string) (llm.Provider, string) {
+func handoffContinuationProvider(t *testing.T, sourceName string, secrets *SecretSet) (llm.Provider, string) {
 	t.Helper()
 	root, err := RepoRoot(".")
 	if err != nil {
@@ -114,7 +123,7 @@ func handoffContinuationProvider(t *testing.T, sourceName string) (llm.Provider,
 		if name == sourceName {
 			continue
 		}
-		provider, model, ok := handoffProvider(t, root, cfg, name)
+		provider, model, ok := handoffProvider(t, root, cfg, name, secrets)
 		if !ok {
 			continue
 		}
@@ -124,7 +133,7 @@ func handoffContinuationProvider(t *testing.T, sourceName string) (llm.Provider,
 	return nil, ""
 }
 
-func handoffProvider(t *testing.T, root string, cfg Config, name string) (llm.Provider, string, bool) {
+func handoffProvider(t *testing.T, root string, cfg Config, name string, secrets *SecretSet) (llm.Provider, string, bool) {
 	t.Helper()
 	switch name {
 	case "anthropic":
@@ -132,7 +141,7 @@ func handoffProvider(t *testing.T, root string, cfg Config, name string) (llm.Pr
 		opts := []anthropic.Option{anthropic.WithMaxRetries(0)}
 		switch {
 		case providerCfg.Auth.Type == "oauth" && providerCfg.Auth.Access != "":
-			onRefresh := PersistOnRefresh(filepath.Join(root, "gollm-test.json"), "anthropic", t.Logf)
+			onRefresh := PersistOnRefresh(filepath.Join(root, "gollm-test.json"), "anthropic", t.Logf, secrets)
 			opts = append(opts, anthropic.WithOAuth(providerCfg.Auth, onRefresh))
 		case providerCfg.Auth.Key != "":
 			opts = append(opts, anthropic.WithAPIKey(providerCfg.Auth.Key))
@@ -187,7 +196,7 @@ func handoffProvider(t *testing.T, root string, cfg Config, name string) (llm.Pr
 		if providerCfg.Auth.Type != "oauth" || providerCfg.Auth.Access == "" {
 			return nil, "", false
 		}
-		onRefresh := PersistOnRefresh(filepath.Join(root, "gollm-test.json"), "openai-codex", t.Logf)
+		onRefresh := PersistOnRefresh(filepath.Join(root, "gollm-test.json"), "openai-codex", t.Logf, secrets)
 		opts := []openaicodex.Option{
 			openaicodex.WithOAuth(providerCfg.Auth, onRefresh),
 			openaicodex.WithMaxRetries(0),

@@ -189,6 +189,9 @@ func isStreamExchange(exchange RecordedExchange) bool {
 
 func replayOne(t *testing.T, exchange RecordedExchange, profile ReplayProfile) {
 	t.Helper()
+	if exchange.Incomplete != "" {
+		t.Skipf("exchange recording is incomplete: %s", exchange.Incomplete)
+	}
 	if exchange.Err != "" || exchange.Status == 0 {
 		t.Skipf("exchange recorded a transport error: %s", exchange.Err)
 	}

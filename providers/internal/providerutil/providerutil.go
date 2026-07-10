@@ -21,46 +21,33 @@ import (
 // request headers.
 const CustomHeadersEnv = "OPENAI_CUSTOM_HEADERS"
 
-// AmbientCustomHeaderDeleteOptions neutralizes headers the OpenAI SDK would
-// silently inject from OPENAI_CUSTOM_HEADERS. Authorization is skipped: the
-// providers own auth wiring and always overwrite it explicitly.
+// AmbientCustomHeaderDeleteOptions removes ambient Authorization before a
+// provider applies its own authentication. Other OPENAI_CUSTOM_HEADERS values
+// remain available to callers.
 func AmbientCustomHeaderDeleteOptions() []sdkoption.RequestOption {
-	keys := CustomHeaderKeys(os.Getenv(CustomHeadersEnv))
-	opts := make([]sdkoption.RequestOption, 0, len(keys))
-	for _, key := range keys {
-		if strings.EqualFold(key, "Authorization") {
-			continue
-		}
-		opts = append(opts, sdkoption.WithHeaderDel(key))
-	}
-	return opts
+	return []sdkoption.RequestOption{sdkoption.WithHeaderDel("Authorization")}
 }
 
-// CustomHeaderKeys parses the OPENAI_CUSTOM_HEADERS format ("Name: value"
-// lines) into deduplicated canonical header names.
-func CustomHeaderKeys(raw string) []string {
-	if raw == "" {
-		return nil
-	}
-	var keys []string
-	seen := map[string]struct{}{}
-	for _, line := range strings.Split(raw, "\n") {
-		name, _, ok := strings.Cut(line, ":")
+// AmbientCustomHeaders returns non-authentication headers supplied through
+// OPENAI_CUSTOM_HEADERS. Direct transports use it to match SDK-backed paths
+// without inheriting an ambient bearer credential.
+func AmbientCustomHeaders() http.Header {
+	headers := http.Header{}
+	for _, line := range strings.Split(os.Getenv(CustomHeadersEnv), "\n") {
+		name, value, ok := strings.Cut(line, ":")
 		if !ok {
 			continue
 		}
-		key := http.CanonicalHeaderKey(strings.TrimSpace(name))
-		if key == "" {
+		name = http.CanonicalHeaderKey(strings.TrimSpace(name))
+		if name == "" || strings.EqualFold(name, "Authorization") {
 			continue
 		}
-		normalized := strings.ToLower(key)
-		if _, exists := seen[normalized]; exists {
-			continue
-		}
-		seen[normalized] = struct{}{}
-		keys = append(keys, key)
+		headers.Set(name, strings.TrimSpace(value))
 	}
-	return keys
+	if len(headers) == 0 {
+		return nil
+	}
+	return headers
 }
 
 // ObservedHTTPClient wraps client's transport with retry Warn logging and

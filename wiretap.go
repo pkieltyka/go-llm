@@ -2,14 +2,20 @@ package llm
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
-const defaultWireCaptureBodyLimit = 8 << 20
+const (
+	defaultWireCaptureBodyLimit = 8 << 20
+	wireCaptureTailLimit        = 4 << 10
+)
 
 var redactedHeaderNames = map[string]struct{}{
 	"authorization":       {},
@@ -35,6 +41,43 @@ type WireCapture struct {
 	StartedAt       time.Time
 	Duration        time.Duration
 	Err             error
+	// ResponseIncomplete reports that the body was closed before EOF. It is
+	// capture metadata only; WireTap never turns an early consumer close into
+	// a transport error.
+	ResponseIncomplete bool
+}
+
+// WireCaptureTracker exposes completion state for one WireTap transport.
+// Recorders register trackers through WithWireCaptureObserver so even the
+// first abandoned response remains visible when no capture callback fires.
+type WireCaptureTracker struct {
+	responseBodies *atomic.Int64
+}
+
+// OutstandingResponseBodies reports bodies that have not reached EOF or
+// Close.
+func (t WireCaptureTracker) OutstandingResponseBodies() int64 {
+	if t.responseBodies == nil {
+		return 0
+	}
+	return t.responseBodies.Load()
+}
+
+// WireCaptureObserver receives every WireTap tracker used by requests in its
+// context. Implementations must be safe for concurrent calls.
+type WireCaptureObserver interface {
+	ObserveWireCaptureTracker(WireCaptureTracker)
+}
+
+type wireCaptureObserverContextKey struct{}
+
+// WithWireCaptureObserver associates a tracker observer with ctx. Providers
+// preserve request contexts across SDK and direct-stream transports.
+func WithWireCaptureObserver(ctx context.Context, observer WireCaptureObserver) context.Context {
+	if observer == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, wireCaptureObserverContextKey{}, observer)
 }
 
 // WireCaptureToLogger adapts wire captures into slog debug records.
@@ -56,6 +99,9 @@ func WireCaptureToLogger(l *slog.Logger) func(WireCapture) {
 		}
 		if c.Err != nil {
 			attrs = append(attrs, "error", c.Err.Error())
+		}
+		if c.ResponseIncomplete {
+			attrs = append(attrs, "response_incomplete", true)
 		}
 		l.Debug("llm wire capture", attrs...)
 	}
@@ -99,9 +145,15 @@ type wireTapTransport struct {
 	provider  string
 	capture   func(WireCapture)
 	bodyLimit int
+	responses atomic.Int64
 }
 
 func (t *wireTapTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	tracker := WireCaptureTracker{responseBodies: &t.responses}
+	t.responses.Add(1)
+	if observer, ok := req.Context().Value(wireCaptureObserverContextKey{}).(WireCaptureObserver); ok {
+		observer.ObserveWireCaptureTracker(tracker)
+	}
 	start := time.Now()
 	capture := WireCapture{
 		Provider:       t.provider,
@@ -117,6 +169,7 @@ func (t *wireTapTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 			capture.Duration = time.Since(start)
 			capture.Err = err
 			t.capture(capture)
+			t.responses.Add(-1)
 			return nil, err
 		}
 		_ = req.Body.Close()
@@ -131,6 +184,7 @@ func (t *wireTapTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		capture.Duration = time.Since(start)
 		capture.Err = err
 		t.capture(capture)
+		t.responses.Add(-1)
 		return nil, err
 	}
 	capture.Status = resp.StatusCode
@@ -138,55 +192,125 @@ func (t *wireTapTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	if resp.Body == nil {
 		capture.Duration = time.Since(start)
 		t.capture(capture)
+		t.responses.Add(-1)
 		return resp, nil
 	}
 
 	resp.Body = &captureBody{
-		body:    resp.Body,
-		limit:   t.bodyLimit,
-		start:   start,
-		capture: capture,
-		fn:      t.capture,
+		body:           resp.Body,
+		limit:          t.bodyLimit,
+		expectedLength: resp.ContentLength,
+		start:          start,
+		capture:        capture,
+		fn:             t.capture,
+		outstanding:    &t.responses,
 	}
 	return resp, nil
 }
 
 type captureBody struct {
-	body    io.ReadCloser
-	limit   int
-	start   time.Time
-	capture WireCapture
-	fn      func(WireCapture)
-	buf     bytes.Buffer
-	closed  bool
-	trunc   bool
+	body           io.ReadCloser
+	limit          int
+	expectedLength int64
+	start          time.Time
+	capture        WireCapture
+	fn             func(WireCapture)
+	outstanding    *atomic.Int64
+	buf            bytes.Buffer
+	tail           []byte
+	read           int64
+	finalizeOnce   sync.Once
+	trunc          bool
 }
 
 func (b *captureBody) Read(p []byte) (int, error) {
 	n, err := b.body.Read(p)
 	if n > 0 {
 		b.write(p[:n])
+		b.read += int64(n)
+	}
+	if err != nil {
+		if err == io.EOF {
+			b.finalize(true, nil)
+		} else {
+			b.finalize(false, err)
+		}
 	}
 	return n, err
 }
 
 func (b *captureBody) Close() error {
 	err := b.body.Close()
-	if b.closed {
-		return err
+	complete := b.expectedLength >= 0 && b.read >= b.expectedLength
+	if !complete {
+		complete = hasTerminalSSEDone(b.capture.ResponseHeaders, b.tail)
 	}
-	b.closed = true
-	b.capture.ResponseBody = append([]byte(nil), b.buf.Bytes()...)
-	b.capture.Duration = time.Since(b.start)
-	b.capture.Err = err
-	b.fn(b.capture)
+	b.finalize(complete, err)
 	return err
+}
+
+func (b *captureBody) finalize(complete bool, err error) {
+	b.finalizeOnce.Do(func() {
+		b.capture.ResponseBody = append([]byte(nil), b.buf.Bytes()...)
+		b.capture.Duration = time.Since(b.start)
+		b.capture.Err = err
+		b.capture.ResponseIncomplete = !complete
+		b.fn(b.capture)
+		// Publishing the capture happens-before zero outstanding becomes
+		// observable to a recorder snapshot.
+		b.outstanding.Add(-1)
+	})
+}
+
+func hasTerminalSSEDone(headers http.Header, body []byte) bool {
+	if !strings.Contains(strings.ToLower(headers.Get("Content-Type")), "text/event-stream") {
+		return false
+	}
+	normalized := strings.ReplaceAll(string(body), "\r\n", "\n")
+	normalized = strings.ReplaceAll(normalized, "\r", "\n")
+	events := strings.Split(normalized, "\n\n")
+	if len(events) < 2 {
+		return false
+	}
+	terminal := false
+	for _, event := range events[:len(events)-1] {
+		data := make([]string, 0, 2)
+		for _, line := range strings.Split(event, "\n") {
+			if value, ok := wireSSEDataLineValue(line); ok {
+				data = append(data, value)
+			}
+		}
+		if len(data) > 0 {
+			terminal = strings.Join(data, "\n") == "[DONE]"
+		}
+	}
+	for _, line := range strings.Split(events[len(events)-1], "\n") {
+		if _, ok := wireSSEDataLineValue(line); ok {
+			return false
+		}
+	}
+	return terminal
+}
+
+func wireSSEDataLineValue(line string) (string, bool) {
+	if line == "data" {
+		return "", true
+	}
+	if !strings.HasPrefix(line, "data:") {
+		return "", false
+	}
+	value := strings.TrimPrefix(line, "data:")
+	if strings.HasPrefix(value, " ") {
+		value = strings.TrimPrefix(value, " ")
+	}
+	return value, true
 }
 
 func (b *captureBody) write(p []byte) {
 	if len(p) == 0 {
 		return
 	}
+	b.writeTail(p)
 	if b.buf.Len() >= b.limit {
 		b.markTruncated()
 		return
@@ -198,6 +322,19 @@ func (b *captureBody) write(p []byte) {
 		return
 	}
 	b.buf.Write(p)
+}
+
+func (b *captureBody) writeTail(p []byte) {
+	if len(p) >= wireCaptureTailLimit {
+		b.tail = append(b.tail[:0], p[len(p)-wireCaptureTailLimit:]...)
+		return
+	}
+	overflow := len(b.tail) + len(p) - wireCaptureTailLimit
+	if overflow > 0 {
+		copy(b.tail, b.tail[overflow:])
+		b.tail = b.tail[:len(b.tail)-overflow]
+	}
+	b.tail = append(b.tail, p...)
 }
 
 func (b *captureBody) markTruncated() {

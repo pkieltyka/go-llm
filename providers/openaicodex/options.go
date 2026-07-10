@@ -29,23 +29,25 @@ const (
 type Option func(*config)
 
 type config struct {
-	oauthCred   llm.AuthCredential
-	onRefresh   func(llm.AuthCredential)
-	baseURL     string
-	httpClient  *http.Client
-	maxRetries  *int
-	timeout     time.Duration
-	priceTable  llm.PriceTable
-	logger      *slog.Logger
-	wireCapture func(llm.WireCapture)
-	tokenURL    string
-	originator  string
+	oauthCred     llm.AuthCredential
+	onRefresh     func(llm.AuthCredential)
+	baseURL       string
+	httpClient    *http.Client
+	maxRetries    *int
+	timeout       time.Duration
+	priceTable    llm.PriceTable
+	logger        *slog.Logger
+	wireCapture   func(llm.WireCapture)
+	tokenURL      string
+	originator    string
+	customHeaders http.Header
 }
 
 func defaultConfig() config {
 	return config{
-		httpClient: llm.DefaultHTTPClient(),
-		originator: defaultOriginator,
+		httpClient:    llm.DefaultHTTPClient(),
+		originator:    defaultOriginator,
+		customHeaders: providerutil.AmbientCustomHeaders(),
 	}
 }
 
@@ -135,15 +137,17 @@ func (c config) sdkOptions(source *provideroauth.Source) []sdkoption.RequestOpti
 		sdkoption.WithHTTPClient(c.observedHTTPClient()),
 		sdkoption.WithBaseURL(codexBaseURL(c.baseURL)),
 		sdkoption.WithAdminAPIKey(""),
-		sdkoption.WithAPIKey("oauth"),
 		sdkoption.WithHeaderDel(organizationHeader),
 		sdkoption.WithHeaderDel(projectHeader),
+	}
+	opts = append(opts, providerutil.AmbientCustomHeaderDeleteOptions()...)
+	opts = append(opts,
+		sdkoption.WithAPIKey("oauth"),
 		sdkoption.WithHeader("User-Agent", defaultCodexUserAgent),
 		sdkoption.WithMiddleware(func(req *http.Request, next sdkoption.MiddlewareNext) (*http.Response, error) {
 			return provideroauth.DoWithAuthRetry(req, provideroauth.MiddlewareNext(next), source, c.applyOAuthHeaders)
 		}),
-	}
-	opts = append(opts, providerutil.AmbientCustomHeaderDeleteOptions()...)
+	)
 	if c.maxRetries != nil {
 		opts = append(opts, sdkoption.WithMaxRetries(*c.maxRetries))
 	}
@@ -176,6 +180,13 @@ func (c config) directTransport(source *provideroauth.Source) codexTransport {
 }
 
 func (c config) applyCodexHeaders(req *http.Request) {
+	for name, values := range c.customHeaders {
+		for _, value := range values {
+			req.Header.Add(name, value)
+		}
+	}
+	req.Header.Del(organizationHeader)
+	req.Header.Del(projectHeader)
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("OpenAI-Beta", "responses=experimental")

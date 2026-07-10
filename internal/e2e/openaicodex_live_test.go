@@ -40,16 +40,20 @@ func TestLiveOpenAICodex(t *testing.T) {
 		model = openAICodexCheapModel
 	}
 
-	var captures []llm.WireCapture
+	captures := &CaptureLog{}
+	secrets := NewSecretSet(providerCfg.Auth.Access, providerCfg.Auth.Refresh, providerCfg.Auth.AccountID, os.Getenv("OPENAI_API_KEY"))
+	var scenarioReport ScenarioReport
+	if *record {
+		path := filepath.Join(root, "internal", "e2e", "fixtures", "openai-codex", "live.json")
+		ScheduleFixtureRecording(t, path, captures, secrets, &scenarioReport, *recordAllowIncomplete)
+	}
 	// Persist rotated refresh tokens back to gollm-test.json — dropping them
 	// strands the stored credential after the provider refreshes.
-	onRefresh := PersistOnRefresh(filepath.Join(root, "gollm-test.json"), "openai-codex", t.Logf)
+	onRefresh := PersistOnRefresh(filepath.Join(root, "gollm-test.json"), "openai-codex", t.Logf, secrets)
 	opts := []openaicodex.Option{
 		openaicodex.WithOAuth(providerCfg.Auth, onRefresh),
 		openaicodex.WithMaxRetries(0),
-		openaicodex.WithWireCapture(func(c llm.WireCapture) {
-			captures = append(captures, c)
-		}),
+		openaicodex.WithWireCapture(captures.Capture),
 	}
 	if providerCfg.BaseURL != "" {
 		opts = append(opts, openaicodex.WithBaseURL(providerCfg.BaseURL))
@@ -58,24 +62,16 @@ func TestLiveOpenAICodex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openaicodex.New returned error: %v", err)
 	}
-	if *record {
-		t.Cleanup(func() {
-			path := filepath.Join(root, "internal", "e2e", "fixtures", "openai-codex", "live.json")
-			if err := WriteFixture(path, captures, providerCfg.Auth.Access, providerCfg.Auth.Refresh, providerCfg.Auth.AccountID, os.Getenv("OPENAI_API_KEY")); err != nil {
-				t.Fatalf("WriteFixture returned error: %v", err)
-			}
-		})
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
+	ctx = RecordingContext(ctx, captures, secrets)
 	if err := liveOpenAICodexAuthPreflight(ctx, p, model); err != nil {
 		if errors.Is(err, llm.ErrAuth) {
 			t.Skipf("OpenAI Codex OAuth credential is invalid or expired: %v", err)
 		}
 		t.Fatalf("OpenAI Codex auth preflight returned error: %v", err)
 	}
-	RunScenarios(ctx, t, p, model, []Scenario{
+	scenarioReport = RunScenarios(ctx, t, p, model, []Scenario{
 		{Name: "chat", Run: liveChatScenario},
 		{Name: "stream", Capability: llm.CapabilityStreaming, Run: liveStreamScenario},
 		{Name: "models", Capability: llm.CapabilityModelsListing, Run: liveModelsScenario},

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	llm "github.com/pkieltyka/go-llm"
@@ -31,7 +32,7 @@ func TestPersistRefreshedCredentialPreservesOtherEntriesAndUnknownFields(t *test
 		t.Fatalf("write fixture: %v", err)
 	}
 
-	persist := PersistOnRefresh(path, "openai-codex", t.Logf)
+	persist := PersistOnRefresh(path, "openai-codex", t.Logf, NewSecretSet())
 	persist(llm.AuthCredential{
 		Type:      "oauth",
 		Access:    "fake-new-access",
@@ -151,4 +152,37 @@ func TestPersistRefreshedCredentialKeepsRefreshWhenRotatedEmpty(t *testing.T) {
 	if auth["openai-codex"].Access != "fake-new" || auth["openai-codex"].Refresh != "fake-keep-refresh" {
 		t.Fatalf("credential = %+v", auth["openai-codex"])
 	}
+}
+
+func TestPersistOnRefreshAddsEveryRotatedCredentialToSecretSet(t *testing.T) {
+	secrets := NewSecretSet("initial-secret")
+	var logged bool
+	persist := PersistOnRefresh(filepath.Join(t.TempDir(), "missing", "credentials.json"), "openai-codex", func(string, ...any) {
+		logged = true
+	}, secrets)
+	rotated := llm.AuthCredential{
+		Key:       "rotated-key-secret",
+		Access:    "rotated-access-secret",
+		Refresh:   "rotated-refresh-secret",
+		AccountID: "rotated-account-secret",
+	}
+	persist(rotated)
+	if !logged {
+		t.Fatal("persistence failure was not logged")
+	}
+	values := strings.Join(secrets.Values(), "\n")
+	for _, want := range []string{"initial-secret", rotated.Key, rotated.Access, rotated.Refresh, rotated.AccountID} {
+		if !strings.Contains(values, want) {
+			t.Fatalf("secret set %q missing %q", values, want)
+		}
+	}
+}
+
+func TestPersistOnRefreshRequiresSecretSet(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("PersistOnRefresh accepted a nil recording secret set")
+		}
+	}()
+	PersistOnRefresh("unused", "openai-codex", nil, nil)
 }

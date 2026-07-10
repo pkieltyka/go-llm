@@ -22,8 +22,12 @@ var persistMu sync.Mutex
 //
 // Failures are reported through logf (when non-nil) rather than aborting the
 // calling request.
-func PersistOnRefresh(path, provider string, logf func(format string, args ...any)) func(llm.AuthCredential) {
+func PersistOnRefresh(path, provider string, logf func(format string, args ...any), secrets *SecretSet) func(llm.AuthCredential) {
+	if secrets == nil {
+		panic("e2e: PersistOnRefresh requires a recording secret set")
+	}
 	return func(cred llm.AuthCredential) {
+		secrets.AddCredential(cred)
 		if err := persistRefreshedCredential(path, provider, cred); err != nil && logf != nil {
 			logf("persist refreshed %s credential to %s: %v", provider, path, err)
 		}

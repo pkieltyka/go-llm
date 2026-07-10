@@ -16,6 +16,7 @@ import (
 
 	llm "github.com/pkieltyka/go-llm"
 	"github.com/pkieltyka/go-llm/internal/testutil"
+	"github.com/pkieltyka/go-llm/providers/internal/providerutil"
 )
 
 func TestOpenAICodexBuildRequestGolden(t *testing.T) {
@@ -179,6 +180,7 @@ func TestOpenAICodexReasoningReplayIsolation(t *testing.T) {
 }
 
 func TestOpenAICodexHeadersAndRetry(t *testing.T) {
+	t.Setenv(providerutil.CustomHeadersEnv, "Authorization: Bearer ambient-secret\nX-Ambient-Safe: retained")
 	oldAccess := fakeCodexJWT(t, "acct-old")
 	newAccess := fakeCodexJWT(t, "acct-new")
 	var authHeaders []string
@@ -187,6 +189,7 @@ func TestOpenAICodexHeadersAndRetry(t *testing.T) {
 	var accepts []string
 	var betas []string
 	var userAgents []string
+	var ambientHeaders []string
 	var refreshForm string
 	var refreshed llm.AuthCredential
 	var requestBodies []string
@@ -199,6 +202,7 @@ func TestOpenAICodexHeadersAndRetry(t *testing.T) {
 			body, _ := io.ReadAll(r.Body)
 			requestBodies = append(requestBodies, string(body))
 			authHeaders = append(authHeaders, r.Header.Get("Authorization"))
+			ambientHeaders = append(ambientHeaders, r.Header.Get("X-Ambient-Safe"))
 			accountHeaders = append(accountHeaders, r.Header.Get(accountIDHeader))
 			originators = append(originators, r.Header.Get(originatorHeader))
 			accepts = append(accepts, r.Header.Get("Accept"))
@@ -245,23 +249,43 @@ func TestOpenAICodexHeadersAndRetry(t *testing.T) {
 	if resp.Text() != "pong" {
 		t.Fatalf("response text = %q", resp.Text())
 	}
-	if !reflect.DeepEqual(authHeaders, []string{"Bearer " + oldAccess, "Bearer " + newAccess}) {
+	streamed, err := llm.Collect(p.ChatStream(context.Background(), &llm.Request{
+		Model:    "gpt-5.4-mini",
+		Messages: []llm.Message{llm.UserText("ping")},
+	}))
+	if err != nil {
+		t.Fatalf("ChatStream returned error: %v", err)
+	}
+	if streamed.Text() != "pong" {
+		t.Fatalf("stream response text = %q", streamed.Text())
+	}
+	models, err := p.Models(context.Background())
+	if err != nil {
+		t.Fatalf("Models returned error: %v", err)
+	}
+	if len(models) == 0 {
+		t.Fatal("Models returned no curated models")
+	}
+	if !reflect.DeepEqual(authHeaders, []string{"Bearer " + oldAccess, "Bearer " + newAccess, "Bearer " + newAccess}) {
 		t.Fatalf("Authorization headers = %+v", authHeaders)
 	}
-	if !reflect.DeepEqual(accountHeaders, []string{"acct-old", "acct-new"}) {
+	if !reflect.DeepEqual(accountHeaders, []string{"acct-old", "acct-new", "acct-new"}) {
 		t.Fatalf("account headers = %+v", accountHeaders)
 	}
-	if !reflect.DeepEqual(originators, []string{defaultOriginator, defaultOriginator}) {
+	if !reflect.DeepEqual(originators, []string{defaultOriginator, defaultOriginator, defaultOriginator}) {
 		t.Fatalf("originators = %+v", originators)
 	}
-	if !reflect.DeepEqual(accepts, []string{"text/event-stream", "text/event-stream"}) {
+	if !reflect.DeepEqual(accepts, []string{"text/event-stream", "text/event-stream", "text/event-stream"}) {
 		t.Fatalf("Accept headers = %+v", accepts)
 	}
-	if !reflect.DeepEqual(betas, []string{"responses=experimental", "responses=experimental"}) {
+	if !reflect.DeepEqual(betas, []string{"responses=experimental", "responses=experimental", "responses=experimental"}) {
 		t.Fatalf("OpenAI-Beta headers = %+v", betas)
 	}
-	if !reflect.DeepEqual(userAgents, []string{defaultCodexUserAgent, defaultCodexUserAgent}) {
+	if !reflect.DeepEqual(userAgents, []string{defaultCodexUserAgent, defaultCodexUserAgent, defaultCodexUserAgent}) {
 		t.Fatalf("User-Agent headers = %+v", userAgents)
+	}
+	if !reflect.DeepEqual(ambientHeaders, []string{"retained", "retained", "retained"}) {
+		t.Fatalf("X-Ambient-Safe headers = %+v", ambientHeaders)
 	}
 	for _, body := range requestBodies {
 		if !jsonFieldBool(t, body, "stream") {

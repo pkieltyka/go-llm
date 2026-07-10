@@ -16,6 +16,27 @@ import (
 	"github.com/pkieltyka/go-llm/llmtest"
 )
 
+type wireCaptureTrackerObserver struct {
+	mu       sync.Mutex
+	trackers []llm.WireCaptureTracker
+}
+
+func (o *wireCaptureTrackerObserver) ObserveWireCaptureTracker(tracker llm.WireCaptureTracker) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.trackers = append(o.trackers, tracker)
+}
+
+func (o *wireCaptureTrackerObserver) first(t *testing.T) llm.WireCaptureTracker {
+	t.Helper()
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if len(o.trackers) == 0 {
+		t.Fatal("no WireTap tracker was observed")
+	}
+	return o.trackers[0]
+}
+
 func TestUsageTrackerAggregatesChatAndStream(t *testing.T) {
 	p := llmtest.New(llmtest.WithName("fake"))
 	for i := 0; i < 16; i++ {
@@ -226,6 +247,264 @@ func TestNewWireTapRedactsAndCapturesBody(t *testing.T) {
 	}
 	if string(capture.RequestBody) != `{"prompt":"hi"}` || string(capture.ResponseBody) != "data: hello\n\n" {
 		t.Fatalf("capture bodies = request %q response %q", capture.RequestBody, capture.ResponseBody)
+	}
+}
+
+func TestWireTapFinalizesResponseCaptureAtEOF(t *testing.T) {
+	var captures []llm.WireCapture
+	rt := testutil.RoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			ContentLength: -1,
+			Body:          io.NopCloser(strings.NewReader("complete response")),
+		}, nil
+	})
+	client := &http.Client{Transport: llm.NewWireTap(rt, "fake", func(c llm.WireCapture) {
+		captures = append(captures, c)
+	})}
+
+	resp, err := client.Get("https://example.test/stream")
+	if err != nil {
+		t.Fatalf("Get returned error: %v", err)
+	}
+	if _, err := io.ReadAll(resp.Body); err != nil {
+		t.Fatalf("ReadAll returned error: %v", err)
+	}
+	if len(captures) != 1 {
+		t.Fatalf("captures after EOF = %d, want 1", len(captures))
+	}
+	if captures[0].ResponseIncomplete || captures[0].Err != nil {
+		t.Fatalf("EOF capture = %+v", captures[0])
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+	if len(captures) != 1 {
+		t.Fatalf("captures after Close = %d, want no duplicate", len(captures))
+	}
+}
+
+func TestWireTapEarlyCloseIsIncompleteWithoutConsumerError(t *testing.T) {
+	var captures []llm.WireCapture
+	rt := testutil.RoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			ContentLength: -1,
+			Body:          io.NopCloser(strings.NewReader("stream response")),
+		}, nil
+	})
+	client := &http.Client{Transport: llm.NewWireTap(rt, "fake", func(c llm.WireCapture) {
+		captures = append(captures, c)
+	})}
+
+	resp, err := client.Get("https://example.test/stream")
+	if err != nil {
+		t.Fatalf("Get returned error: %v", err)
+	}
+	buf := make([]byte, 1)
+	if n, err := resp.Body.Read(buf); err != nil || n != 1 {
+		t.Fatalf("Read = %d, %v", n, err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("early Close returned error: %v", err)
+	}
+	if len(captures) != 1 {
+		t.Fatalf("captures = %d, want 1", len(captures))
+	}
+	if !captures[0].ResponseIncomplete || captures[0].Err != nil {
+		t.Fatalf("early-close capture = %+v", captures[0])
+	}
+	if got := string(captures[0].ResponseBody); got != "s" {
+		t.Fatalf("captured response prefix = %q, want s", got)
+	}
+}
+
+func TestWireTapCappedSSEDoneTailIsCompleteOnClose(t *testing.T) {
+	var captures []llm.WireCapture
+	body := strings.Repeat("data: {\"delta\":\"0123456789\"}\n\n", 8) + "data: [DONE]\n\n"
+	rt := testutil.RoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			ContentLength: -1,
+			Header:        http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:          io.NopCloser(strings.NewReader(body)),
+		}, nil
+	})
+	client := &http.Client{Transport: llm.NewWireTap(rt, "fake", func(c llm.WireCapture) {
+		captures = append(captures, c)
+	}, llm.WithWireTapBodyLimit(24))}
+
+	resp, err := client.Get("https://example.test/stream")
+	if err != nil {
+		t.Fatalf("Get returned error: %v", err)
+	}
+	read := make([]byte, len(body))
+	if _, err := io.ReadFull(resp.Body, read); err != nil {
+		t.Fatalf("ReadFull returned error: %v", err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+	if len(captures) != 1 {
+		t.Fatalf("captures = %d, want 1", len(captures))
+	}
+	if captures[0].ResponseIncomplete || captures[0].Err != nil {
+		t.Fatalf("capped terminal [DONE] capture = %+v", captures[0])
+	}
+	if strings.Contains(string(captures[0].ResponseBody), "[DONE]") || !strings.HasSuffix(string(captures[0].ResponseBody), "\n[truncated]") {
+		t.Fatalf("captured body did not remain a capped prefix: %q", captures[0].ResponseBody)
+	}
+}
+
+func TestWireTapRejectsMalformedSSEDoneOnClose(t *testing.T) {
+	for name, body := range map[string]string{
+		"leading_whitespace": " data: [DONE]\n\n",
+		"unterminated_event": "data: [DONE]\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			var captures []llm.WireCapture
+			rt := testutil.RoundTripFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode:    http.StatusOK,
+					ContentLength: -1,
+					Header:        http.Header{"Content-Type": []string{"text/event-stream"}},
+					Body:          io.NopCloser(strings.NewReader(body)),
+				}, nil
+			})
+			client := &http.Client{Transport: llm.NewWireTap(rt, "fake", func(c llm.WireCapture) {
+				captures = append(captures, c)
+			})}
+			resp, err := client.Get("https://example.test/stream")
+			if err != nil {
+				t.Fatalf("Get returned error: %v", err)
+			}
+			read := make([]byte, len(body))
+			if _, err := io.ReadFull(resp.Body, read); err != nil {
+				t.Fatalf("ReadFull returned error: %v", err)
+			}
+			if err := resp.Body.Close(); err != nil {
+				t.Fatalf("Close returned error: %v", err)
+			}
+			if len(captures) != 1 || !captures[0].ResponseIncomplete || captures[0].Err != nil {
+				t.Fatalf("malformed terminal capture = %+v", captures)
+			}
+		})
+	}
+}
+
+func TestWireTapZeroContentLengthIsCompleteOnClose(t *testing.T) {
+	var captures []llm.WireCapture
+	rt := testutil.RoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode:    http.StatusNoContent,
+			ContentLength: 0,
+			Body:          io.NopCloser(strings.NewReader("")),
+		}, nil
+	})
+	client := &http.Client{Transport: llm.NewWireTap(rt, "fake", func(c llm.WireCapture) {
+		captures = append(captures, c)
+	})}
+	resp, err := client.Get("https://example.test/empty")
+	if err != nil {
+		t.Fatalf("Get returned error: %v", err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+	if len(captures) != 1 || captures[0].ResponseIncomplete || captures[0].Err != nil {
+		t.Fatalf("zero-length capture = %+v", captures)
+	}
+}
+
+func TestWireTapTracksOutstandingResponseBodies(t *testing.T) {
+	observer := &wireCaptureTrackerObserver{}
+	rt := testutil.RoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			ContentLength: -1,
+			Body:          io.NopCloser(strings.NewReader("response")),
+		}, nil
+	})
+	client := &http.Client{Transport: llm.NewWireTap(rt, "fake", func(llm.WireCapture) {})}
+	ctx := llm.WithWireCaptureObserver(context.Background(), observer)
+
+	firstReq, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://example.test/first", nil)
+	if err != nil {
+		t.Fatalf("first NewRequestWithContext returned error: %v", err)
+	}
+	first, err := client.Do(firstReq)
+	if err != nil {
+		t.Fatalf("first Get returned error: %v", err)
+	}
+	if _, err := io.ReadAll(first.Body); err != nil {
+		t.Fatalf("first ReadAll returned error: %v", err)
+	}
+	if err := first.Body.Close(); err != nil {
+		t.Fatalf("first Close returned error: %v", err)
+	}
+	secondReq, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://example.test/second", nil)
+	if err != nil {
+		t.Fatalf("second NewRequestWithContext returned error: %v", err)
+	}
+	second, err := client.Do(secondReq)
+	if err != nil {
+		t.Fatalf("second Get returned error: %v", err)
+	}
+	tracker := observer.first(t)
+	if got := tracker.OutstandingResponseBodies(); got != 1 {
+		t.Fatalf("outstanding response bodies = %d, want 1", got)
+	}
+	if err := second.Body.Close(); err != nil {
+		t.Fatalf("second Close returned error: %v", err)
+	}
+	if got := tracker.OutstandingResponseBodies(); got != 0 {
+		t.Fatalf("outstanding response bodies after Close = %d, want 0", got)
+	}
+}
+
+func TestWireTapPublishesCaptureBeforeOutstandingReachesZero(t *testing.T) {
+	observer := &wireCaptureTrackerObserver{}
+	callbackStarted := make(chan struct{})
+	releaseCallback := make(chan struct{})
+	readDone := make(chan error, 1)
+	rt := testutil.RoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			ContentLength: -1,
+			Body:          io.NopCloser(strings.NewReader("complete")),
+		}, nil
+	})
+	client := &http.Client{Transport: llm.NewWireTap(rt, "fake", func(llm.WireCapture) {
+		close(callbackStarted)
+		<-releaseCallback
+	})}
+	ctx := llm.WithWireCaptureObserver(context.Background(), observer)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://example.test/stream", nil)
+	if err != nil {
+		t.Fatalf("NewRequestWithContext returned error: %v", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Do returned error: %v", err)
+	}
+	go func() {
+		_, readErr := io.ReadAll(resp.Body)
+		readDone <- readErr
+	}()
+	<-callbackStarted
+	tracker := observer.first(t)
+	if got := tracker.OutstandingResponseBodies(); got != 1 {
+		t.Fatalf("outstanding during capture publication = %d, want 1", got)
+	}
+	close(releaseCallback)
+	if err := <-readDone; err != nil {
+		t.Fatalf("ReadAll returned error: %v", err)
+	}
+	if got := tracker.OutstandingResponseBodies(); got != 0 {
+		t.Fatalf("outstanding after capture publication = %d, want 0", got)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("Close returned error: %v", err)
 	}
 }
 

@@ -42,12 +42,16 @@ func TestLiveVLLM(t *testing.T) {
 		t.Skip("vLLM base_url missing from gollm-test.json (keyless self-hosted entry)")
 	}
 
-	var captures []llm.WireCapture
+	captures := &CaptureLog{}
+	secrets := NewSecretSet(providerCfg.Auth.Key)
+	var scenarioReport ScenarioReport
+	if *record {
+		path := filepath.Join(root, "internal", "e2e", "fixtures", "vllm", "live.json")
+		ScheduleFixtureRecording(t, path, captures, secrets, &scenarioReport, *recordAllowIncomplete)
+	}
 	opts := []vllmProvider.Option{
 		vllmProvider.WithMaxRetries(0),
-		vllmProvider.WithWireCapture(func(c llm.WireCapture) {
-			captures = append(captures, c)
-		}),
+		vllmProvider.WithWireCapture(captures.Capture),
 	}
 	if providerCfg.Auth.Key != "" {
 		opts = append(opts, vllmProvider.WithAPIKey(providerCfg.Auth.Key))
@@ -56,17 +60,9 @@ func TestLiveVLLM(t *testing.T) {
 	if err != nil {
 		t.Fatalf("vllm.New returned error: %v", err)
 	}
-	if *record {
-		t.Cleanup(func() {
-			path := filepath.Join(root, "internal", "e2e", "fixtures", "vllm", "live.json")
-			if err := WriteFixture(path, captures, providerCfg.Auth.Key); err != nil {
-				t.Fatalf("WriteFixture returned error: %v", err)
-			}
-		})
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
+	ctx = RecordingContext(ctx, captures, secrets)
 
 	modelPreference := providerCfg.Model
 	if modelPreference == "" {
@@ -85,7 +81,7 @@ func TestLiveVLLM(t *testing.T) {
 	// so unset Effort defaults to none through go-llm's own middleware.
 	scenarioProvider := llm.Wrap(p, defaultEffortNoneMiddleware())
 
-	RunScenarios(ctx, t, scenarioProvider, model, []Scenario{
+	scenarioReport = RunScenarios(ctx, t, scenarioProvider, model, []Scenario{
 		{Name: "chat", Run: liveChatScenario},
 		{Name: "stream", Capability: llm.CapabilityStreaming, Run: liveStreamScenario},
 		{Name: "models", Capability: llm.CapabilityModelsListing, Run: liveVLLMModelsScenario},

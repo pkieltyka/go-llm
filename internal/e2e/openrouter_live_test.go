@@ -75,14 +75,18 @@ func TestLiveOpenRouter(t *testing.T) {
 		toolsModel = openRouterToolsModel
 	}
 
-	var captures []llm.WireCapture
+	captures := &CaptureLog{}
+	secrets := NewSecretSet(providerCfg.Auth.Key, os.Getenv("OPENROUTER_API_KEY"))
+	var scenarioReport ScenarioReport
+	if *record {
+		path := filepath.Join(root, "internal", "e2e", "fixtures", "openrouter", "live.json")
+		ScheduleFixtureRecording(t, path, captures, secrets, &scenarioReport, *recordAllowIncomplete)
+	}
 	opts := []openrouterProvider.Option{
 		openrouterProvider.WithAPIKey(providerCfg.Auth.Key),
 		openrouterProvider.WithMaxRetries(0),
 		openrouterProvider.WithAttribution("https://github.com/pkieltyka/go-llm", "go-llm live tests"),
-		openrouterProvider.WithWireCapture(func(c llm.WireCapture) {
-			captures = append(captures, c)
-		}),
+		openrouterProvider.WithWireCapture(captures.Capture),
 	}
 	if providerCfg.BaseURL != "" {
 		opts = append(opts, openrouterProvider.WithBaseURL(providerCfg.BaseURL))
@@ -91,15 +95,6 @@ func TestLiveOpenRouter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openrouter.New returned error: %v", err)
 	}
-	if *record {
-		t.Cleanup(func() {
-			path := filepath.Join(root, "internal", "e2e", "fixtures", "openrouter", "live.json")
-			if err := WriteFixture(path, captures, providerCfg.Auth.Key, os.Getenv("OPENROUTER_API_KEY")); err != nil {
-				t.Fatalf("WriteFixture returned error: %v", err)
-			}
-		})
-	}
-
 	// The pinned qwen3.6 model is hybrid-reasoning and THINKS BY DEFAULT,
 	// starving the generic scenarios' small MaxTokens budgets before any
 	// text is emitted. Default unset Effort to none — exactly how callers
@@ -110,7 +105,8 @@ func TestLiveOpenRouter(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	RunScenarios(ctx, t, scenarioProvider, model, []Scenario{
+	ctx = RecordingContext(ctx, captures, secrets)
+	scenarioReport = RunScenarios(ctx, t, scenarioProvider, model, []Scenario{
 		{Name: "chat", Run: liveChatScenario},
 		{Name: "stream", Capability: llm.CapabilityStreaming, Run: liveStreamScenario},
 		{Name: "models", Capability: llm.CapabilityModelsListing, Run: liveModelsScenario},

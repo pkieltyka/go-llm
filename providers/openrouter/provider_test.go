@@ -729,6 +729,83 @@ func TestOpenRouterModels(t *testing.T) {
 	}
 }
 
+func TestOpenRouterAmbientAuthorizationBoundary(t *testing.T) {
+	t.Setenv(apiKeyEnv, "environment-secret")
+	t.Setenv("OPENAI_CUSTOM_HEADERS", "Authorization: Bearer ambient-secret\nX-Ambient-Safe: retained")
+	var headers []http.Header
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		headers = append(headers, r.Header.Clone())
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/models":
+			mustWrite(t, w, `{"data":[{"id":"openai/gpt-test"}]}`)
+		case r.Header.Get("Accept") == "text/event-stream":
+			w.Header().Set("Content-Type", "text/event-stream")
+			mustWrite(t, w, `data: {"id":"gen_1","model":"openai/gpt-test","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}`+"\n\n")
+			mustWrite(t, w, "data: [DONE]\n\n")
+		default:
+			mustWrite(t, w, `{"id":"gen_1","model":"openai/gpt-test","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+		}
+	}
+	client := &http.Client{Transport: testutil.RoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		recorder := &responseRecorder{header: http.Header{}, status: http.StatusOK}
+		handler(recorder, req)
+		return recorder.response(req), nil
+	})}
+	p, err := New(
+		WithBaseURL("https://openrouter.test"),
+		WithHTTPClient(client),
+		WithMaxRetries(0),
+	)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	// Authentication is resolved at construction; later environment changes
+	// cannot redirect requests to a different ambient credential.
+	t.Setenv(apiKeyEnv, "changed-environment-secret")
+	req := &llm.Request{Model: "openai/gpt-test", Messages: []llm.Message{llm.UserText("hi")}}
+	if _, err := p.Chat(context.Background(), req); err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+	if _, err := llm.Collect(p.ChatStream(context.Background(), req)); err != nil {
+		t.Fatalf("ChatStream returned error: %v", err)
+	}
+	if _, err := p.Models(context.Background()); err != nil {
+		t.Fatalf("Models returned error: %v", err)
+	}
+	if len(headers) != 3 {
+		t.Fatalf("requests = %d, want 3", len(headers))
+	}
+	for i, header := range headers {
+		if got := header.Get("Authorization"); got != "Bearer environment-secret" {
+			t.Fatalf("request %d Authorization = %q", i, got)
+		}
+		if got := header.Get("X-Ambient-Safe"); got != "retained" {
+			t.Fatalf("request %d X-Ambient-Safe = %q", i, got)
+		}
+	}
+}
+
+func TestOpenRouterExplicitEmptyAPIKeyDisablesEnvironmentFallback(t *testing.T) {
+	t.Setenv(apiKeyEnv, "environment-secret")
+	requests := 0
+	client := &http.Client{Transport: testutil.RoundTripFunc(func(*http.Request) (*http.Response, error) {
+		requests++
+		return nil, errors.New("unexpected request")
+	})}
+	_, err := New(
+		WithAPIKey(""),
+		WithBaseURL("https://proxy.example.test"),
+		WithHTTPClient(client),
+	)
+	if !errors.Is(err, llm.ErrAuth) {
+		t.Fatalf("New error = %v, want ErrAuth", err)
+	}
+	if requests != 0 {
+		t.Fatalf("requests = %d, want 0", requests)
+	}
+}
+
 func reasoningPartsOf(resp *llm.Response) []llm.ReasoningPart {
 	var out []llm.ReasoningPart
 	for _, part := range resp.Parts {

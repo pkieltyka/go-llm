@@ -812,20 +812,36 @@ func TestOpenAINewNeutralizesAmbientSDKEnv(t *testing.T) {
 	t.Setenv("OPENAI_ORG_ID", "env-org")
 	t.Setenv("OPENAI_PROJECT_ID", "env-project")
 	t.Setenv("OPENAI_ADMIN_KEY", "env-admin")
-	t.Setenv(customHeadersEnv, "X-Env-Leak: yes\nAuthorization: Bearer custom-secret")
+	t.Setenv(customHeadersEnv, "X-Ambient-Safe: retained\nAuthorization: Bearer custom-secret")
 
-	var sawURL string
-	var sawHeaders http.Header
+	var sawURLs []string
+	var sawHeaders []http.Header
 	client := &http.Client{Transport: testutil.RoundTripFunc(func(req *http.Request) (*http.Response, error) {
-		sawURL = req.URL.String()
-		sawHeaders = req.Header.Clone()
+		sawURLs = append(sawURLs, req.URL.String())
+		sawHeaders = append(sawHeaders, req.Header.Clone())
+		var body []byte
+		if req.Body != nil {
+			body, _ = io.ReadAll(req.Body)
+		}
+		contentType := "application/json"
+		responseBody := ""
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/models"):
+			responseBody = `{"object":"list","data":[{"id":"gpt-test","created":0,"object":"model","owned_by":"openai"}]}`
+		case bytes.Contains(body, []byte(`"stream":true`)):
+			contentType = "text/event-stream"
+			responseBody = "event: response.output_text.delta\n" +
+				`data: {"type":"response.output_text.delta","sequence_number":1,"item_id":"msg_1","output_index":0,"content_index":0,"delta":"pong","logprobs":[]}` + "\n\n" +
+				"event: response.completed\n" +
+				`data: {"type":"response.completed","sequence_number":2,"response":{"id":"resp_1","model":"gpt-test","status":"completed","output":[{"id":"msg_1","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"pong","annotations":[]}]}],"usage":{"input_tokens":1,"input_tokens_details":{"cached_tokens":0},"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":2}}}` + "\n\n"
+		default:
+			responseBody = `{"id":"resp_1","model":"gpt-test","status":"completed","output":[{"id":"msg_1","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"pong","annotations":[]}]}],"usage":{"input_tokens":1,"input_tokens_details":{"cached_tokens":0},"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":2}}`
+		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
-			Header:     http.Header{"Content-Type": []string{"application/json"}},
-			Body: io.NopCloser(strings.NewReader(
-				`{"id":"resp_1","model":"gpt-test","status":"completed","output":[{"id":"msg_1","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"pong","annotations":[]}]}]}`,
-			)),
-			Request: req,
+			Header:     http.Header{"Content-Type": []string{contentType}},
+			Body:       io.NopCloser(strings.NewReader(responseBody)),
+			Request:    req,
 		}, nil
 	})}
 
@@ -843,15 +859,40 @@ func TestOpenAINewNeutralizesAmbientSDKEnv(t *testing.T) {
 	if resp.Text() != "pong" {
 		t.Fatalf("response text = %q", resp.Text())
 	}
-	if sawURL != defaultOpenAIBaseURL+"responses" {
-		t.Fatalf("request URL = %q, want production Responses URL", sawURL)
+	streamed, err := llm.Collect(p.ChatStream(context.Background(), &llm.Request{
+		Model:    "gpt-test",
+		Messages: []llm.Message{llm.UserText("ping")},
+	}))
+	if err != nil {
+		t.Fatalf("ChatStream returned error: %v", err)
 	}
-	if got := sawHeaders.Get("Authorization"); got != "Bearer explicit-secret" {
-		t.Fatalf("Authorization = %q", got)
+	if streamed.Text() != "pong" {
+		t.Fatalf("stream response text = %q", streamed.Text())
 	}
-	for _, key := range []string{organizationHeader, projectHeader, "X-Env-Leak"} {
-		if got := sawHeaders.Get(key); got != "" {
-			t.Fatalf("%s header leaked from SDK env: %q", key, got)
+	models, err := p.Models(context.Background())
+	if err != nil {
+		t.Fatalf("Models returned error: %v", err)
+	}
+	if len(models) != 1 || models[0].ID != "gpt-test" {
+		t.Fatalf("models = %+v", models)
+	}
+	if len(sawHeaders) != 3 {
+		t.Fatalf("requests = %d, want 3", len(sawHeaders))
+	}
+	for i, header := range sawHeaders {
+		if !strings.HasPrefix(sawURLs[i], defaultOpenAIBaseURL) {
+			t.Fatalf("request %d URL = %q, want production base URL", i, sawURLs[i])
+		}
+		if got := header.Get("Authorization"); got != "Bearer explicit-secret" {
+			t.Fatalf("request %d Authorization = %q", i, got)
+		}
+		for _, key := range []string{organizationHeader, projectHeader} {
+			if got := header.Get(key); got != "" {
+				t.Fatalf("request %d %s header leaked from SDK env: %q", i, key, got)
+			}
+		}
+		if got := header.Get("X-Ambient-Safe"); got != "retained" {
+			t.Fatalf("request %d X-Ambient-Safe = %q", i, got)
 		}
 	}
 }

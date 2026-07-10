@@ -41,13 +41,17 @@ func TestLiveOpenAI(t *testing.T) {
 		model = openAICheapModel
 	}
 
-	var captures []llm.WireCapture
+	captures := &CaptureLog{}
+	secrets := NewSecretSet(providerCfg.Auth.Key, os.Getenv("OPENAI_API_KEY"))
+	var scenarioReport ScenarioReport
+	if *record {
+		path := filepath.Join(root, "internal", "e2e", "fixtures", "openai", "live.json")
+		ScheduleFixtureRecording(t, path, captures, secrets, &scenarioReport, *recordAllowIncomplete)
+	}
 	opts := []openaiProvider.Option{
 		openaiProvider.WithAPIKey(providerCfg.Auth.Key),
 		openaiProvider.WithMaxRetries(0),
-		openaiProvider.WithWireCapture(func(c llm.WireCapture) {
-			captures = append(captures, c)
-		}),
+		openaiProvider.WithWireCapture(captures.Capture),
 	}
 	if providerCfg.BaseURL != "" {
 		opts = append(opts, openaiProvider.WithBaseURL(providerCfg.BaseURL))
@@ -56,18 +60,10 @@ func TestLiveOpenAI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openai.New returned error: %v", err)
 	}
-	if *record {
-		t.Cleanup(func() {
-			path := filepath.Join(root, "internal", "e2e", "fixtures", "openai", "live.json")
-			if err := WriteFixture(path, captures, providerCfg.Auth.Key, os.Getenv("OPENAI_API_KEY")); err != nil {
-				t.Fatalf("WriteFixture returned error: %v", err)
-			}
-		})
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
-	RunScenarios(ctx, t, p, model, []Scenario{
+	ctx = RecordingContext(ctx, captures, secrets)
+	scenarioReport = RunScenarios(ctx, t, p, model, []Scenario{
 		{Name: "chat", Run: liveChatScenario},
 		{Name: "stream", Capability: llm.CapabilityStreaming, Run: liveStreamScenario},
 		{Name: "models", Capability: llm.CapabilityModelsListing, Run: liveModelsScenario},

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
 	"time"
 
 	sdk "github.com/openai/openai-go/v3"
@@ -26,8 +25,9 @@ import (
 type Dialect interface {
 	Name() string
 	DefaultBaseURL() string
-	// APIKeyEnv names the environment variable consulted when no API key is
-	// configured. An empty name disables the env fallback.
+	// APIKeyEnv names the environment variable that a public preset constructor
+	// may resolve before calling NewWithDialect. The shared engine never reads
+	// provider credential environment variables.
 	APIKeyEnv() string
 	Capabilities() []llm.Capability
 	// Compat declares the dialect's data-expressible quirks.
@@ -128,11 +128,6 @@ func NewWithDialect(cfg Config) (*Provider, error) {
 	if cfg.Dialect == nil {
 		return nil, fmt.Errorf("%w: nil chatcompletions dialect", llm.ErrBadRequest)
 	}
-	if cfg.APIKey == "" && cfg.APIKeyFunc == nil {
-		if env := cfg.Dialect.APIKeyEnv(); env != "" {
-			cfg.APIKey = os.Getenv(env)
-		}
-	}
 	if cfg.APIKey == "" && cfg.APIKeyFunc == nil && !cfg.KeyOptional {
 		return nil, fmt.Errorf("%w: missing %s API key; set WithAPIKey or %s", llm.ErrAuth, cfg.Dialect.Name(), cfg.Dialect.APIKeyEnv())
 	}
@@ -151,6 +146,13 @@ func NewWithDialect(cfg Config) (*Provider, error) {
 	}
 	compat := cfg.Dialect.Compat()
 	client := sdk.NewClient(sdkOptions(cfg, baseURL)...)
+	headers := providerutil.AmbientCustomHeaders()
+	headers.Del("OpenAI-Organization")
+	headers.Del("OpenAI-Project")
+	if len(compat.DefaultHeaders) > 0 && headers == nil {
+		headers = http.Header{}
+	}
+	applyHeaders(headers, compat.DefaultHeaders)
 	return &Provider{
 		dialect:    cfg.Dialect,
 		compat:     compat,
@@ -163,7 +165,7 @@ func NewWithDialect(cfg Config) (*Provider, error) {
 		timeout:    cfg.Timeout,
 		priceTable: cfg.PriceTable,
 		logger:     cfg.Logger,
-		headers:    cloneHeader(compat.DefaultHeaders),
+		headers:    headers,
 	}, nil
 }
 

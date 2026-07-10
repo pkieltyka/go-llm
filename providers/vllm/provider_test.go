@@ -520,7 +520,9 @@ func TestResolveModelErrorsOnEmptyModelsList(t *testing.T) {
 // Authorization header on the SDK blocking path, the direct SSE path, or
 // models listing — and WithAPIKey restores the bearer header.
 func TestKeylessSendsNoAuthorization(t *testing.T) {
+	t.Setenv("OPENAI_CUSTOM_HEADERS", "Authorization: Bearer ambient-secret\nX-Ambient-Safe: retained")
 	var authHeaders []string
+	var ambientHeaders []string
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		value, present := r.Header["Authorization"]
 		if present {
@@ -528,6 +530,7 @@ func TestKeylessSendsNoAuthorization(t *testing.T) {
 		} else {
 			authHeaders = append(authHeaders, "<absent>")
 		}
+		ambientHeaders = append(ambientHeaders, r.Header.Get("X-Ambient-Safe"))
 		if r.Header.Get("Accept") == "text/event-stream" {
 			w.Header().Set("Content-Type", "text/event-stream")
 			mustWrite(t, w, `data: {"id":"c1","model":"m","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}`+"\n\n")
@@ -558,9 +561,13 @@ func TestKeylessSendsNoAuthorization(t *testing.T) {
 		if header != "<absent>" {
 			t.Fatalf("request %d sent Authorization %q, want none", i, header)
 		}
+		if ambientHeaders[i] != "retained" {
+			t.Fatalf("request %d X-Ambient-Safe = %q", i, ambientHeaders[i])
+		}
 	}
 
 	authHeaders = nil
+	ambientHeaders = nil
 	keyed := newTestProvider(t, handler, WithAPIKey("secret-key"))
 	if _, err := keyed.Chat(context.Background(), req); err != nil {
 		t.Fatalf("keyed Chat returned error: %v", err)
@@ -568,9 +575,15 @@ func TestKeylessSendsNoAuthorization(t *testing.T) {
 	if _, err := llm.Collect(keyed.ChatStream(context.Background(), req)); err != nil {
 		t.Fatalf("keyed stream returned error: %v", err)
 	}
+	if _, err := keyed.Models(context.Background()); err != nil {
+		t.Fatalf("keyed Models returned error: %v", err)
+	}
 	for i, header := range authHeaders {
 		if header != "Bearer secret-key" {
 			t.Fatalf("keyed request %d Authorization = %q", i, header)
+		}
+		if ambientHeaders[i] != "retained" {
+			t.Fatalf("keyed request %d X-Ambient-Safe = %q", i, ambientHeaders[i])
 		}
 	}
 }
