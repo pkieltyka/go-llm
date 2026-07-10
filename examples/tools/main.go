@@ -10,6 +10,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 
@@ -17,13 +18,23 @@ import (
 	"github.com/pkieltyka/go-llm/llmtest"
 	"github.com/pkieltyka/go-llm/providers/anthropic"
 	"github.com/pkieltyka/go-llm/providers/openrouter"
+	"github.com/pkieltyka/go-llm/schema"
 )
+
+type toolHandler struct {
+	tool    llm.Tool
+	execute func(context.Context, json.RawMessage) (string, error)
+}
+
+type toolResultSink interface {
+	AddToolResults(...llm.ToolResultPart)
+}
 
 func main() {
 	ctx := context.Background()
 	p, model := newProvider()
 
-	weatherTool := llm.Tool{
+	weather := toolHandler{tool: llm.Tool{
 		Name:        "weather",
 		Description: "Get the current weather for a city.",
 		InputSchema: map[string]any{
@@ -31,7 +42,8 @@ func main() {
 			"properties": map[string]any{"city": map[string]any{"type": "string"}},
 			"required":   []string{"city"},
 		},
-	}
+	}, execute: lookupWeather}
+	tools := map[string]toolHandler{weather.tool.Name: weather}
 
 	h := llm.NewHistory()
 	h.AddUserText("What is the weather in Toronto right now? Use the weather tool.")
@@ -39,7 +51,7 @@ func main() {
 	resp, err := p.Chat(ctx, &llm.Request{
 		Model:    model,
 		Messages: h.Messages(),
-		Tools:    []llm.Tool{weatherTool},
+		Tools:    []llm.Tool{weather.tool},
 	})
 	if err != nil {
 		panic(err)
@@ -49,14 +61,15 @@ func main() {
 	// until the model stops asking for tools and produces a final answer.
 	for resp.StopReason == llm.StopReasonToolUse {
 		h.AddResponse(resp)
-		for _, call := range resp.ToolCalls() {
+		calls := resp.ToolCalls()
+		for _, call := range calls {
 			fmt.Printf("tool call: %s(%s)\n", call.Name, call.Args)
-			h.AddToolResults(llm.ToolResult(call.ID, lookupWeather(call.Args)))
 		}
+		dispatchToolCalls(ctx, h, tools, calls)
 		resp, err = p.Chat(ctx, &llm.Request{
 			Model:    model,
 			Messages: h.Messages(),
-			Tools:    []llm.Tool{weatherTool},
+			Tools:    []llm.Tool{weather.tool},
 		})
 		if err != nil {
 			panic(err)
@@ -65,13 +78,54 @@ func main() {
 	fmt.Println(resp.Text())
 }
 
+// dispatchToolCalls executes one assistant tool-use turn and appends every
+// result as a single grouped tool message.
+func dispatchToolCalls(ctx context.Context, sink toolResultSink, tools map[string]toolHandler, calls []llm.ToolCallPart) {
+	results := make([]llm.ToolResultPart, 0, len(calls))
+	for _, call := range calls {
+		results = append(results, dispatchToolCall(ctx, tools, call))
+	}
+	if len(results) > 0 {
+		sink.AddToolResults(results...)
+	}
+}
+
+func dispatchToolCall(ctx context.Context, tools map[string]toolHandler, call llm.ToolCallPart) llm.ToolResultPart {
+	handler, ok := tools[call.Name]
+	if !ok {
+		return toolError(call, fmt.Errorf("unknown tool %q", call.Name))
+	}
+	if err := schema.ValidateArgs(handler.tool, call.Args); err != nil {
+		return toolError(call, fmt.Errorf("invalid arguments: %w", err))
+	}
+	result, err := handler.execute(ctx, call.Args)
+	if err != nil {
+		return toolError(call, fmt.Errorf("execution failed: %w", err))
+	}
+	part := llm.ToolResult(call.ID, result)
+	part.Name = call.Name
+	return part
+}
+
+func toolError(call llm.ToolCallPart, err error) llm.ToolResultPart {
+	part := llm.ToolResult(call.ID, err.Error())
+	part.Name = call.Name
+	part.IsError = true
+	return part
+}
+
 // lookupWeather is the app-side implementation of the weather tool.
-func lookupWeather(args json.RawMessage) string {
+func lookupWeather(_ context.Context, args json.RawMessage) (string, error) {
 	var in struct {
 		City string `json:"city"`
 	}
-	_ = json.Unmarshal(args, &in)
-	return fmt.Sprintf(`{"city":%q,"temp_c":-4,"conditions":"light snow"}`, in.City)
+	if err := json.Unmarshal(args, &in); err != nil {
+		return "", err
+	}
+	if in.City == "Atlantis" {
+		return "", errors.New("weather station unavailable")
+	}
+	return fmt.Sprintf(`{"city":%q,"temp_c":-4,"conditions":"light snow"}`, in.City), nil
 }
 
 // newProvider returns a real provider when API credentials are present in the

@@ -24,7 +24,9 @@ func (a app) runModels(ctx context.Context, cfg modelsConfig) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintln(a.stdout, string(data))
+		if _, err := fmt.Fprintln(a.stdout, string(data)); err != nil {
+			return fmt.Errorf("write models: %w", err)
+		}
 		return nil
 	}
 	tw := tabwriter.NewWriter(a.stdout, 0, 0, 2, ' ', 0)

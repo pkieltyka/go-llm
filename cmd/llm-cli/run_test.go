@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"iter"
 	"os"
 	"strings"
@@ -318,13 +320,12 @@ func TestRunChatStreamMidStreamErrorFlushesPartialText(t *testing.T) {
 	}
 	var stdout, stderr bytes.Buffer
 	a := testApp(p, &stdout, &stderr)
-	err := a.runChat(context.Background(), chatConfig{
-		provider: "scripted",
-		model:    "model-1",
-		args:     []string{"prompt"},
-	})
+	resp, err := a.runStreaming(context.Background(), p, &llm.Request{Model: "model-1"}, chatConfig{})
 	if !errors.Is(err, llm.ErrServer) || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("err = %v, want the provider stream error", err)
+	}
+	if resp == nil || resp.Text() != "partial text" {
+		t.Fatalf("partial response = %#v, want partial text", resp)
 	}
 	// Deltas were flushed unbuffered before the error arrived; main prints
 	// the returned error to stderr and exits 1.
@@ -333,7 +334,7 @@ func TestRunChatStreamMidStreamErrorFlushesPartialText(t *testing.T) {
 	}
 }
 
-func TestRunChatStreamProviderErrorBeatsCollectError(t *testing.T) {
+func TestRunChatStreamReturnsFirstCollectorErrorImmediately(t *testing.T) {
 	streamErr := errors.New("provider stream error")
 	p := &scriptedStreamProvider{
 		events: []llm.Event{
@@ -350,8 +351,94 @@ func TestRunChatStreamProviderErrorBeatsCollectError(t *testing.T) {
 		model:    "model-1",
 		args:     []string{"prompt"},
 	})
-	if !errors.Is(err, streamErr) {
-		t.Fatalf("err = %v, want the provider error to take precedence over the collect error", err)
+	if !errors.Is(err, llm.ErrBadRequest) {
+		t.Fatalf("err = %v, want the first collector error", err)
+	}
+}
+
+type brokenWriter struct {
+	err error
+}
+
+func (w brokenWriter) Write([]byte) (int, error) { return 0, w.err }
+
+func TestRunChatReturnsResponseWriteError(t *testing.T) {
+	writeErr := errors.New("stdout failed")
+	fake := llmtest.New()
+	fake.EnqueueResponse(&llm.Response{Parts: []llm.Part{llm.Text("answer")}})
+	a := testApp(fake, brokenWriter{err: writeErr}, io.Discard)
+	err := a.runChat(context.Background(), chatConfig{
+		provider: "llmtest",
+		model:    "model-1",
+		noStream: true,
+		args:     []string{"prompt"},
+	})
+	if !errors.Is(err, writeErr) || !strings.Contains(err.Error(), "write response") {
+		t.Fatalf("err = %v, want response writer error", err)
+	}
+}
+
+func TestRunStreamingReturnsEventWriteErrorWithPartialResponse(t *testing.T) {
+	writeErr := errors.New("event output failed")
+	fake := llmtest.New(llmtest.WithName("llmtest"))
+	fake.EnqueueStream(
+		llm.MessageStart{ID: "msg-1", Provider: "llmtest", Model: "model-1"},
+		llm.TextDelta{Index: 0, Text: "unwritten"},
+		llm.MessageEnd{StopReason: llm.StopReasonEndTurn},
+	)
+	a := testApp(fake, brokenWriter{err: writeErr}, io.Discard)
+	resp, err := a.runStreaming(context.Background(), fake, &llm.Request{Model: "model-1"}, chatConfig{})
+	if !errors.Is(err, writeErr) || !strings.Contains(err.Error(), "write response event") {
+		t.Fatalf("err = %v, want event writer error", err)
+	}
+	if resp == nil || resp.ID != "msg-1" || resp.Text() != "" {
+		t.Fatalf("partial response = %#v, want collected MessageStart only", resp)
+	}
+}
+
+func TestRunStreamingReturnsReasoningWriteErrorWithPartialResponse(t *testing.T) {
+	writeErr := errors.New("reasoning output failed")
+	fake := llmtest.New(llmtest.WithName("llmtest"))
+	fake.EnqueueStream(
+		llm.MessageStart{ID: "msg-1", Provider: "llmtest", Model: "model-1"},
+		llm.ReasoningDelta{Index: 0, Text: "unwritten"},
+		llm.MessageEnd{StopReason: llm.StopReasonEndTurn},
+	)
+	a := testApp(fake, io.Discard, brokenWriter{err: writeErr})
+	resp, err := a.runStreaming(context.Background(), fake, &llm.Request{Model: "model-1"}, chatConfig{reasoning: true})
+	if !errors.Is(err, writeErr) || !strings.Contains(err.Error(), "write reasoning event") {
+		t.Fatalf("err = %v, want reasoning writer error", err)
+	}
+	if resp == nil || resp.ID != "msg-1" {
+		t.Fatalf("partial response = %#v, want collected MessageStart", resp)
+	}
+}
+
+func TestRunChatReturnsUsageWriteError(t *testing.T) {
+	writeErr := errors.New("usage output failed")
+	fake := llmtest.New()
+	fake.EnqueueResponse(&llm.Response{
+		Parts: []llm.Part{llm.Text("answer")},
+		Usage: llm.Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3},
+	})
+	a := testApp(fake, io.Discard, brokenWriter{err: writeErr})
+	err := a.runChat(context.Background(), chatConfig{
+		provider: "llmtest",
+		model:    "model-1",
+		noStream: true,
+		usage:    true,
+		args:     []string{"prompt"},
+	})
+	if !errors.Is(err, writeErr) || !strings.Contains(err.Error(), "write usage") {
+		t.Fatalf("err = %v, want usage writer error", err)
+	}
+}
+
+func TestPrintErrorReturnsWriterError(t *testing.T) {
+	writeErr := errors.New("stderr failed")
+	err := printError(brokenWriter{err: writeErr}, fmt.Errorf("provider failed"))
+	if !errors.Is(err, writeErr) || !strings.Contains(err.Error(), "write error") {
+		t.Fatalf("err = %v, want error-output writer error", err)
 	}
 }
 
@@ -431,7 +518,7 @@ func TestPrintToolCallsShape(t *testing.T) {
 	}
 }
 
-func testApp(provider llm.Provider, stdout, stderr *bytes.Buffer) app {
+func testApp(provider llm.Provider, stdout, stderr io.Writer) app {
 	return app{
 		stdin:  strings.NewReader(""),
 		stdout: stdout,

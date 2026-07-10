@@ -18,13 +18,32 @@ const (
 )
 
 var redactedHeaderNames = map[string]struct{}{
-	"authorization":       {},
-	"proxy-authorization": {},
-	"x-api-key":           {},
-	"api-key":             {},
-	"cookie":              {},
-	"set-cookie":          {},
-	"chatgpt-account-id":  {},
+	"authorization":             {},
+	"proxy-authorization":       {},
+	"x-api-key":                 {},
+	"api-key":                   {},
+	"cookie":                    {},
+	"etag":                      {},
+	"set-cookie":                {},
+	"chatgpt-account-id":        {},
+	"anthropic-organization-id": {},
+	"cf-ray":                    {},
+	"nel":                       {},
+	"openai-organization":       {},
+	"openai-project":            {},
+	"report-to":                 {},
+	"request-id":                {},
+	"traceresponse":             {},
+	"x-generation-id":           {},
+	"x-models-etag":             {},
+	"x-oai-request-id":          {},
+	"x-request-id":              {},
+	"x-stainless-retry-count":   {},
+}
+
+var redactedHeaderPrefixes = []string{
+	"anthropic-ratelimit-",
+	"x-codex-",
 }
 
 // WireCapture contains one captured HTTP attempt. Secrets in headers are
@@ -163,24 +182,29 @@ func (t *wireTapTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		StartedAt:      start,
 	}
 
+	var requestCapture *requestBodyCapture
 	if req.Body != nil {
-		body, err := io.ReadAll(req.Body)
-		if err != nil {
-			capture.Duration = time.Since(start)
-			capture.Err = err
-			t.capture(capture)
-			t.responses.Add(-1)
-			return nil, err
-		}
-		_ = req.Body.Close()
-		capture.RequestBody = capBody(body, t.bodyLimit)
+		requestCapture = newRequestBodyCapture(t.bodyLimit)
 		req = req.Clone(req.Context())
-		req.Body = io.NopCloser(bytes.NewReader(body))
-		req.ContentLength = int64(len(body))
+		req.Body = requestCapture.wrap(req.Body)
+		if req.GetBody != nil {
+			getBody := req.GetBody
+			req.GetBody = func() (io.ReadCloser, error) {
+				body, err := getBody()
+				if err != nil {
+					return nil, err
+				}
+				return requestCapture.wrap(body), nil
+			}
+		}
 	}
 
 	resp, err := t.next.RoundTrip(req)
 	if err != nil {
+		if requestCapture != nil {
+			requestCapture.closeAll()
+			capture.RequestBody = requestCapture.snapshot()
+		}
 		capture.Duration = time.Since(start)
 		capture.Err = err
 		t.capture(capture)
@@ -190,6 +214,9 @@ func (t *wireTapTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	capture.Status = resp.StatusCode
 	capture.ResponseHeaders = redactHeaders(resp.Header)
 	if resp.Body == nil {
+		if requestCapture != nil {
+			capture.RequestBody = requestCapture.snapshot()
+		}
 		capture.Duration = time.Since(start)
 		t.capture(capture)
 		t.responses.Add(-1)
@@ -204,8 +231,144 @@ func (t *wireTapTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		capture:        capture,
 		fn:             t.capture,
 		outstanding:    &t.responses,
+		request:        requestCapture,
 	}
 	return resp, nil
+}
+
+// requestBodyCapture records only bytes consumed by the wrapped transport.
+// A later GetBody generation replaces an earlier partial attempt so retries
+// cannot concatenate the same payload in one capture.
+type requestBodyCapture struct {
+	mu          sync.Mutex
+	limit       int
+	next        uint64
+	active      uint64
+	activeSet   bool
+	buf         boundedCapture
+	outstanding map[*requestCaptureBody]struct{}
+}
+
+func newRequestBodyCapture(limit int) *requestBodyCapture {
+	return &requestBodyCapture{
+		limit:       limit,
+		buf:         boundedCapture{limit: limit},
+		outstanding: make(map[*requestCaptureBody]struct{}),
+	}
+}
+
+func (c *requestBodyCapture) wrap(body io.ReadCloser) io.ReadCloser {
+	c.mu.Lock()
+	generation := c.next
+	c.next++
+	wrapped := &requestCaptureBody{body: body, capture: c, generation: generation}
+	c.outstanding[wrapped] = struct{}{}
+	c.mu.Unlock()
+	return wrapped
+}
+
+func (c *requestBodyCapture) begin(generation uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.activeSet && generation <= c.active {
+		return
+	}
+	c.active = generation
+	c.activeSet = true
+	c.buf = boundedCapture{limit: c.limit}
+}
+
+func (c *requestBodyCapture) write(generation uint64, p []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.activeSet || generation != c.active {
+		return
+	}
+	c.buf.write(p)
+}
+
+func (c *requestBodyCapture) closed(body *requestCaptureBody) {
+	c.mu.Lock()
+	delete(c.outstanding, body)
+	c.mu.Unlock()
+}
+
+func (c *requestBodyCapture) closeAll() {
+	c.mu.Lock()
+	bodies := make([]*requestCaptureBody, 0, len(c.outstanding))
+	for body := range c.outstanding {
+		bodies = append(bodies, body)
+	}
+	c.mu.Unlock()
+	for _, body := range bodies {
+		_ = body.Close()
+	}
+}
+
+func (c *requestBodyCapture) snapshot() []byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.buf.snapshot()
+}
+
+type requestCaptureBody struct {
+	body       io.ReadCloser
+	capture    *requestBodyCapture
+	generation uint64
+	closeOnce  sync.Once
+	closeErr   error
+}
+
+func (b *requestCaptureBody) Read(p []byte) (int, error) {
+	b.capture.begin(b.generation)
+	n, err := b.body.Read(p)
+	if n > 0 {
+		b.capture.write(b.generation, p[:n])
+	}
+	return n, err
+}
+
+func (b *requestCaptureBody) Close() error {
+	b.closeOnce.Do(func() {
+		b.closeErr = b.body.Close()
+		b.capture.closed(b)
+	})
+	return b.closeErr
+}
+
+type boundedCapture struct {
+	limit int
+	buf   bytes.Buffer
+	trunc bool
+}
+
+func (b *boundedCapture) write(p []byte) {
+	if len(p) == 0 {
+		return
+	}
+	if b.buf.Len() >= b.limit {
+		b.markTruncated()
+		return
+	}
+	remaining := b.limit - b.buf.Len()
+	if len(p) > remaining {
+		b.buf.Write(p[:remaining])
+		b.markTruncated()
+		return
+	}
+	b.buf.Write(p)
+}
+
+func (b *boundedCapture) markTruncated() {
+	if b.trunc {
+		return
+	}
+	b.trunc = true
+	b.buf.WriteString("\n[truncated]")
+}
+
+func (b *boundedCapture) snapshot() []byte {
+	return append([]byte(nil), b.buf.Bytes()...)
 }
 
 type captureBody struct {
@@ -216,6 +379,7 @@ type captureBody struct {
 	capture        WireCapture
 	fn             func(WireCapture)
 	outstanding    *atomic.Int64
+	request        *requestBodyCapture
 	buf            bytes.Buffer
 	tail           []byte
 	read           int64
@@ -251,6 +415,9 @@ func (b *captureBody) Close() error {
 
 func (b *captureBody) finalize(complete bool, err error) {
 	b.finalizeOnce.Do(func() {
+		if b.request != nil {
+			b.capture.RequestBody = b.request.snapshot()
+		}
 		b.capture.ResponseBody = append([]byte(nil), b.buf.Bytes()...)
 		b.capture.Duration = time.Since(b.start)
 		b.capture.Err = err
@@ -349,7 +516,7 @@ func redactHeaders(headers http.Header) http.Header {
 	out := make(http.Header, len(headers))
 	for name, values := range headers {
 		copied := append([]string(nil), values...)
-		if _, ok := redactedHeaderNames[strings.ToLower(name)]; ok {
+		if isRedactedHeaderName(name) {
 			for i := range copied {
 				copied[i] = "[REDACTED]"
 			}
@@ -359,14 +526,15 @@ func redactHeaders(headers http.Header) http.Header {
 	return out
 }
 
-func capBody(body []byte, limit int) []byte {
-	if limit < 0 {
-		limit = defaultWireCaptureBodyLimit
+func isRedactedHeaderName(name string) bool {
+	name = strings.ToLower(name)
+	if _, ok := redactedHeaderNames[name]; ok {
+		return true
 	}
-	if len(body) <= limit {
-		return append([]byte(nil), body...)
+	for _, prefix := range redactedHeaderPrefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
 	}
-	out := append([]byte(nil), body[:limit]...)
-	out = append(out, "\n[truncated]"...)
-	return out
+	return false
 }

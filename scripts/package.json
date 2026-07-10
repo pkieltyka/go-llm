@@ -2,7 +2,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "snapshot-models-table": "tsx snapshot-models-table.ts"
+    "snapshot-models-table": "node --import tsx snapshot-models-table.ts",
+    "test": "node --import tsx --test snapshot-models-table.test.ts"
   },
   "devDependencies": {
     "tsx": "^4.20.0"

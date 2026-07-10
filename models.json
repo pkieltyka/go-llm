@@ -316,9 +316,7 @@
     {
       "provider": "openai",
       "id": "chatgpt-image-latest",
-      "display_name": "chatgpt-image-latest",
-      "context_window": 0,
-      "max_output_tokens": 0
+      "display_name": "chatgpt-image-latest"
     },
     {
       "provider": "openai",
@@ -736,30 +734,22 @@
     {
       "provider": "openai",
       "id": "gpt-image-1",
-      "display_name": "gpt-image-1",
-      "context_window": 0,
-      "max_output_tokens": 0
+      "display_name": "gpt-image-1"
     },
     {
       "provider": "openai",
       "id": "gpt-image-1-mini",
-      "display_name": "gpt-image-1-mini",
-      "context_window": 0,
-      "max_output_tokens": 0
+      "display_name": "gpt-image-1-mini"
     },
     {
       "provider": "openai",
       "id": "gpt-image-1.5",
-      "display_name": "gpt-image-1.5",
-      "context_window": 0,
-      "max_output_tokens": 0
+      "display_name": "gpt-image-1.5"
     },
     {
       "provider": "openai",
       "id": "gpt-image-2",
       "display_name": "gpt-image-2",
-      "context_window": 0,
-      "max_output_tokens": 0,
       "pricing": {
         "input_per_mtok": 5,
         "output_per_mtok": 30,
@@ -3873,11 +3863,7 @@
       "canonical_id": "openrouter/auto",
       "display_name": "Auto Router",
       "context_window": 2000000,
-      "max_output_tokens": 2000000,
-      "pricing": {
-        "input_per_mtok": -1000000,
-        "output_per_mtok": -1000000
-      }
+      "max_output_tokens": 2000000
     },
     {
       "provider": "openrouter",
@@ -3885,11 +3871,7 @@
       "canonical_id": "openrouter/bodybuilder",
       "display_name": "Body Builder (beta)",
       "context_window": 128000,
-      "max_output_tokens": 128000,
-      "pricing": {
-        "input_per_mtok": -1000000,
-        "output_per_mtok": -1000000
-      }
+      "max_output_tokens": 128000
     },
     {
       "provider": "openrouter",
@@ -3909,11 +3891,7 @@
       "canonical_id": "openrouter/fusion",
       "display_name": "OpenRouter: Fusion",
       "context_window": 1000000,
-      "max_output_tokens": 128000,
-      "pricing": {
-        "input_per_mtok": -1000000,
-        "output_per_mtok": -1000000
-      }
+      "max_output_tokens": 128000
     },
     {
       "provider": "openrouter",
@@ -3921,11 +3899,7 @@
       "canonical_id": "openrouter/pareto-code",
       "display_name": "Pareto Code Router",
       "context_window": 2000000,
-      "max_output_tokens": 200000,
-      "pricing": {
-        "input_per_mtok": -1000000,
-        "output_per_mtok": -1000000
-      }
+      "max_output_tokens": 200000
     },
     {
       "provider": "openrouter",
@@ -5173,184 +5147,6 @@
         "input_per_mtok": 1.2,
         "output_per_mtok": 4,
         "cache_read_per_mtok": 0.24
-      }
-    },
-    {
-      "provider": "zai",
-      "id": "glm-4.5",
-      "display_name": "GLM-4.5",
-      "context_window": 131072,
-      "max_output_tokens": 98304,
-      "pricing": {
-        "input_per_mtok": 0.6,
-        "output_per_mtok": 2.2,
-        "cache_read_per_mtok": 0.11,
-        "cache_write_per_mtok": 0
-      }
-    },
-    {
-      "provider": "zai",
-      "id": "glm-4.5-air",
-      "display_name": "GLM-4.5-Air",
-      "context_window": 131072,
-      "max_output_tokens": 98304,
-      "pricing": {
-        "input_per_mtok": 0.2,
-        "output_per_mtok": 1.1,
-        "cache_read_per_mtok": 0.03,
-        "cache_write_per_mtok": 0
-      }
-    },
-    {
-      "provider": "zai",
-      "id": "glm-4.5-flash",
-      "display_name": "GLM-4.5-Flash",
-      "context_window": 131072,
-      "max_output_tokens": 98304,
-      "pricing": {
-        "input_per_mtok": 0,
-        "output_per_mtok": 0,
-        "cache_read_per_mtok": 0,
-        "cache_write_per_mtok": 0
-      }
-    },
-    {
-      "provider": "zai",
-      "id": "glm-4.5v",
-      "display_name": "GLM-4.5V",
-      "context_window": 64000,
-      "max_output_tokens": 16384,
-      "pricing": {
-        "input_per_mtok": 0.6,
-        "output_per_mtok": 1.8
-      }
-    },
-    {
-      "provider": "zai",
-      "id": "glm-4.6",
-      "display_name": "GLM-4.6",
-      "context_window": 204800,
-      "max_output_tokens": 131072,
-      "pricing": {
-        "input_per_mtok": 0.6,
-        "output_per_mtok": 2.2,
-        "cache_read_per_mtok": 0.11,
-        "cache_write_per_mtok": 0
-      }
-    },
-    {
-      "provider": "zai",
-      "id": "glm-4.6v",
-      "display_name": "GLM-4.6V",
-      "context_window": 128000,
-      "max_output_tokens": 32768,
-      "pricing": {
-        "input_per_mtok": 0.3,
-        "output_per_mtok": 0.9
-      }
-    },
-    {
-      "provider": "zai",
-      "id": "glm-4.7",
-      "display_name": "GLM-4.7",
-      "context_window": 204800,
-      "max_output_tokens": 131072,
-      "pricing": {
-        "input_per_mtok": 0.6,
-        "output_per_mtok": 2.2,
-        "cache_read_per_mtok": 0.11,
-        "cache_write_per_mtok": 0
-      }
-    },
-    {
-      "provider": "zai",
-      "id": "glm-4.7-flash",
-      "display_name": "GLM-4.7-Flash",
-      "context_window": 200000,
-      "max_output_tokens": 131072,
-      "pricing": {
-        "input_per_mtok": 0,
-        "output_per_mtok": 0,
-        "cache_read_per_mtok": 0,
-        "cache_write_per_mtok": 0
-      }
-    },
-    {
-      "provider": "zai",
-      "id": "glm-4.7-flashx",
-      "display_name": "GLM-4.7-FlashX",
-      "context_window": 200000,
-      "max_output_tokens": 131072,
-      "pricing": {
-        "input_per_mtok": 0.07,
-        "output_per_mtok": 0.4,
-        "cache_read_per_mtok": 0.01,
-        "cache_write_per_mtok": 0
-      }
-    },
-    {
-      "provider": "zai",
-      "id": "glm-5",
-      "display_name": "GLM-5",
-      "context_window": 204800,
-      "max_output_tokens": 131072,
-      "pricing": {
-        "input_per_mtok": 1,
-        "output_per_mtok": 3.2,
-        "cache_read_per_mtok": 0.2,
-        "cache_write_per_mtok": 0
-      }
-    },
-    {
-      "provider": "zai",
-      "id": "glm-5-turbo",
-      "display_name": "GLM-5-Turbo",
-      "context_window": 200000,
-      "max_output_tokens": 131072,
-      "pricing": {
-        "input_per_mtok": 1.2,
-        "output_per_mtok": 4,
-        "cache_read_per_mtok": 0.24,
-        "cache_write_per_mtok": 0
-      }
-    },
-    {
-      "provider": "zai",
-      "id": "glm-5.1",
-      "display_name": "GLM-5.1",
-      "context_window": 200000,
-      "max_output_tokens": 131072,
-      "pricing": {
-        "input_per_mtok": 1.4,
-        "output_per_mtok": 4.4,
-        "cache_read_per_mtok": 0.26,
-        "cache_write_per_mtok": 0
-      }
-    },
-    {
-      "provider": "zai",
-      "id": "glm-5.2",
-      "display_name": "GLM-5.2",
-      "context_window": 1000000,
-      "max_output_tokens": 131072,
-      "pricing": {
-        "input_per_mtok": 1.4,
-        "output_per_mtok": 4.4,
-        "cache_read_per_mtok": 0.26,
-        "cache_write_per_mtok": 0
-      }
-    },
-    {
-      "provider": "zai",
-      "id": "glm-5v-turbo",
-      "display_name": "GLM-5V-Turbo",
-      "context_window": 200000,
-      "max_output_tokens": 131072,
-      "pricing": {
-        "input_per_mtok": 1.2,
-        "output_per_mtok": 4,
-        "cache_read_per_mtok": 0.24,
-        "cache_write_per_mtok": 0
       }
     }
   ]

@@ -21,7 +21,10 @@ func TestParseChatFlagsHelp(t *testing.T) {
 			"llm-cli models [flags]",
 			"forces the non-streaming path",
 			"-provider",
-			"OAuth access token",
+			"OAuth access token exposed via argv",
+			"-auth-file",
+			"OPENAI_CODEX_ACCESS_TOKEN",
+			"shell history and process argv",
 			"Examples:",
 			"llm-cli models -p openrouter",
 		} {
@@ -29,6 +32,24 @@ func TestParseChatFlagsHelp(t *testing.T) {
 				t.Fatalf("%s usage missing %q:\n%s", arg, want, usage)
 			}
 		}
+	}
+}
+
+func TestParseAuthFlags(t *testing.T) {
+	var stderr bytes.Buffer
+	chat, err := parseChatFlags([]string{"--provider", "openai-codex", "--auth-file", "/tmp/auth.json", "--api-key", "compat"}, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chat.authFile != "/tmp/auth.json" || chat.apiKey != "compat" {
+		t.Fatalf("chat auth flags = %+v", chat)
+	}
+	models, err := parseModelsFlags([]string{"--provider", "openai-codex", "--auth-file", "/tmp/models.json"}, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if models.authFile != "/tmp/models.json" {
+		t.Fatalf("models auth file = %q", models.authFile)
 	}
 }
 
@@ -54,7 +75,7 @@ func TestParseModelsFlagsHelp(t *testing.T) {
 		t.Fatalf("err = %v, want errHelp", err)
 	}
 	usage := stderr.String()
-	for _, want := range []string{"Usage: llm-cli models [flags]", "-provider", "llm-cli models -p openrouter"} {
+	for _, want := range []string{"Usage: llm-cli models [flags]", "-provider", "OPENAI_CODEX_ACCESS_TOKEN", "process argv", "llm-cli models -p openrouter"} {
 		if !strings.Contains(usage, want) {
 			t.Fatalf("models usage missing %q:\n%s", want, usage)
 		}

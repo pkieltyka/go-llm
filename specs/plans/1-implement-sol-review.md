@@ -14,7 +14,7 @@ The plan artifact is complete; implementation checkboxes remain open. Execute ph
 - [x] Phase 2: stream grammar and provider equivalence
 - [x] Phase 3: core lifecycle and API correctness
 - [x] Phase 4: schema and OAuth correctness
-- [ ] Phase 5: first-party consumers and release tooling
+- [x] Phase 5: first-party consumers and release tooling
 - [ ] Phase 6: executable conformance and live/coverage confidence
 - [ ] Phase 7: SDK surface, documentation synchronization, and final gates
 
