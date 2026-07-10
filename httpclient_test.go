@@ -11,8 +11,12 @@ func TestDefaultHTTPClient(t *testing.T) {
 	if client == nil {
 		t.Fatalf("DefaultHTTPClient returned nil")
 	}
-	if client != DefaultHTTPClient() {
-		t.Fatalf("DefaultHTTPClient did not return shared singleton")
+	other := DefaultHTTPClient()
+	if client == other {
+		t.Fatalf("DefaultHTTPClient returned shared mutable client")
+	}
+	if client.Transport != other.Transport {
+		t.Fatalf("default clients do not share their private transport")
 	}
 	if client.Timeout != 0 {
 		t.Fatalf("Timeout = %s, want 0 for streaming safety", client.Timeout)
@@ -29,6 +33,10 @@ func TestDefaultHTTPClient(t *testing.T) {
 	}
 	if transport.MaxIdleConnsPerHost != 16 {
 		t.Fatalf("MaxIdleConnsPerHost = %d, want 16", transport.MaxIdleConnsPerHost)
+	}
+	client.Timeout = time.Second
+	if other.Timeout != 0 {
+		t.Fatalf("mutating one client changed another timeout to %s", other.Timeout)
 	}
 }
 

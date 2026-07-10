@@ -39,12 +39,23 @@ func Wrap(p Provider, mw ...Middleware) Provider {
 		}
 		bound[i] = middleware
 	}
-	return &wrappedProvider{provider: p, middleware: bound}
+	chat := ChatFunc(p.Chat)
+	stream := StreamFunc(p.ChatStream)
+	for i := len(bound) - 1; i >= 0; i-- {
+		if bound[i].Chat != nil {
+			chat = bound[i].Chat(chat)
+		}
+		if bound[i].Stream != nil {
+			stream = bound[i].Stream(stream)
+		}
+	}
+	return &wrappedProvider{provider: p, chat: chat, stream: stream}
 }
 
 type wrappedProvider struct {
-	provider   Provider
-	middleware []Middleware
+	provider Provider
+	chat     ChatFunc
+	stream   StreamFunc
 }
 
 func (p *wrappedProvider) Name() string {
@@ -60,21 +71,9 @@ func (p *wrappedProvider) Models(ctx context.Context) ([]ModelInfo, error) {
 }
 
 func (p *wrappedProvider) Chat(ctx context.Context, req *Request) (*Response, error) {
-	next := p.provider.Chat
-	for i := len(p.middleware) - 1; i >= 0; i-- {
-		if p.middleware[i].Chat != nil {
-			next = p.middleware[i].Chat(next)
-		}
-	}
-	return next(ctx, req)
+	return p.chat(ctx, req)
 }
 
 func (p *wrappedProvider) ChatStream(ctx context.Context, req *Request) iter.Seq2[Event, error] {
-	next := p.provider.ChatStream
-	for i := len(p.middleware) - 1; i >= 0; i-- {
-		if p.middleware[i].Stream != nil {
-			next = p.middleware[i].Stream(next)
-		}
-	}
-	return next(ctx, req)
+	return p.stream(ctx, req)
 }

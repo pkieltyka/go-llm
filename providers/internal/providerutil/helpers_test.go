@@ -35,7 +35,7 @@ func TestOptionsOf(t *testing.T) {
 		{name: "value form", req: &llm.Request{ProviderOptions: value}, want: "v", wantOK: true},
 		{name: "pointer form", req: &llm.Request{ProviderOptions: pointer}, want: "p", wantOK: true},
 		{name: "nil typed pointer", req: &llm.Request{ProviderOptions: (*testOptions)(nil)}},
-		{name: "foreign provider ignored", req: &llm.Request{ProviderOptions: foreignOptions{}}},
+		{name: "foreign concrete type", req: &llm.Request{ProviderOptions: foreignOptions{}}, wantErr: true},
 		{name: "same name wrong type", req: &llm.Request{ProviderOptions: spoofOptions{}}, wantErr: true},
 	}
 	for _, tc := range cases {

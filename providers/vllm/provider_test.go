@@ -754,8 +754,61 @@ func TestOptionsRejectedForOtherProvider(t *testing.T) {
 	}
 }
 
+func TestProviderOptionsIdentityCheckedOncePerAdapterPath(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(*Provider, *llm.Request) error
+	}{
+		{
+			name: "chat",
+			call: func(p *Provider, req *llm.Request) error {
+				_, err := p.Chat(context.Background(), req)
+				return err
+			},
+		},
+		{
+			name: "stream",
+			call: func(p *Provider, req *llm.Request) error {
+				_, err := llm.Collect(p.ChatStream(context.Background(), req))
+				return err
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := newTestProvider(t, func(http.ResponseWriter, *http.Request) {
+				t.Error("request must not reach the server")
+			})
+			options := &oneShotSpoofOptions{}
+			err := tt.call(p, &llm.Request{
+				Model:           "m",
+				Messages:        []llm.Message{llm.UserText("hi")},
+				ProviderOptions: options,
+			})
+			if !errors.Is(err, llm.ErrBadRequest) {
+				t.Fatalf("error = %v, want ErrBadRequest", err)
+			}
+			if options.calls != 1 {
+				t.Fatalf("ForProvider calls = %d, want 1", options.calls)
+			}
+		})
+	}
+}
+
 type fakeOptions struct{}
 
 func (fakeOptions) ForProvider() string { return "openrouter" }
+
+type oneShotSpoofOptions struct {
+	calls int
+}
+
+func (o *oneShotSpoofOptions) ForProvider() string {
+	o.calls++
+	if o.calls > 1 {
+		panic("ForProvider called more than once")
+	}
+	return providerName
+}
 
 var _ llm.Provider = (*Provider)(nil)

@@ -7,22 +7,19 @@ import (
 	"time"
 )
 
-var defaultHTTPClient = struct {
-	once   sync.Once
-	client *http.Client
+var defaultHTTPTransport = struct {
+	once      sync.Once
+	transport *http.Transport
 }{}
 
-// DefaultHTTPClient returns the shared HTTP client used by provider
-// constructors when no custom client is supplied. Treat the returned client as
-// immutable; it is tuned for long-lived LLM responses and streaming.
+// DefaultHTTPClient returns a fresh HTTP client tuned for long-lived LLM
+// responses and streaming. Clients share a private connection-pooling
+// transport, so changing client-level fields does not affect other callers.
 func DefaultHTTPClient() *http.Client {
-	defaultHTTPClient.once.Do(func() {
-		defaultHTTPClient.client = &http.Client{
-			Transport: defaultHTTPTransportForGOOS(runtime.GOOS),
-			Timeout:   0,
-		}
+	defaultHTTPTransport.once.Do(func() {
+		defaultHTTPTransport.transport = defaultHTTPTransportForGOOS(runtime.GOOS)
 	})
-	return defaultHTTPClient.client
+	return &http.Client{Transport: defaultHTTPTransport.transport}
 }
 
 func defaultHTTPTransportForGOOS(goos string) *http.Transport {

@@ -609,6 +609,9 @@ func marshalReasoningPart(p ReasoningPart) (json.RawMessage, error) {
 }
 
 func marshalUnknownPart(p UnknownPart) (json.RawMessage, error) {
+	if _, reserved := builtinPartTypes[p.Type]; reserved {
+		return nil, fmt.Errorf("%w: unknown part cannot use built-in type %q", ErrBadRequest, p.Type)
+	}
 	if len(p.Data) != 0 {
 		if !json.Valid(p.Data) {
 			return nil, fmt.Errorf("%w: invalid unknown part JSON", ErrBadRequest)
@@ -616,6 +619,9 @@ func marshalUnknownPart(p UnknownPart) (json.RawMessage, error) {
 		typ, err := partTypeFromRaw(p.Data)
 		if err != nil {
 			return nil, err
+		}
+		if _, reserved := builtinPartTypes[typ]; reserved {
+			return nil, fmt.Errorf("%w: unknown part cannot use built-in type %q", ErrBadRequest, typ)
 		}
 		if p.Type != "" && p.Type != typ {
 			return nil, fmt.Errorf("%w: unknown part type %q does not match raw type %q", ErrBadRequest, p.Type, typ)

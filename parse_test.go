@@ -27,6 +27,24 @@ func TestParseModes(t *testing.T) {
 		}
 	})
 
+	t.Run("native mode replaces json mode with derived schema", func(t *testing.T) {
+		p := llmtest.New(llmtest.WithCapabilities(llm.CapabilityJSONSchema))
+		p.EnqueueResponse(&llm.Response{Parts: []llm.Part{llm.Text(`{"name":"Ada"}`)}})
+		req := parseRequest()
+		req.ResponseFormat = &llm.ResponseFormat{Type: llm.FormatJSONMode, Name: "person_result"}
+
+		if _, _, err := llm.Parse[parsePerson](context.Background(), p, req, llm.WithParseMode(llm.ModeNative)); err != nil {
+			t.Fatalf("Parse returned error: %v", err)
+		}
+		recorded := p.Requests()[0]
+		if recorded.ResponseFormat == nil || recorded.ResponseFormat.Type != llm.FormatJSONSchema || recorded.ResponseFormat.Name != "person_result" || recorded.ResponseFormat.Schema == nil || !recorded.ResponseFormat.Strict {
+			t.Fatalf("native response format = %+v", recorded.ResponseFormat)
+		}
+		if req.ResponseFormat.Type != llm.FormatJSONMode || req.ResponseFormat.Schema != nil {
+			t.Fatalf("caller request was mutated: %+v", req.ResponseFormat)
+		}
+	})
+
 	t.Run("forced tool", func(t *testing.T) {
 		p := llmtest.New(llmtest.WithCapabilities(llm.CapabilityTools, llm.CapabilityToolChoiceRequired, llm.CapabilityStrictTools))
 		p.EnqueueResponse(&llm.Response{Parts: []llm.Part{llm.ToolCall("call_1", "parse_result", []byte(`{"name":"Ada"}`))}})
@@ -40,6 +58,57 @@ func TestParseModes(t *testing.T) {
 		req := p.Requests()[0]
 		if req.ToolChoice.Mode != llm.ToolChoiceTool || len(req.Tools) != 1 || !req.Tools[0].Strict {
 			t.Fatalf("tool parse request = %+v", req)
+		}
+	})
+
+	t.Run("forced tool replaces caller tools and matches by collision-free name", func(t *testing.T) {
+		p := llmtest.New(llmtest.WithCapabilities(llm.CapabilityTools, llm.CapabilityToolChoiceRequired))
+		p.EnqueueResponse(&llm.Response{Parts: []llm.Part{
+			llm.ToolCall("call_unrelated", "lookup", []byte(`{"q":"Ada"}`)),
+			llm.ToolCall("call_parse", "parse_result_3", []byte(`{"name":"Ada"}`)),
+		}})
+		req := parseRequest()
+		req.Tools = []llm.Tool{{Name: "parse_result"}, {Name: "parse_result_2"}, {Name: "lookup"}}
+
+		got, _, err := llm.Parse[parsePerson](context.Background(), p, req, llm.WithParseMode(llm.ModeTool))
+		if err != nil {
+			t.Fatalf("Parse returned error: %v", err)
+		}
+		if got.Name != "Ada" {
+			t.Fatalf("parsed = %+v", got)
+		}
+		recorded := p.Requests()[0]
+		if len(recorded.Tools) != 1 || recorded.Tools[0].Name != "parse_result_3" {
+			t.Fatalf("tools = %+v, want one collision-free parse tool", recorded.Tools)
+		}
+		if recorded.ToolChoice.Mode != llm.ToolChoiceTool || recorded.ToolChoice.Name != "parse_result_3" {
+			t.Fatalf("tool choice = %+v", recorded.ToolChoice)
+		}
+		if len(req.Tools) != 3 {
+			t.Fatalf("caller tools were mutated: %+v", req.Tools)
+		}
+	})
+
+	t.Run("forced tool requires exactly one matching call", func(t *testing.T) {
+		tests := []struct {
+			name  string
+			parts []llm.Part
+		}{
+			{name: "zero", parts: []llm.Part{llm.ToolCall("call_1", "other", []byte(`{"name":"Ada"}`))}},
+			{name: "multiple", parts: []llm.Part{
+				llm.ToolCall("call_1", "parse_result", []byte(`{"name":"Ada"}`)),
+				llm.ToolCall("call_2", "parse_result", []byte(`{"name":"Grace"}`)),
+			}},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				p := llmtest.New(llmtest.WithCapabilities(llm.CapabilityTools, llm.CapabilityToolChoiceRequired))
+				p.EnqueueResponse(&llm.Response{Parts: tt.parts})
+				_, _, err := llm.Parse[parsePerson](context.Background(), p, parseRequest(), llm.WithParseMode(llm.ModeTool))
+				if !errors.Is(err, llm.ErrBadRequest) {
+					t.Fatalf("error = %v, want ErrBadRequest", err)
+				}
+			})
 		}
 	})
 

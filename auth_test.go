@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -32,6 +33,16 @@ func TestParseAuthFileNestedAndBare(t *testing.T) {
 	}
 	if bare["anthropic"].Key != "key-2" || bare["future"].Type != "unknown" {
 		t.Fatalf("bare credentials = %+v", bare)
+	}
+}
+
+func TestAuthCredentialUnmarshalClearsStaleExpires(t *testing.T) {
+	credential := AuthCredential{Expires: 123, Access: "old"}
+	if err := json.Unmarshal([]byte(`{"type":"api_key","key":"new"}`), &credential); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	if credential.Expires != 0 || credential.Access != "" || credential.Key != "new" {
+		t.Fatalf("credential = %+v, want stale fields cleared", credential)
 	}
 }
 

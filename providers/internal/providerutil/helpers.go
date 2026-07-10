@@ -46,13 +46,10 @@ func ContextWithTimeout(ctx context.Context, timeout time.Duration) (context.Con
 	return context.WithTimeout(ctx, timeout)
 }
 
-// OptionsOf extracts a provider's typed request options from
-// req.ProviderOptions, accepting both the value and pointer form. Options
-// belonging to a different provider are ignored (ok=false, nil error) so a
-// request built for one provider can be routed to another; a value that
-// claims this provider's name but has an unexpected concrete type is an
-// ErrBadRequest.
-func OptionsOf[T llm.ProviderOptions](req *llm.Request) (T, bool, error) {
+// OptionsOf extracts typed request options after ValidateProviderOptions has
+// established the provider identity. It accepts both value and pointer forms
+// and deliberately does not call ForProvider again.
+func OptionsOf[T any](req *llm.Request) (T, bool, error) {
 	var zero T
 	if req == nil || req.ProviderOptions == nil {
 		return zero, false, nil
@@ -68,10 +65,7 @@ func OptionsOf[T llm.ProviderOptions](req *llm.Request) (T, bool, error) {
 		}
 		return *options, true, nil
 	}
-	if req.ProviderOptions.ForProvider() == zero.ForProvider() {
-		return zero, false, fmt.Errorf("%w: provider options for %q are %T, want %T", llm.ErrBadRequest, zero.ForProvider(), req.ProviderOptions, zero)
-	}
-	return zero, false, nil
+	return zero, false, fmt.Errorf("%w: provider options are %T, want %T", llm.ErrBadRequest, req.ProviderOptions, zero)
 }
 
 // UniqueSyntheticToolCallID mints a deterministic synthetic tool-call ID

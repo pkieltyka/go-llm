@@ -19,6 +19,13 @@ type usageAccumulator struct {
 	Errors        int64
 	Usage         Usage
 	TotalDuration time.Duration
+	cost          usageCostAggregation
+}
+
+type usageCostAggregation struct {
+	initialized    bool
+	allTokensCost  bool
+	allCostsNative bool
 }
 
 // UsageStats is a snapshot of aggregated usage.
@@ -152,7 +159,7 @@ func (a *usageAccumulator) add(usage Usage, isErr bool, duration time.Duration) 
 	if isErr {
 		a.Errors++
 	}
-	a.Usage = sumUsage(a.Usage, usage)
+	a.Usage = sumUsage(a.Usage, usage, &a.cost)
 	a.TotalDuration += duration
 }
 
@@ -187,7 +194,13 @@ func requestModel(req *Request) string {
 // costs stays native; mixing native and estimated components (or adding any
 // estimated cost) marks the sum estimated — a total is only billing-grade
 // when every part of it is.
-func sumUsage(total, next Usage) Usage {
+func sumUsage(total, next Usage, state *usageCostAggregation) Usage {
+	totalCostState := *state
+	if !totalCostState.initialized {
+		totalCostState = usageCostAggregationFor(total)
+	}
+	nextCostState := usageCostAggregationFor(next)
+
 	total.InputTokens += next.InputTokens
 	total.OutputTokens += next.OutputTokens
 	total.TotalTokens += next.TotalTokens
@@ -198,19 +211,31 @@ func sumUsage(total, next Usage) Usage {
 		sum := *next.CostUSD
 		if total.CostUSD != nil {
 			sum += *total.CostUSD
-			if total.CostSource != next.CostSource {
-				total.CostSource = CostSourceEstimated
-			}
-		} else {
-			total.CostSource = next.CostSource
 		}
 		total.CostUSD = &sum
-	} else if total.CostUSD != nil && usageHasTokens(next) {
-		// A token-bearing call with unknown cost was folded in: the dollar
-		// total no longer covers every call, so it is not billing-grade.
+	}
+	*state = usageCostAggregation{
+		initialized:    true,
+		allTokensCost:  totalCostState.allTokensCost && nextCostState.allTokensCost,
+		allCostsNative: totalCostState.allCostsNative && nextCostState.allCostsNative,
+	}
+	if total.CostUSD == nil {
+		total.CostSource = ""
+	} else if state.allTokensCost && state.allCostsNative {
+		total.CostSource = CostSourceNative
+	} else {
 		total.CostSource = CostSourceEstimated
 	}
 	return total
+}
+
+func usageCostAggregationFor(usage Usage) usageCostAggregation {
+	hasCost := usage.CostUSD != nil
+	return usageCostAggregation{
+		initialized:    true,
+		allTokensCost:  !usageHasTokens(usage) || hasCost,
+		allCostsNative: !hasCost || usage.CostSource == CostSourceNative,
+	}
 }
 
 func usageHasTokens(u Usage) bool {

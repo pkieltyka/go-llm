@@ -82,26 +82,28 @@ func Parse[T any](ctx context.Context, p Provider, req *Request, opts ...ParseOp
 		validator = fn
 	}
 
-	rawSchema, err := parseSchemaForRequest[T](req)
+	rawSchema, formatName, err := parseSchemaForRequest[T](req)
 	if err != nil {
 		return zero, nil, err
 	}
-	mode, err := resolveParseMode(cfg.mode, p.Capabilities())
+	caps := p.Capabilities()
+	mode, err := resolveParseMode(cfg.mode, caps)
 	if err != nil {
 		return zero, nil, err
 	}
+	toolName := collisionFreeParseToolName(req.Tools)
 
 	working := cloneRequest(req)
 	for attempt := 0; ; attempt++ {
 		attemptReq := cloneRequest(working)
-		applyParseMode(attemptReq, mode, rawSchema, hasCapability(p.Capabilities(), CapabilityStrictTools))
+		applyParseMode(attemptReq, mode, rawSchema, formatName, toolName, hasCapability(caps, CapabilityStrictTools))
 
 		resp, err := p.Chat(ctx, attemptReq)
 		if err != nil {
 			return zero, resp, err
 		}
 
-		value, err := decodeParseResponse[T](mode, rawSchema, resp)
+		value, err := decodeParseResponse[T](mode, rawSchema, toolName, resp)
 		if err == nil && validator != nil {
 			if validateErr := validator(value); validateErr != nil {
 				err = validateErr
@@ -149,33 +151,38 @@ func parseModeSupported(mode ParseMode, caps []Capability) bool {
 	}
 }
 
-func parseSchemaForRequest[T any](req *Request) (any, error) {
-	if req != nil && req.ResponseFormat != nil && req.ResponseFormat.Schema != nil {
-		return cloneSchemaValue(req.ResponseFormat.Schema), nil
+func parseSchemaForRequest[T any](req *Request) (any, string, error) {
+	name := "parse_result"
+	if req != nil && req.ResponseFormat != nil {
+		if req.ResponseFormat.Name != "" {
+			name = req.ResponseFormat.Name
+		}
+		if req.ResponseFormat.Schema != nil {
+			return cloneSchemaValue(req.ResponseFormat.Schema), name, nil
+		}
 	}
-	return schemajson.For[T]()
+	schema, err := schemajson.For[T]()
+	return schema, name, err
 }
 
-func applyParseMode(req *Request, mode ParseMode, rawSchema any, strictTools bool) {
+func applyParseMode(req *Request, mode ParseMode, rawSchema any, formatName, toolName string, strictTools bool) {
 	switch mode {
 	case ModeNative:
-		if req.ResponseFormat == nil {
-			req.ResponseFormat = &ResponseFormat{
-				Type:   FormatJSONSchema,
-				Name:   "parse_result",
-				Schema: cloneSchemaValue(rawSchema),
-				Strict: true,
-			}
+		req.ResponseFormat = &ResponseFormat{
+			Type:   FormatJSONSchema,
+			Name:   formatName,
+			Schema: cloneSchemaValue(rawSchema),
+			Strict: true,
 		}
 	case ModeTool:
 		req.ResponseFormat = nil
-		req.Tools = append(req.Tools, Tool{
-			Name:        "parse_result",
+		req.Tools = []Tool{{
+			Name:        toolName,
 			Description: "Return the structured result.",
 			InputSchema: cloneSchemaValue(rawSchema),
 			Strict:      strictTools,
-		})
-		req.ToolChoice = ToolChoice{Mode: ToolChoiceTool, Name: "parse_result"}
+		}}
+		req.ToolChoice = ToolChoice{Mode: ToolChoiceTool, Name: toolName}
 	case ModeJSON:
 		req.ResponseFormat = &ResponseFormat{Type: FormatJSONMode}
 		guidance := "Return only JSON matching this JSON Schema:\n" + schemaString(rawSchema)
@@ -187,7 +194,23 @@ func applyParseMode(req *Request, mode ParseMode, rawSchema any, strictTools boo
 	}
 }
 
-func decodeParseResponse[T any](mode ParseMode, rawSchema any, resp *Response) (T, error) {
+func collisionFreeParseToolName(tools []Tool) string {
+	used := make(map[string]struct{}, len(tools))
+	for _, tool := range tools {
+		used[tool.Name] = struct{}{}
+	}
+	for suffix := 1; ; suffix++ {
+		name := "parse_result"
+		if suffix > 1 {
+			name = fmt.Sprintf("parse_result_%d", suffix)
+		}
+		if _, exists := used[name]; !exists {
+			return name
+		}
+	}
+}
+
+func decodeParseResponse[T any](mode ParseMode, rawSchema any, toolName string, resp *Response) (T, error) {
 	var zero T
 	if resp == nil {
 		return zero, fmt.Errorf("%w: nil response", ErrBadRequest)
@@ -196,17 +219,26 @@ func decodeParseResponse[T any](mode ParseMode, rawSchema any, resp *Response) (
 	switch mode {
 	case ModeTool:
 		calls := resp.ToolCalls()
-		if len(calls) == 0 {
-			return zero, fmt.Errorf("%w: parse tool was not called", ErrBadRequest)
+		var matching []ToolCallPart
+		for _, call := range calls {
+			if call.Name == toolName {
+				matching = append(matching, call)
+			}
 		}
-		raw = calls[0].Args
+		if len(matching) == 0 {
+			return zero, fmt.Errorf("%w: parse tool %q was not called", ErrBadRequest, toolName)
+		}
+		if len(matching) > 1 {
+			return zero, fmt.Errorf("%w: parse tool %q was called multiple times", ErrBadRequest, toolName)
+		}
+		raw = matching[0].Args
 	default:
 		raw = json.RawMessage(strings.TrimSpace(resp.Text()))
 	}
 	if len(raw) == 0 {
 		return zero, fmt.Errorf("%w: empty parse output", ErrBadRequest)
 	}
-	if err := validateParseRaw(rawSchema, raw); err != nil {
+	if err := validateParseRaw(toolName, rawSchema, raw); err != nil {
 		return zero, err
 	}
 	var out T
@@ -216,8 +248,8 @@ func decodeParseResponse[T any](mode ParseMode, rawSchema any, resp *Response) (
 	return out, nil
 }
 
-func validateParseRaw(rawSchema any, raw json.RawMessage) error {
-	err := schemajson.ValidateArgs("parse_result", rawSchema, raw)
+func validateParseRaw(name string, rawSchema any, raw json.RawMessage) error {
+	err := schemajson.ValidateArgs(name, rawSchema, raw)
 	if errors.Is(err, schemajson.ErrBadRequest) {
 		return fmt.Errorf("%w: %s", ErrBadRequest, schemajson.BadRequestDetail(err))
 	}

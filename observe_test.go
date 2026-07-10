@@ -169,6 +169,51 @@ func TestUsageTrackerNilCostComponentDemotesNativeSum(t *testing.T) {
 	}
 }
 
+func TestUsageTrackerCostProvenanceIsCommutative(t *testing.T) {
+	withCost := func(tokens int64, cost float64, source string) llm.Usage {
+		return llm.Usage{TotalTokens: tokens, CostUSD: &cost, CostSource: source}
+	}
+	missing := llm.Usage{TotalTokens: 7}
+	native := withCost(3, 0.5, llm.CostSourceNative)
+	estimated := withCost(5, 0.25, llm.CostSourceEstimated)
+
+	tests := []struct {
+		name       string
+		components []llm.Usage
+		wantCost   float64
+		wantSource string
+	}{
+		{name: "native then missing", components: []llm.Usage{native, missing}, wantCost: 0.5, wantSource: llm.CostSourceEstimated},
+		{name: "missing then native", components: []llm.Usage{missing, native}, wantCost: 0.5, wantSource: llm.CostSourceEstimated},
+		{name: "native then estimated", components: []llm.Usage{native, estimated}, wantCost: 0.75, wantSource: llm.CostSourceEstimated},
+		{name: "estimated then native", components: []llm.Usage{estimated, native}, wantCost: 0.75, wantSource: llm.CostSourceEstimated},
+		{name: "estimated then missing", components: []llm.Usage{estimated, missing}, wantCost: 0.25, wantSource: llm.CostSourceEstimated},
+		{name: "missing then estimated", components: []llm.Usage{missing, estimated}, wantCost: 0.25, wantSource: llm.CostSourceEstimated},
+		{name: "all native", components: []llm.Usage{native, withCost(2, 0.1, llm.CostSourceNative)}, wantCost: 0.6, wantSource: llm.CostSourceNative},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := llmtest.New(llmtest.WithName("fake"))
+			for _, usage := range tt.components {
+				p.EnqueueResponse(&llm.Response{Provider: "fake", Model: "model-a", Usage: usage})
+			}
+			tracker := llm.NewUsageTracker()
+			wrapped := llm.Wrap(p, tracker.Middleware())
+			req := &llm.Request{Model: "model-a", Messages: []llm.Message{llm.UserText("hi")}}
+			for range tt.components {
+				if _, err := wrapped.Chat(context.Background(), req); err != nil {
+					t.Fatalf("Chat returned error: %v", err)
+				}
+			}
+			usage := tracker.Stats().Usage
+			if usage.CostUSD == nil || *usage.CostUSD != tt.wantCost || usage.CostSource != tt.wantSource {
+				t.Fatalf("usage cost = %v (%q), want %v (%q)", usage.CostUSD, usage.CostSource, tt.wantCost, tt.wantSource)
+			}
+		})
+	}
+}
+
 func TestUsageTrackerBucketsFailedChatByProvider(t *testing.T) {
 	p := llmtest.New(llmtest.WithName("fake"))
 	p.EnqueueError(llm.ErrRateLimited)

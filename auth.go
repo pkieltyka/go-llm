@@ -81,25 +81,28 @@ func (c *AuthCredential) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &in); err != nil {
 		return err
 	}
-	c.Type = in.Type
-	c.Key = in.Key
-	if c.Key == "" {
-		c.Key = in.APIKey
+	next := AuthCredential{
+		Type:      in.Type,
+		Key:       in.Key,
+		Access:    in.Access,
+		Refresh:   in.Refresh,
+		AccountID: in.AccountID,
+		Model:     in.Model,
+		BaseURL:   in.BaseURL,
 	}
-	c.Access = in.Access
-	c.Refresh = in.Refresh
-	c.AccountID = in.AccountID
-	c.Model = in.Model
-	c.BaseURL = in.BaseURL
-	if c.BaseURL == "" {
-		c.BaseURL = in.BaseURL2
+	if next.Key == "" {
+		next.Key = in.APIKey
+	}
+	if next.BaseURL == "" {
+		next.BaseURL = in.BaseURL2
 	}
 	if in.Expires != "" {
 		expires, err := in.Expires.Int64()
 		if err != nil {
 			return fmt.Errorf("expires must be an integer millisecond epoch: %w", err)
 		}
-		c.Expires = expires
+		next.Expires = expires
 	}
+	*c = next
 	return nil
 }
