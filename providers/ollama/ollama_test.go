@@ -42,7 +42,7 @@ func TestChatRoundTrip(t *testing.T) {
 		if r.Header.Get("Accept") == "text/event-stream" {
 			streamBody, _ = io.ReadAll(r.Body)
 			w.Header().Set("Content-Type", "text/event-stream")
-			_, _ = io.WriteString(w, `data: {"id":"c1","model":"qwen3:8b","choices":[{"index":0,"delta":{"role":"assistant","content":"pong"},"finish_reason":"stop"}]}`+"\n\n")
+			_, _ = io.WriteString(w, `data: {"id":"c1","model":"qwen3:8b","choices":[{"index":2,"delta":{"content":"wrong"},"finish_reason":"stop"},{"index":0,"delta":{"role":"assistant","content":"pong"},"finish_reason":"stop"}]}`+"\n\n")
 			_, _ = io.WriteString(w, `data: {"id":"c1","model":"qwen3:8b","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`+"\n\n")
 			_, _ = io.WriteString(w, "data: [DONE]\n\n")
 			return
@@ -53,7 +53,7 @@ func TestChatRoundTrip(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"id":"c1","model":"qwen3:8b","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"pong"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+		_, _ = io.WriteString(w, `{"id":"c1","model":"qwen3:8b","choices":[{"index":4,"finish_reason":"stop","message":{"content":"wrong"}},{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"pong"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
 	}))
 	t.Cleanup(server.Close)
 

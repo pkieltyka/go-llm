@@ -514,6 +514,22 @@ func TestOpenRouterStreamKeepAliveCollectEquivalent(t *testing.T) {
 	}
 }
 
+func TestOpenRouterStreamUsesChoiceIndexZeroForContentAndExtras(t *testing.T) {
+	p := newTestProvider(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		mustWrite(t, w, `data: {"id":"gen_1","model":"openai/gpt-test","choices":[{"index":4,"native_finish_reason":"wrong","delta":{"content":"wrong"}},{"index":0,"native_finish_reason":"end_turn","delta":{"content":"right"},"finish_reason":"stop"}]}`+"\n\n")
+		mustWrite(t, w, "data: [DONE]\n\n")
+	})
+	resp, err := llm.Collect(p.ChatStream(context.Background(), &llm.Request{Model: "openai/gpt-test", Messages: []llm.Message{llm.UserText("hello")}}))
+	if err != nil {
+		t.Fatalf("Collect returned error: %v", err)
+	}
+	extras, ok := Extras(resp)
+	if resp.Text() != "right" || !ok || extras.NativeFinishReason != "end_turn" {
+		t.Fatalf("response/extras = %+v / %+v", resp, extras)
+	}
+}
+
 func TestOpenRouterStreamToolCallDropped(t *testing.T) {
 	p := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -535,13 +551,13 @@ func TestOpenRouterStreamToolCallDropped(t *testing.T) {
 	if len(droppedEvents) != 2 {
 		t.Fatalf("dropped events = %+v, want 2", droppedEvents)
 	}
-	// Pending-call flush is index-ordered: the malformed-args call (block
-	// index 3) drops before the missing-name call (block index 4).
+	// Pending-call flush is encounter ordered. Every observed tool candidate
+	// reserves a public block index, including calls later dropped.
 	if droppedEvents[0].Reason != "invalid tool arguments JSON" || droppedEvents[1].Reason != "missing tool name" {
 		t.Fatalf("dropped reasons = %+v", droppedEvents)
 	}
-	if droppedEvents[0].Index >= droppedEvents[1].Index {
-		t.Fatalf("dropped order not deterministic: %+v", droppedEvents)
+	if droppedEvents[0].Index != 4 || droppedEvents[1].Index != 5 {
+		t.Fatalf("dropped indexes = %+v, want stable tool positions 4 and 5", droppedEvents)
 	}
 }
 
@@ -726,6 +742,21 @@ func TestOpenRouterModels(t *testing.T) {
 	raw, ok := models[0].Raw.(json.RawMessage)
 	if !ok || !bytes.Contains(raw, []byte(`"supported_parameters"`)) || !bytes.Contains(raw, []byte(`"modalities"`)) {
 		t.Fatalf("raw model payload = %T %s", models[0].Raw, raw)
+	}
+}
+
+func TestOpenRouterModelsMalformedRowIsProviderError(t *testing.T) {
+	p := newTestProvider(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		mustWrite(t, w, `{"data":[{"id":123}]}`)
+	})
+	_, err := p.Models(context.Background())
+	if !errors.Is(err, llm.ErrServer) {
+		t.Fatalf("Models error = %v, want ErrServer", err)
+	}
+	var providerErr *llm.ProviderError
+	if !errors.As(err, &providerErr) || providerErr.Provider != providerName {
+		t.Fatalf("Models error = %T %v, want OpenRouter ProviderError", err, err)
 	}
 }
 

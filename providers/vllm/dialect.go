@@ -225,7 +225,7 @@ func (dialect) Models(ctx context.Context, p *chatcompletions.Provider) ([]llm.M
 			MaxModelLen int    `json:"max_model_len"`
 		}
 		if err := json.Unmarshal(rawRow, &row); err != nil {
-			return nil, err
+			return nil, providerutil.NormalizeRemoteError(providerName, err)
 		}
 		models = append(models, llm.ModelInfo{
 			ID:            row.ID,

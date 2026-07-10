@@ -38,13 +38,13 @@ func (a Adapter) mapOutput(output []responses.ResponseOutputItemUnion) ([]llm.Pa
 	seenIDs := map[string]struct{}{}
 	sawRefusal := false
 	sawFunctionCall := false
-	for i, item := range output {
+	for index, item := range output {
 		switch item.Type {
 		case "message":
 			// All content pieces of one message item fold into a single
-			// TextPart, mirroring the stream path where deltas accumulate
-			// per output-item index — part boundaries and DroppedToolCall
-			// indices (output-item positions) then match on both paths.
+			// TextPart, mirroring the stream path where deltas accumulate for
+			// one output item. Public block indexes are assigned only when a
+			// canonical part is retained.
 			var text strings.Builder
 			for _, content := range item.Content {
 				switch content.Type {
@@ -60,7 +60,7 @@ func (a Adapter) mapOutput(output []responses.ResponseOutputItemUnion) ([]llm.Pa
 			}
 		case "function_call":
 			sawFunctionCall = true
-			call, drop := mapFunctionCall(i, item, seenIDs)
+			call, drop := mapFunctionCall(index, item, seenIDs)
 			if drop != nil {
 				dropped = append(dropped, *drop)
 				continue
@@ -86,7 +86,7 @@ func mapFunctionCall(index int, item responses.ResponseOutputItemUnion, seenIDs 
 	}
 	seenIDs[id] = struct{}{}
 
-	args := strings.TrimSpace(item.Arguments.OfString)
+	args := item.Arguments.OfString
 	if args == "" {
 		args = "{}"
 	}

@@ -32,10 +32,12 @@ func mapContentBlocks(blocks []sdk.ContentBlockUnion) ([]llm.Part, []llm.Dropped
 	parts := make([]llm.Part, 0, len(blocks))
 	dropped := make([]llm.DroppedToolCall, 0)
 	seenIDs := map[string]struct{}{}
-	for i, block := range blocks {
+	for index, block := range blocks {
 		switch block.Type {
 		case "text":
-			parts = append(parts, llm.Text(block.Text))
+			if block.Text != "" {
+				parts = append(parts, llm.Text(block.Text))
+			}
 		case "thinking", "redacted_thinking":
 			parts = append(parts, llm.ReasoningPart{
 				Text:     block.Thinking,
@@ -43,7 +45,7 @@ func mapContentBlocks(blocks []sdk.ContentBlockUnion) ([]llm.Part, []llm.Dropped
 				Provider: providerName,
 			})
 		case "tool_use":
-			call, drop := mapToolUseBlock(i, block, seenIDs)
+			call, drop := mapToolUseBlock(index, block, seenIDs)
 			if drop != nil {
 				dropped = append(dropped, *drop)
 				continue

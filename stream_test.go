@@ -9,6 +9,11 @@ import (
 	"time"
 )
 
+var (
+	_ Event = ToolCallIDChanged{}
+	_ Event = (*ToolCallIDChanged)(nil)
+)
+
 func TestCollectAccumulatesResponse(t *testing.T) {
 	usage := Usage{InputTokens: 3, OutputTokens: 5, TotalTokens: 8}
 	resp, err := Collect(eventSeq(
@@ -100,6 +105,160 @@ func TestCollectToolCallDropped(t *testing.T) {
 	}
 }
 
+func TestCollectToolCallIDChanged(t *testing.T) {
+	resp, err := Collect(eventSeq(
+		MessageStart{Provider: "test", Model: "model"},
+		ToolCallStart{Index: 0, ID: "provider-id", Name: "lookup"},
+		ToolCallDelta{Index: 0, ArgsFragment: `{"q":`},
+		ToolCallIDChanged{Index: 0, OldID: "provider-id", NewID: "call_0"},
+		ToolCallDelta{Index: 0, ArgsFragment: `"go"}`},
+		ToolCallEnd{Index: 0},
+		MessageEnd{},
+	))
+	if err != nil {
+		t.Fatalf("Collect returned error: %v", err)
+	}
+	if len(resp.DroppedToolCalls) != 0 {
+		t.Fatalf("DroppedToolCalls = %#v, want no false drop metadata", resp.DroppedToolCalls)
+	}
+	if calls := resp.ToolCalls(); len(calls) != 1 || calls[0].ID != "call_0" || string(calls[0].Args) != `{"q":"go"}` {
+		t.Fatalf("ToolCalls = %#v, want identity change with arguments retained", calls)
+	}
+}
+
+func TestCollectToolCallIDChangedRequiresMatchingActiveTool(t *testing.T) {
+	tests := []struct {
+		name   string
+		events []Event
+	}{
+		{
+			name: "old ID mismatch",
+			events: []Event{
+				MessageStart{Provider: "test", Model: "model"},
+				ToolCallStart{Index: 0, ID: "call_0", Name: "lookup"},
+				ToolCallIDChanged{Index: 0, OldID: "other", NewID: "call_1"},
+			},
+		},
+		{
+			name: "after end",
+			events: []Event{
+				MessageStart{Provider: "test", Model: "model"},
+				ToolCallStart{Index: 0, ID: "call_0", Name: "lookup"},
+				ToolCallEnd{Index: 0},
+				ToolCallIDChanged{Index: 0, OldID: "call_0", NewID: "call_1"},
+			},
+		},
+		{
+			name: "non-tool collision",
+			events: []Event{
+				MessageStart{Provider: "test", Model: "model"},
+				TextDelta{Index: 0, Text: "keep"},
+				ToolCallIDChanged{Index: 0, OldID: "call_0", NewID: "call_1"},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, err := Collect(eventSeq(tt.events...))
+			if !errors.Is(err, ErrBadRequest) {
+				t.Fatalf("error = %v, want ErrBadRequest", err)
+			}
+			if resp == nil || len(resp.DroppedToolCalls) != 0 {
+				t.Fatalf("partial response = %#v, want content without false drop metadata", resp)
+			}
+			if calls := resp.ToolCalls(); len(calls) > 0 && calls[0].ID != "call_0" {
+				t.Fatalf("calls = %#v, mismatched identity event mutated the call", calls)
+			}
+		})
+	}
+}
+
+func TestCollectToolCallDroppedOnlyRemovesActiveTool(t *testing.T) {
+	t.Run("active provisional tool", func(t *testing.T) {
+		resp, err := Collect(eventSeq(
+			MessageStart{Provider: "test", Model: "model"},
+			ToolCallStart{Index: 0, ID: "call_1", Name: "lookup"},
+			ToolCallDelta{Index: 0, ArgsFragment: `{"q":`},
+			ToolCallDropped{Index: 0, Reason: "invalid arguments"},
+			MessageEnd{},
+		))
+		if err != nil {
+			t.Fatalf("Collect returned error: %v", err)
+		}
+		if len(resp.Parts) != 0 || len(resp.DroppedToolCalls) != 1 {
+			t.Fatalf("parts/drops = %#v / %#v, want removed active tool and visible drop", resp.Parts, resp.DroppedToolCalls)
+		}
+	})
+
+	t.Run("text collision", func(t *testing.T) {
+		resp, err := Collect(eventSeq(
+			MessageStart{Provider: "test", Model: "model"},
+			TextDelta{Index: 0, Text: "keep text"},
+			ToolCallDropped{Index: 0, Reason: "different provisional call"},
+			MessageEnd{},
+		))
+		if err != nil {
+			t.Fatalf("Collect returned error: %v", err)
+		}
+		if resp.Text() != "keep text" || len(resp.DroppedToolCalls) != 1 {
+			t.Fatalf("response = %#v, want colliding text preserved", resp)
+		}
+	})
+
+	t.Run("reasoning collision", func(t *testing.T) {
+		resp, err := Collect(eventSeq(
+			MessageStart{Provider: "test", Model: "model"},
+			ReasoningDelta{Index: 0, Text: "keep reasoning"},
+			ToolCallDropped{Index: 0, Reason: "different provisional call"},
+			MessageEnd{},
+		))
+		if err != nil {
+			t.Fatalf("Collect returned error: %v", err)
+		}
+		if resp.Reasoning() != "keep reasoning" || len(resp.DroppedToolCalls) != 1 {
+			t.Fatalf("response = %#v, want colliding reasoning preserved", resp)
+		}
+	})
+
+	t.Run("ended tool collision", func(t *testing.T) {
+		resp, err := Collect(eventSeq(
+			MessageStart{Provider: "test", Model: "model"},
+			ToolCallStart{Index: 0, ID: "call_1", Name: "lookup"},
+			ToolCallDelta{Index: 0, ArgsFragment: `{}`},
+			ToolCallEnd{Index: 0},
+			ToolCallDropped{Index: 0, Reason: "different provisional call"},
+			MessageEnd{},
+		))
+		if err != nil {
+			t.Fatalf("Collect returned error: %v", err)
+		}
+		if calls := resp.ToolCalls(); len(calls) != 1 || calls[0].ID != "call_1" || len(resp.DroppedToolCalls) != 1 {
+			t.Fatalf("response = %#v, want ended tool preserved", resp)
+		}
+	})
+}
+
+func TestCollectSortsDroppedToolCallsByStableIndex(t *testing.T) {
+	resp, err := Collect(eventSeq(
+		MessageStart{Provider: "test", Model: "model"},
+		ToolCallDropped{Index: 1, Reason: "z-last"},
+		ToolCallDropped{Index: 0, Reason: "middle"},
+		ToolCallDropped{Index: 1, Reason: "a-first"},
+		MessageEnd{},
+	))
+	if err != nil {
+		t.Fatalf("Collect returned error: %v", err)
+	}
+	want := []DroppedToolCall{
+		{Index: 0, Reason: "middle"},
+		{Index: 1, Reason: "a-first"},
+		{Index: 1, Reason: "z-last"},
+	}
+	if !slices.Equal(resp.DroppedToolCalls, want) {
+		t.Fatalf("DroppedToolCalls = %#v, want %#v", resp.DroppedToolCalls, want)
+	}
+}
+
 func TestCollectReasoningDeltaRaw(t *testing.T) {
 	resp, err := Collect(eventSeq(
 		MessageStart{ID: "msg_1", Provider: "anthropic", Model: "model-a"},
@@ -128,6 +287,7 @@ func TestCollectAcceptsPointerEvents(t *testing.T) {
 		&ReasoningDelta{Index: 1, Text: "why"},
 		&ToolCallStart{Index: 2, ID: "call_1", Name: "lookup"},
 		&ToolCallDelta{Index: 2, ArgsFragment: `{"q":"go"}`},
+		&ToolCallIDChanged{Index: 2, OldID: "call_1", NewID: "call_2"},
 		&ToolCallEnd{Index: 2},
 		&ToolCallDropped{Index: 4, Reason: "truncated arguments"},
 		&MessageEnd{StopReason: StopReasonToolUse, Usage: usage},
@@ -141,8 +301,8 @@ func TestCollectAcceptsPointerEvents(t *testing.T) {
 	if resp.Usage != usage {
 		t.Fatalf("usage = %+v, want %+v", resp.Usage, usage)
 	}
-	if calls := resp.ToolCalls(); len(calls) != 1 || calls[0].ID != "call_1" {
-		t.Fatalf("ToolCalls = %+v, want call_1", calls)
+	if calls := resp.ToolCalls(); len(calls) != 1 || calls[0].ID != "call_2" {
+		t.Fatalf("ToolCalls = %+v, want call_2", calls)
 	}
 	if len(resp.DroppedToolCalls) != 1 || resp.DroppedToolCalls[0].Index != 4 {
 		t.Fatalf("DroppedToolCalls = %+v, want index 4", resp.DroppedToolCalls)
@@ -493,13 +653,14 @@ func eventSeq(events ...Event) iter.Seq2[Event, error] {
 func TestApplyCollectEventInstallsMessageEndRaw(t *testing.T) {
 	resp := &Response{}
 	blocks := map[int]Part{}
+	activeTools := map[int]struct{}{}
 	raw := map[string]string{"upstream": "extras"}
 	end := MessageEnd{
 		StopReason: StopReasonEndTurn,
 		Usage:      Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3},
 		Raw:        raw,
 	}
-	if err := applyCollectEvent(resp, blocks, end); err != nil {
+	if err := applyCollectEvent(resp, blocks, activeTools, end); err != nil {
 		t.Fatalf("applyCollectEvent returned error: %v", err)
 	}
 	got, ok := resp.Raw.(map[string]string)

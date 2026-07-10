@@ -155,6 +155,7 @@ func (s *Session) collectingStream(stream iter.Seq2[Event, error], rollbackTo in
 
 		resp := &Response{}
 		blocks := map[int]Part{}
+		activeTools := map[int]struct{}{}
 		for event, err := range stream {
 			if err != nil {
 				yield(event, err)
@@ -165,7 +166,7 @@ func (s *Session) collectingStream(stream iter.Seq2[Event, error], rollbackTo in
 				yield(nil, err)
 				return
 			}
-			if err := applyCollectEvent(resp, blocks, event); err != nil {
+			if err := applyCollectEvent(resp, blocks, activeTools, event); err != nil {
 				yield(nil, err)
 				return
 			}

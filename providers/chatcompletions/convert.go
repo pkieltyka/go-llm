@@ -53,7 +53,9 @@ func (p *Provider) BuildParams(req *llm.Request, stream bool) (sdk.ChatCompletio
 		if err != nil {
 			return sdk.ChatCompletionNewParams{}, err
 		}
-		params.ParallelToolCalls = sdk.Bool(true)
+		if p.hasCapability(llm.CapabilityParallelTools) {
+			params.ParallelToolCalls = sdk.Bool(true)
+		}
 	}
 	if len(req.Tools) > 0 || req.ToolChoice.Mode != "" {
 		params.ToolChoice = buildToolChoice(req.ToolChoice)
@@ -76,10 +78,23 @@ func (p *Provider) BuildParams(req *llm.Request, stream bool) (sdk.ChatCompletio
 	if err := p.dialect.ApplyRequest(req, &params, extras); err != nil {
 		return sdk.ChatCompletionNewParams{}, err
 	}
+	if !p.hasCapability(llm.CapabilityParallelTools) {
+		params.ParallelToolCalls = sdkparam.Opt[bool]{}
+		delete(extras, "parallel_tool_calls")
+	}
 	if len(extras) > 0 {
 		params.SetExtraFields(extras)
 	}
 	return params, nil
+}
+
+func (p *Provider) hasCapability(want llm.Capability) bool {
+	for _, capability := range p.Capabilities() {
+		if capability == want {
+			return true
+		}
+	}
+	return false
 }
 
 // mapEffort translates the unified Effort into top-level wire request fields,

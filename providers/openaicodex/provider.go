@@ -123,7 +123,7 @@ func (p *Provider) Chat(ctx context.Context, req *llm.Request) (*llm.Response, e
 	response, err := llm.Collect(p.codexEvents(ctx, params))
 	if err != nil {
 		p.logFailure(ctx, req, start, err)
-		return nil, err
+		return response, err
 	}
 	p.logSuccess(ctx, response, start)
 	return response, nil
@@ -159,10 +159,6 @@ func (p *Provider) ChatStream(ctx context.Context, req *llm.Request) iter.Seq2[l
 			if !yield(event, nil) {
 				return
 			}
-		}
-		if err := ctx.Err(); err != nil {
-			p.logFailure(ctx, req, start, err)
-			yield(nil, err)
 		}
 	})
 }

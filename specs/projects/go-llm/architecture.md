@@ -260,6 +260,7 @@ type ReasoningDelta struct {
 // reasoning replay (FS §18). Adapters emit Raw once the block is complete.
 type ToolCallStart struct { Index int; ID, Name string }
 type ToolCallDelta struct { Index int; ArgsFragment string }
+type ToolCallIDChanged struct { Index int; OldID, NewID string }
 type ToolCallEnd   struct { Index int }
 type ToolCallDropped struct { Index int; Reason string } // FS §7 malformed-call contract; Collect → Response.DroppedToolCalls
 type MessageEnd    struct {
@@ -285,6 +286,15 @@ func Collect(events iter.Seq2[Event, error]) (*Response, error)
 //     or error); rate-limits UI re-renders / network frames.
 func StreamText(events iter.Seq2[Event, error], opts ...StreamTextOption) iter.Seq2[string, error]
 ```
+
+`ToolCallIDChanged` corrects the identity of the active provisional tool at
+`Index` without ending, dropping, or restarting it. Direct consumers update
+their active call in place. `Collect` requires `OldID` to match the current
+identity at the same active tool index, applies `NewID`, and returns the
+partial response plus `ErrBadRequest` for a missing/ended call, a non-tool
+collision, or an identity mismatch. The event never contributes a
+`DroppedToolCall`; only `ToolCallDropped{Index, Reason}` records an actual
+adapter decision to abandon an unusable call.
 
 `Collect` is also the internal building block for testing adapters: every
 recorded stream fixture must `Collect` into the same `Response` the
@@ -1134,6 +1144,9 @@ via `llm.StreamText` or collect for `--json`/`--no-stream`), `models.go`
    (never an error, never silence) only when a call remains unusable at
    block/stream end. Adopted from zero's production design (its collector
    + `tool-call-dropped` event); the retry *nudge* is `go-agent`'s job.
+   When deterministic duplicate-id reconciliation changes an already-started
+   provisional call, adapters emit `ToolCallIDChanged` and keep its arguments
+   and lifecycle intact; this is an identity correction, never a visible drop.
 9. **Parse[T] on json-mode providers.** Schema guidance is appended to
    `System` (never injected into user messages) and validation happens
    client-side; the retry turn includes the validation error verbatim so

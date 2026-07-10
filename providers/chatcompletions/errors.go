@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"strings"
 
@@ -42,11 +41,7 @@ func (p *Provider) mapError(err error) error {
 			Kind:       p.dialect.MapErrorStatus(apiErr.StatusCode, code, apiErr.Message),
 		}
 	}
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
-		return &llm.ProviderError{Provider: p.Name(), Message: err.Error(), Kind: llm.ErrTimeout}
-	}
-	return err
+	return providerutil.NormalizeRemoteError(p.Name(), err)
 }
 
 func (p *Provider) mapHTTPResponseError(resp *http.Response) error {

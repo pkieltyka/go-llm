@@ -63,6 +63,19 @@ type ToolCallDelta struct {
 
 func (ToolCallDelta) event() {}
 
+// ToolCallIDChanged corrects the ID of an active provisional tool call.
+// Direct stream consumers must replace OldID with NewID for the call at Index.
+// OldID must match the ID established by ToolCallStart or the preceding
+// ToolCallIDChanged event. Collect rejects mismatches as malformed streams;
+// an identity change never creates DroppedToolCalls metadata.
+type ToolCallIDChanged struct {
+	Index int
+	OldID string
+	NewID string
+}
+
+func (ToolCallIDChanged) event() {}
+
 // ToolCallEnd closes a streamed tool call.
 type ToolCallEnd struct {
 	Index int
@@ -70,8 +83,8 @@ type ToolCallEnd struct {
 
 func (ToolCallEnd) event() {}
 
-// ToolCallDropped reports a malformed tool call that an adapter could not
-// rescue. It is visible in streams and collected onto Response.
+// ToolCallDropped reports an actual malformed tool call that an adapter could
+// not rescue. It is visible in streams and collected onto Response.
 type ToolCallDropped struct {
 	Index  int
 	Reason string
@@ -107,6 +120,7 @@ func Collect(events iter.Seq2[Event, error]) (*Response, error) {
 
 	resp := &Response{}
 	blocks := map[int]Part{}
+	activeTools := map[int]struct{}{}
 	seenStart := false
 
 	partial := func() *Response {
@@ -127,7 +141,7 @@ func Collect(events iter.Seq2[Event, error]) (*Response, error) {
 		if _, ok := event.(MessageStart); ok {
 			seenStart = true
 		}
-		if err := applyCollectEvent(resp, blocks, event); err != nil {
+		if err := applyCollectEvent(resp, blocks, activeTools, event); err != nil {
 			return partial(), err
 		}
 	}
@@ -138,7 +152,7 @@ func Collect(events iter.Seq2[Event, error]) (*Response, error) {
 // applyCollectEvent folds one normalized event into an accumulating response.
 // It is the single event-application path shared by Collect and Session's
 // stream collection, so the two can never diverge.
-func applyCollectEvent(resp *Response, blocks map[int]Part, event Event) error {
+func applyCollectEvent(resp *Response, blocks map[int]Part, activeTools map[int]struct{}, event Event) error {
 	switch e := event.(type) {
 	case MessageStart:
 		resp.ID = e.ID
@@ -149,17 +163,32 @@ func applyCollectEvent(resp *Response, blocks map[int]Part, event Event) error {
 	case ReasoningDelta:
 		return appendReasoningDelta(blocks, e)
 	case ToolCallStart:
-		return startToolCall(blocks, e)
+		if err := startToolCall(blocks, e); err != nil {
+			return err
+		}
+		activeTools[e.Index] = struct{}{}
+		return nil
 	case ToolCallDelta:
 		return appendToolCallDelta(blocks, e)
+	case ToolCallIDChanged:
+		return changeToolCallID(blocks, activeTools, e)
 	case ToolCallEnd:
-		return endToolCall(blocks, e.Index)
+		if err := endToolCall(blocks, e.Index); err != nil {
+			return err
+		}
+		delete(activeTools, e.Index)
+		return nil
 	case ToolCallDropped:
 		if e.Index < 0 {
 			return fmt.Errorf("%w: negative dropped tool call index %d", ErrBadRequest, e.Index)
 		}
-		delete(blocks, e.Index)
-		resp.DroppedToolCalls = append(resp.DroppedToolCalls, DroppedToolCall(e))
+		if _, active := activeTools[e.Index]; active {
+			if _, ok := blocks[e.Index].(ToolCallPart); ok {
+				delete(blocks, e.Index)
+				delete(activeTools, e.Index)
+			}
+		}
+		resp.DroppedToolCalls = append(resp.DroppedToolCalls, DroppedToolCall{Index: e.Index, Reason: e.Reason})
 	case MessageEnd:
 		resp.StopReason = e.StopReason
 		resp.StopReasonRaw = e.StopReasonRaw
@@ -181,7 +210,7 @@ func normalizeEvent(event Event) (Event, error) {
 	switch event.(type) {
 	case nil:
 		return nil, fmt.Errorf("%w: nil stream event", ErrBadRequest)
-	case MessageStart, TextDelta, ReasoningDelta, ToolCallStart, ToolCallDelta, ToolCallEnd, ToolCallDropped, MessageEnd:
+	case MessageStart, TextDelta, ReasoningDelta, ToolCallStart, ToolCallDelta, ToolCallIDChanged, ToolCallEnd, ToolCallDropped, MessageEnd:
 		return event, nil
 	default:
 		return nil, fmt.Errorf("%w: unknown stream event %T", ErrBadRequest, event)
@@ -214,6 +243,11 @@ func derefEvent(event Event) Event {
 		}
 		return *e
 	case *ToolCallDelta:
+		if e == nil {
+			return nil
+		}
+		return *e
+	case *ToolCallIDChanged:
 		if e == nil {
 			return nil
 		}
@@ -318,6 +352,32 @@ func appendToolCallDelta(blocks map[int]Part, event ToolCallDelta) error {
 	return nil
 }
 
+func changeToolCallID(blocks map[int]Part, activeTools map[int]struct{}, event ToolCallIDChanged) error {
+	if event.Index < 0 {
+		return fmt.Errorf("%w: negative stream index %d", ErrBadRequest, event.Index)
+	}
+	if event.OldID == "" || event.NewID == "" || event.OldID == event.NewID {
+		return fmt.Errorf("%w: invalid tool call ID change at index %d", ErrBadRequest, event.Index)
+	}
+	if _, active := activeTools[event.Index]; !active {
+		return fmt.Errorf("%w: tool call ID change outside active call at index %d", ErrBadRequest, event.Index)
+	}
+	part, ok := blocks[event.Index]
+	if !ok {
+		return fmt.Errorf("%w: tool call ID change before start for index %d", ErrBadRequest, event.Index)
+	}
+	call, ok := part.(ToolCallPart)
+	if !ok {
+		return fmt.Errorf("%w: stream index %d is %T, not ToolCallPart", ErrBadRequest, event.Index, part)
+	}
+	if call.ID != event.OldID {
+		return fmt.Errorf("%w: tool call ID change at index %d expected %q, got %q", ErrBadRequest, event.Index, call.ID, event.OldID)
+	}
+	call.ID = event.NewID
+	blocks[event.Index] = call
+	return nil
+}
+
 func endToolCall(blocks map[int]Part, index int) error {
 	part, ok := blocks[index]
 	if !ok {
@@ -340,6 +400,13 @@ func finalizeCollectedResponse(resp *Response, blocks map[int]Part) *Response {
 	for _, index := range indexes {
 		resp.Parts = append(resp.Parts, clonePart(blocks[index]))
 	}
+	sort.Slice(resp.DroppedToolCalls, func(i, j int) bool {
+		left, right := resp.DroppedToolCalls[i], resp.DroppedToolCalls[j]
+		if left.Index != right.Index {
+			return left.Index < right.Index
+		}
+		return left.Reason < right.Reason
+	})
 	return resp
 }
 

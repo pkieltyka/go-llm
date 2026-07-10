@@ -247,7 +247,8 @@ adapter (OpenRouter, ZAI).
 - Event types: `MessageStart` (id, provider, model — so `Collect` can
   populate `Response.Provider`/`Model`), `TextDelta` (index, text),
   `ReasoningDelta` (index, text), `ToolCallStart` (index, id, name),
-  `ToolCallDelta` (index, argument JSON fragment), `ToolCallEnd` (index),
+  `ToolCallDelta` (index, argument JSON fragment), `ToolCallIDChanged`
+  (index, old id, new id), `ToolCallEnd` (index),
   `ToolCallDropped` (index, reason — §7 malformed-call contract),
   `MessageEnd` (stop reason + usage). All content events carry a block
   index — content blocks are **not** guaranteed contiguous (the Responses
@@ -256,6 +257,15 @@ adapter (OpenRouter, ZAI).
   sequence, and `llm.Collect` returns the partial `*Response` accumulated
   so far *alongside* the error — callers (and `go-agent`) can persist
   aborted/failed turns.
+- `ToolCallIDChanged` is an identity correction for an already-started,
+  still-provisional tool call, not a drop/restart signal. Direct stream
+  consumers replace `OldID` with `NewID` for the active call at `Index`;
+  `OldID` must match the identity established by `ToolCallStart` or the
+  preceding change. `Collect` applies the same replacement only to that
+  matching active call and treats a missing call, ended call, index/type
+  collision, or old-id mismatch as a canonical malformed-stream error.
+  Identity corrections never create `Response.DroppedToolCalls` metadata.
+  `ToolCallDropped` remains reserved for calls the adapter actually abandons.
 - A helper (`llm.Collect`) accumulates any stream into a complete
   `*Response`. A text-only consumer adapter, `llm.StreamText`, filters a
   stream to plain text deltas (`iter.Seq2[string, error]`); its

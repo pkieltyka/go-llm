@@ -11,7 +11,7 @@ The plan artifact is complete; implementation checkboxes remain open. Execute ph
 ## Phase checklist
 
 - [x] Phase 1: credential boundaries and fail-closed fixture recording
-- [ ] Phase 2: stream grammar and provider equivalence
+- [x] Phase 2: stream grammar and provider equivalence
 - [ ] Phase 3: core lifecycle and API correctness
 - [ ] Phase 4: schema and OAuth correctness
 - [ ] Phase 5: first-party consumers and release tooling
@@ -51,7 +51,7 @@ Findings: C2, C7, C8, C11, C12, V1, V2, plus dropped block indexes.
 2. Track whether downstream returned `false` from `yield`. Do not synthesize a truncation error after consumer early break; enforce terminal grammar only when upstream was actually exhausted.
 3. Buffer pre-start Responses events, emit MessageStart first, and use the request model when `response.created` is absent.
 4. For Chat Completions, consume only entries whose `choice.Index == 0`; never use `Choices[0]` positionally for extras or finish reason. Require at least one real choice, allow trailing usage-only chunks, and reject choice-less warm-up completion.
-5. Define BlockIndex as the contiguous index of emitted canonical response parts. Increment only for retained parts so blocking Chat and `Collect(ChatStream)` agree when malformed tool calls are dropped.
+5. Define BlockIndex as the stable provider/wire output position. Retained parts preserve that position, malformed dropped items may leave gaps, and already emitted events are never renumbered; blocking Chat and `Collect(ChatStream)` must expose equal retained parts and BlockIndex positions.
 6. For Anthropic, use only scoped context-overflow phrases, merge late tool metadata into buffered argument state, omit assistant messages emptied by foreign/unknown-part filtering, and make `message_stop` without `message_delta` terminate correctly.
 7. Centralize transport/decode normalization: preserve `context.Canceled`, `context.DeadlineExceeded`, and existing typed provider errors; wrap unknown remote I/O or parse failures in `ProviderError` with the stable sentinel.
 8. Omit `parallel_tool_calls` entirely when `CapabilityParallelTools` is absent; do not send `false`.
@@ -59,7 +59,7 @@ Findings: C2, C7, C8, C11, C12, V1, V2, plus dropped block indexes.
 Acceptance:
 
 - Engine fixtures cover empty EOF, truncated EOF, pre-start deltas, early break, Anthropic `message_stop`, nonzero-only choices, usage-only tails, malformed tool drops, and unknown decoder/transport errors.
-- Equivalent blocking and streaming inputs produce the same retained parts, indexes, finish reason, usage, and provider error classification.
+- Equivalent blocking and streaming inputs produce the same retained parts and stable provider/wire BlockIndex positions, including the same gaps after dropped items, plus the same finish reason, usage, and provider error classification.
 
 ```sh
 go test -count=1 ./providers/internal/providerutil ./providers/internal/responsesapi ./providers/chatcompletions ./providers/anthropic ./providers/openai ./providers/openaicodex ./providers/openrouter ./providers/vllm ./providers/ollama

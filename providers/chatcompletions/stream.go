@@ -16,7 +16,6 @@ import (
 
 	sdk "github.com/openai/openai-go/v3"
 	llm "github.com/pkieltyka/go-llm"
-	"github.com/pkieltyka/go-llm/providers/internal/providerutil"
 )
 
 func (p *Provider) streamEvents(ctx context.Context, req *llm.Request, params sdk.ChatCompletionNewParams) iter.Seq2[llm.Event, error] {
@@ -42,36 +41,50 @@ func (p *Provider) streamEvents(ctx context.Context, req *llm.Request, params sd
 			return
 		}
 		state := newStreamState(p)
+		fail := func(streamErr error) {
+			for _, event := range state.settleReasoningRaw() {
+				if !yield(event, nil) {
+					return
+				}
+			}
+			for _, event := range state.rescuePartialTools() {
+				if !yield(event, nil) {
+					return
+				}
+			}
+			yield(nil, streamErr)
+		}
 		for payload, err := range ssePayloads(resp.Body) {
 			if err != nil {
-				yield(nil, err)
+				fail(err)
 				return
 			}
 			if strings.TrimSpace(string(payload)) == "[DONE]" {
+				if !state.seenChoice {
+					yield(nil, p.emptyStreamError())
+					return
+				}
 				for _, event := range state.finish() {
 					if !yield(event, nil) {
 						return
 					}
 				}
-				if !state.everStarted {
-					yield(nil, p.emptyStreamError())
-				}
 				return
 			}
 			if p.compat.SniffMidStreamErrors {
 				if err := p.sniffStreamError(payload); err != nil {
-					yield(nil, err)
+					fail(err)
 					return
 				}
 			}
 			var chunk rawChatCompletion
 			if err := json.Unmarshal(payload, &chunk); err != nil {
-				yield(nil, err)
+				fail(err)
 				return
 			}
 			events, err := state.mapChunk(chunk, payload)
 			if err != nil {
-				yield(nil, err)
+				fail(err)
 				return
 			}
 			for _, event := range events {
@@ -80,13 +93,27 @@ func (p *Provider) streamEvents(ctx context.Context, req *llm.Request, params sd
 				}
 			}
 		}
-		for _, event := range state.finish() {
+		if !state.seenChoice {
+			yield(nil, p.emptyStreamError())
+			return
+		}
+		if state.sawFinish {
+			for _, event := range state.finish() {
+				if !yield(event, nil) {
+					return
+				}
+			}
+			return
+		}
+		for _, event := range state.settleReasoningRaw() {
 			if !yield(event, nil) {
 				return
 			}
 		}
-		if !state.everStarted {
-			yield(nil, p.emptyStreamError())
+		for _, event := range state.rescuePartialTools() {
+			if !yield(event, nil) {
+				return
+			}
 		}
 	}
 }
@@ -290,19 +317,18 @@ func ssePayloads(r io.Reader) iter.Seq2[json.RawMessage, error] {
 }
 
 type streamState struct {
-	provider *Provider
-	id       string
-	model    string
-	started  bool
-	// everStarted stays true once any chunk arrived (started resets when
-	// finish emits MessageEnd); it distinguishes a finished stream from one
-	// that produced zero events (B4).
-	everStarted  bool
+	provider     *Provider
+	id           string
+	model        string
+	started      bool
+	seenChoice   bool
+	sawFinish    bool
 	usage        *rawUsage
 	finishReason string
 	extraRoot    jsonObject
 	extraChoice  rawChoice
 	tools        map[int]*streamToolCall
+	toolPrefix   int
 	seenIDs      map[string]struct{}
 	// toolCallsEmitted flips once any tool call completes (ToolCallEnd), so
 	// MessageEnd can normalize an end-turn finish to tool_use (FS §5) —
@@ -323,20 +349,26 @@ type streamState struct {
 	// annotations accumulates annotation elements across chunks for the
 	// dialect's terminal extras.
 	annotations []json.RawMessage
+	// reasoningRawSettled prevents duplicate Raw replacement events when an
+	// upstream failure is normalized through more than one local path.
+	reasoningRawSettled bool
 }
 
 type streamToolCall struct {
+	wireID     string
 	id         string
 	name       string
 	args       strings.Builder
 	started    bool
 	emittedLen int
+	eventIndex int
 }
 
 func newStreamState(p *Provider) *streamState {
 	return &streamState{
 		provider:            p,
 		tools:               map[int]*streamToolCall{},
+		toolPrefix:          -1,
 		seenIDs:             map[string]struct{}{},
 		reasoningDetails:    map[int][]json.RawMessage{},
 		reasoningTextBlocks: map[int]struct{}{},
@@ -345,29 +377,47 @@ func newStreamState(p *Provider) *streamState {
 
 func (s *streamState) mapChunk(chunk rawChatCompletion, raw []byte) ([]llm.Event, error) {
 	var events []llm.Event
-	if !s.started {
-		s.started = true
-		s.everStarted = true
+	if chunk.ID != "" {
 		s.id = chunk.ID
+	}
+	if chunk.Model != "" {
 		s.model = chunk.Model
-		events = append(events, llm.MessageStart{ID: chunk.ID, Provider: s.provider.Name(), Model: chunk.Model})
 	}
 	if chunk.Usage.Raw != nil || chunk.Usage.TotalTokens != 0 || chunk.Usage.PromptTokens != 0 || chunk.Usage.CompletionTokens != 0 || chunk.Usage.Cost != nil {
 		copied := chunk.Usage
 		s.usage = &copied
 	}
-	s.captureExtras(chunk)
-	for _, choice := range chunk.Choices {
-		if choice.Error != nil || choice.FinishReason == "error" {
-			if choice.Error == nil {
-				choice.Error = &rawError{Code: "error", Message: "stream chunk finished with error"}
+	choice, ok := choiceAtIndexZero(chunk.Choices)
+	s.captureExtras(chunk, choice, ok)
+	if !ok {
+		return nil, nil
+	}
+	if s.sawFinish {
+		if choiceHasOutputDelta(choice.Delta) {
+			return nil, &llm.ProviderError{
+				Provider: s.provider.Name(),
+				Message:  "provider emitted output after finish reason",
+				Kind:     llm.ErrServer,
 			}
-			return events, s.provider.mapChunkError(choice.Error, raw)
 		}
-		if choice.FinishReason != "" {
-			s.finishReason = choice.FinishReason
+		return nil, nil
+	}
+	s.seenChoice = true
+	if !s.started {
+		s.started = true
+		events = append(events, llm.MessageStart{ID: s.id, Provider: s.provider.Name(), Model: s.model})
+	}
+	if choice.Error != nil || choice.FinishReason == "error" {
+		if choice.Error == nil {
+			choice.Error = &rawError{Code: "error", Message: "stream chunk finished with error"}
 		}
-		events = append(events, s.mapDelta(choice)...)
+		return events, s.provider.mapChunkError(choice.Error, raw)
+	}
+	events = append(events, s.mapDelta(choice)...)
+	if choice.FinishReason != "" {
+		s.finishReason = choice.FinishReason
+		s.sawFinish = true
+		events = append(events, s.finishPendingTools()...)
 	}
 	// MessageEnd is emitted only at stream end ([DONE] or EOF) via finish:
 	// providers such as OpenRouter deliver usage/cost on a trailing
@@ -376,7 +426,15 @@ func (s *streamState) mapChunk(chunk rawChatCompletion, raw []byte) ([]llm.Event
 	return events, nil
 }
 
-func (s *streamState) captureExtras(chunk rawChatCompletion) {
+func choiceHasOutputDelta(delta rawMessage) bool {
+	return delta.Content != "" ||
+		delta.Refusal != "" ||
+		delta.reasoningText() != "" ||
+		len(delta.ReasoningDetails) > 0 ||
+		len(delta.ToolCalls) > 0
+}
+
+func (s *streamState) captureExtras(chunk rawChatCompletion, choice rawChoice, hasChoice bool) {
 	if len(chunk.Raw) > 0 {
 		if s.extraRoot == nil {
 			s.extraRoot = jsonObject{}
@@ -388,10 +446,9 @@ func (s *streamState) captureExtras(chunk rawChatCompletion) {
 			s.extraRoot[key] = value
 		}
 	}
-	if len(chunk.Choices) == 0 {
+	if !hasChoice {
 		return
 	}
-	choice := chunk.Choices[0]
 	if len(choice.Raw) > 0 {
 		if s.extraChoice.Raw == nil {
 			s.extraChoice.Raw = jsonObject{}
@@ -411,13 +468,26 @@ func (s *streamState) captureExtras(chunk rawChatCompletion) {
 	s.annotations = appendRawArrayElements(s.annotations, choice.Message.Annotations)
 	s.annotations = appendRawArrayElements(s.annotations, choice.Delta.Annotations)
 	if len(choice.Message.ReasoningDetails) > 0 {
-		s.appendReasoningDetails(choice.Index*streamBlockStride, choice.Message.ReasoningDetails)
+		s.appendReasoningDetails(choice.Message.ReasoningDetails)
 	}
 }
 
+func (s *streamState) reasoningIndex() int {
+	return reasoningBlockIndex
+}
+
+func (s *streamState) textIndex() int {
+	return contentBlockIndex
+}
+
+func (s *streamState) refusalIndex() int {
+	return refusalBlockIndex
+}
+
 // appendReasoningDetails accumulates one chunk's reasoning_details array for
-// the reasoning block at index.
-func (s *streamState) appendReasoningDetails(index int, details json.RawMessage) {
+// the single retained reasoning block on choice index zero.
+func (s *streamState) appendReasoningDetails(details json.RawMessage) {
+	index := s.reasoningIndex()
 	s.reasoningDetails[index] = appendRawArrayElements(s.reasoningDetails[index], details)
 }
 
@@ -450,61 +520,61 @@ func joinRawArray(elements []json.RawMessage) json.RawMessage {
 	return buf.Bytes()
 }
 
-// streamBlockStride spaces the per-choice block indexes: reasoning at
-// choice*stride, text at +1, tool calls from +2.
-const streamBlockStride = 10
-
 func (s *streamState) mapDelta(choice rawChoice) []llm.Event {
-	reasoningIndex := choice.Index * streamBlockStride
-	textIndex := reasoningIndex + 1
-	toolOffset := reasoningIndex + 2
 	var events []llm.Event
 	if text := choice.Delta.reasoningText(); text != "" {
+		reasoningIndex := s.reasoningIndex()
 		s.reasoningTextBlocks[reasoningIndex] = struct{}{}
 		events = append(events, llm.ReasoningDelta{Index: reasoningIndex, Text: text})
 	}
 	if len(choice.Delta.ReasoningDetails) > 0 {
 		// Accumulate only; the merged reasoning_details array is emitted as
 		// ReasoningDelta.Raw (REPLACE semantics) once the block is complete.
-		s.appendReasoningDetails(reasoningIndex, choice.Delta.ReasoningDetails)
+		s.appendReasoningDetails(choice.Delta.ReasoningDetails)
 	}
 	if choice.Delta.Content != "" {
-		events = append(events, llm.TextDelta{Index: textIndex, Text: choice.Delta.Content})
+		events = append(events, llm.TextDelta{Index: s.textIndex(), Text: choice.Delta.Content})
 	}
-	for _, call := range choice.Delta.ToolCalls {
-		key := toolOffset
-		if call.Index != nil {
-			key = toolOffset + *call.Index
+	if choice.Delta.Refusal != "" {
+		events = append(events, llm.TextDelta{Index: s.refusalIndex(), Text: choice.Delta.Refusal})
+	}
+	for position, call := range choice.Delta.ToolCalls {
+		key := position
+		if call.Index != nil && *call.Index >= 0 {
+			key = *call.Index
 		}
-		events = append(events, s.mapToolDelta(key, call)...)
+		s.mapToolDelta(key, call)
 	}
-	if choice.FinishReason == "tool_calls" {
-		events = append(events, s.finishPendingTools()...)
-	}
+	events = append(events, s.emitActiveToolDeltas()...)
 	return events
 }
 
-// finishPendingTools flushes open tool-call blocks in deterministic
-// ascending-index order.
+// finishPendingTools flushes open tool-call blocks in deterministic encounter
+// order, matching the blocking response's tool_calls array.
 func (s *streamState) finishPendingTools() []llm.Event {
 	var events []llm.Event
 	for _, key := range slices.Sorted(maps.Keys(s.tools)) {
-		events = append(events, s.finishTool(key, s.tools[key])...)
+		if call := s.tools[key]; call != nil {
+			events = append(events, s.finishTool(key, call)...)
+		}
 	}
 	return events
 }
 
-func (s *streamState) mapToolDelta(index int, delta rawToolCall) []llm.Event {
+func (s *streamState) mapToolDelta(index int, delta rawToolCall) {
 	call := s.tools[index]
 	if call == nil {
-		call = &streamToolCall{}
+		call = &streamToolCall{eventIndex: toolBlockIndex(index)}
 		s.tools[index] = call
-	}
-	if call.id == "" && delta.ID != "" {
-		if _, exists := s.seenIDs[delta.ID]; !exists {
-			call.id = delta.ID
-			s.seenIDs[delta.ID] = struct{}{}
+		for {
+			if _, exists := s.tools[s.toolPrefix+1]; !exists {
+				break
+			}
+			s.toolPrefix++
 		}
+	}
+	if call.wireID == "" && delta.ID != "" {
+		call.wireID = delta.ID
 	}
 	if call.name == "" && delta.Function.Name != "" {
 		call.name = delta.Function.Name
@@ -512,15 +582,61 @@ func (s *streamState) mapToolDelta(index int, delta rawToolCall) []llm.Event {
 	if delta.Function.Arguments != "" {
 		call.args.WriteString(delta.Function.Arguments)
 	}
-	return startTool(index, call)
 }
 
-func startTool(index int, call *streamToolCall) []llm.Event {
-	if call.id == "" || call.name == "" {
+// emitActiveToolDeltas exposes every independently identifiable parallel call.
+// Missing and duplicate IDs stay buffered until finalization because their
+// deterministic synthetic ID depends on which preceding calls are retained.
+func (s *streamState) emitActiveToolDeltas() []llm.Event {
+	var events []llm.Event
+	for _, key := range slices.Sorted(maps.Keys(s.tools)) {
+		call := s.tools[key]
+		if call != nil && s.canResolveToolID(key, call) {
+			events = append(events, s.startTool(call.eventIndex, call, false)...)
+		}
+	}
+	return events
+}
+
+// canResolveToolID ensures an explicit ID is owned by the lowest observed
+// stable tool position. Higher positions wait only while an absent or
+// metadata-incomplete lower position could still claim the same ID.
+func (s *streamState) canResolveToolID(position int, call *streamToolCall) bool {
+	if position > s.toolPrefix {
+		return false
+	}
+	for lowerPosition, lower := range s.tools {
+		if lowerPosition >= position {
+			continue
+		}
+		if call.wireID == "" {
+			if !lower.started {
+				return false
+			}
+			continue
+		}
+		if lower.wireID == "" {
+			return false
+		}
+		if lower.wireID == call.wireID && !lower.started {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *streamState) startTool(index int, call *streamToolCall, synthesize bool) []llm.Event {
+	if call.name == "" || (!synthesize && call.wireID == "") {
 		return nil
 	}
 	var events []llm.Event
 	if !call.started {
+		if !synthesize {
+			if _, duplicate := s.seenIDs[call.wireID]; duplicate {
+				return nil
+			}
+		}
+		call.id = reserveToolCallID(index, call.wireID, s.seenIDs)
 		call.started = true
 		events = append(events, llm.ToolCallStart{Index: index, ID: call.id, Name: call.name})
 	}
@@ -532,31 +648,49 @@ func startTool(index int, call *streamToolCall) []llm.Event {
 	return events
 }
 
-func (s *streamState) finishTool(index int, call *streamToolCall) []llm.Event {
-	if call.id == "" {
-		call.id = providerutil.UniqueSyntheticToolCallID(index, s.seenIDs)
-		s.seenIDs[call.id] = struct{}{}
-	}
+func (s *streamState) finishTool(wireIndex int, call *streamToolCall) []llm.Event {
+	index := call.eventIndex
 	if call.name == "" {
-		delete(s.tools, index)
+		delete(s.tools, wireIndex)
 		return []llm.Event{llm.ToolCallDropped{Index: index, Reason: "missing tool name"}}
 	}
+	events := s.startTool(index, call, true)
 	args := strings.TrimSpace(call.args.String())
 	if args == "" {
 		args = "{}"
+		if call.emittedLen == 0 {
+			events = append(events, llm.ToolCallDelta{Index: index, ArgsFragment: args})
+			call.emittedLen = len(args)
+		}
 	}
 	if !json.Valid([]byte(args)) {
-		delete(s.tools, index)
-		return []llm.Event{llm.ToolCallDropped{Index: index, Reason: "invalid tool arguments JSON"}}
-	}
-	events := startTool(index, call)
-	if call.emittedLen == 0 {
-		events = append(events, llm.ToolCallDelta{Index: index, ArgsFragment: args})
-		call.emittedLen = len(args)
+		delete(s.tools, wireIndex)
+		return append(events, llm.ToolCallDropped{Index: index, Reason: "invalid tool arguments JSON"})
 	}
 	events = append(events, llm.ToolCallEnd{Index: index})
 	s.toolCallsEmitted = true
-	delete(s.tools, index)
+	delete(s.tools, wireIndex)
+	return events
+}
+
+// rescuePartialTools makes every name-bearing buffered call visible before an
+// upstream failure. Event indexes are already reserved; using them as the ID
+// seed makes missing and duplicate-ID rescue deterministic without claiming a
+// final retained ordering for an incomplete response.
+func (s *streamState) rescuePartialTools() []llm.Event {
+	var events []llm.Event
+	for _, key := range slices.Sorted(maps.Keys(s.tools)) {
+		call := s.tools[key]
+		if call == nil {
+			continue
+		}
+		if call.name == "" {
+			events = append(events, llm.ToolCallDropped{Index: call.eventIndex, Reason: "missing tool name"})
+			delete(s.tools, key)
+			continue
+		}
+		events = append(events, s.startTool(call.eventIndex, call, true)...)
+	}
 	return events
 }
 
@@ -593,26 +727,46 @@ func (s *streamState) finishEvents() []llm.Event {
 // matches the blocking path.
 func (s *streamState) completedReasoningRawEvents() []llm.Event {
 	var events []llm.Event
-	var all []json.RawMessage
 	for _, index := range slices.Sorted(maps.Keys(s.reasoningTextBlocks)) {
 		if _, hasRaw := s.reasoningDetails[index]; !hasRaw {
 			events = append(events, llm.ReasoningDelta{Index: index, Provider: s.provider.Name()})
 		}
 	}
-	for _, index := range slices.Sorted(maps.Keys(s.reasoningDetails)) {
-		elements := s.reasoningDetails[index]
-		if len(elements) == 0 {
-			continue
-		}
-		events = append(events, llm.ReasoningDelta{Index: index, Raw: joinRawArray(elements), Provider: s.provider.Name()})
-		all = append(all, elements...)
-	}
+	rawEvents, all := s.reasoningRawEvents()
+	events = append(events, rawEvents...)
 	if len(all) > 0 {
 		s.extraChoice.Message.ReasoningDetails = joinRawArray(all)
 	}
 	if len(s.annotations) > 0 {
 		s.extraChoice.Message.Annotations = joinRawArray(s.annotations)
 	}
+	return events
+}
+
+func (s *streamState) reasoningRawEvents() ([]llm.Event, []json.RawMessage) {
+	var events []llm.Event
+	var all []json.RawMessage
+	for _, index := range slices.Sorted(maps.Keys(s.reasoningDetails)) {
+		elements := s.reasoningDetails[index]
+		if len(elements) == 0 {
+			continue
+		}
+		raw := joinRawArray(elements)
+		if !json.Valid(raw) {
+			continue
+		}
+		events = append(events, llm.ReasoningDelta{Index: index, Raw: raw, Provider: s.provider.Name()})
+		all = append(all, elements...)
+	}
+	return events, all
+}
+
+func (s *streamState) settleReasoningRaw() []llm.Event {
+	if s.reasoningRawSettled {
+		return nil
+	}
+	s.reasoningRawSettled = true
+	events, _ := s.reasoningRawEvents()
 	return events
 }
 

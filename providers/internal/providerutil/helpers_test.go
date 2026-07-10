@@ -60,6 +60,76 @@ func TestOptionsOf(t *testing.T) {
 	}
 }
 
+func TestJSONEqualIsStructuredAndLossless(t *testing.T) {
+	tests := []struct {
+		name        string
+		left, right string
+		want        bool
+	}{
+		{
+			name:  "formatting and key order",
+			left:  `{"a":[1,true],"b":{"x":"y"}}`,
+			right: "{\n  \"b\": {\"x\": \"y\"}, \"a\": [1.0, true]\n}",
+			want:  true,
+		},
+		{
+			name:  "numeric equivalent exponent",
+			left:  `{"n":1e3}`,
+			right: `{"n":1000.0}`,
+			want:  true,
+		},
+		{
+			name:  "large integers remain distinct",
+			left:  `{"n":9007199254740992}`,
+			right: `{"n":9007199254740993}`,
+			want:  false,
+		},
+		{
+			name:  "arbitrarily large exponent equivalent",
+			left:  `{"n":1e1000000000}`,
+			right: `{"n":10e999999999}`,
+			want:  true,
+		},
+		{
+			name:  "arbitrarily large exponent unequal",
+			left:  `{"n":1e1000000000}`,
+			right: `{"n":1e999999999}`,
+			want:  false,
+		},
+		{
+			name:  "signed decimal equivalent",
+			left:  `{"n":-1.2300e5}`,
+			right: `{"n":-123000}`,
+			want:  true,
+		},
+		{
+			name:  "all zero spellings equal",
+			left:  `{"n":-0.000e1000000000}`,
+			right: `{"n":0e-1000000000}`,
+			want:  true,
+		},
+		{
+			name:  "invalid JSON",
+			left:  `not-json`,
+			right: `not-json`,
+			want:  false,
+		},
+		{
+			name:  "trailing document rejected",
+			left:  `{"n":1} trailing`,
+			right: `{"n":1}`,
+			want:  false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := JSONEqual([]byte(tt.left), []byte(tt.right)); got != tt.want {
+				t.Fatalf("JSONEqual(%s, %s) = %v, want %v", tt.left, tt.right, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestStatusErrorKindCanonicalTable pins the FS §16 status→sentinel table in
 // one place; each provider package additionally asserts parity through its
 // own error-mapping tables.

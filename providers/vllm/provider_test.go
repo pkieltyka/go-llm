@@ -325,6 +325,24 @@ func TestStreamReasoningDeltas(t *testing.T) {
 	}
 }
 
+func TestStreamUsesChoiceIndexZero(t *testing.T) {
+	p := newTestProvider(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		mustWrite(t, w, `data: {"id":"c1","model":"m","choices":[{"index":3,"delta":{"content":"wrong"},"finish_reason":"stop"},{"index":0,"delta":{"content":"right"},"finish_reason":"stop"}]}`+"\n\n")
+		mustWrite(t, w, "data: [DONE]\n\n")
+	})
+	resp, err := llm.Collect(p.ChatStream(context.Background(), &llm.Request{
+		Model:    "m",
+		Messages: []llm.Message{llm.UserText("hi")},
+	}))
+	if err != nil {
+		t.Fatalf("Collect returned error: %v", err)
+	}
+	if resp.Text() != "right" {
+		t.Fatalf("response text = %q, want right", resp.Text())
+	}
+}
+
 // TestStreamMidStreamErrorSniff covers the goose-crash case: after HTTP 200,
 // vLLM emits a choice-less SSE data event whose payload is the error JSON.
 // Both the nested (current) and flat legacy shapes must map to a normalized
@@ -419,6 +437,21 @@ func TestModelsSurfacesMaxModelLen(t *testing.T) {
 	raw, ok := models[1].Raw.(json.RawMessage)
 	if !ok || !strings.Contains(string(raw), `"parent":"Qwen/Qwen3.6-27B-FP8"`) {
 		t.Fatalf("LoRA row raw = %+v", models[1].Raw)
+	}
+}
+
+func TestModelsMalformedRowIsProviderError(t *testing.T) {
+	p := newTestProvider(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		mustWrite(t, w, `{"data":[{"id":123}]}`)
+	})
+	_, err := p.Models(context.Background())
+	if !errors.Is(err, llm.ErrServer) {
+		t.Fatalf("Models error = %v, want ErrServer", err)
+	}
+	var providerErr *llm.ProviderError
+	if !errors.As(err, &providerErr) || providerErr.Provider != providerName {
+		t.Fatalf("Models error = %T %v, want vLLM ProviderError", err, err)
 	}
 }
 

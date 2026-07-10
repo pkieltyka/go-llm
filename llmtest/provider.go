@@ -328,6 +328,14 @@ func cloneEvent(event llm.Event) llm.Event {
 		}
 		copied := *e
 		return &copied
+	case llm.ToolCallIDChanged:
+		return e
+	case *llm.ToolCallIDChanged:
+		if e == nil {
+			return e
+		}
+		copied := *e
+		return &copied
 	case llm.MessageStart:
 		return e
 	case *llm.MessageStart:

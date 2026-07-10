@@ -7,10 +7,26 @@ import (
 	"testing"
 	"time"
 
+	sdk "github.com/openai/openai-go/v3"
 	llm "github.com/pkieltyka/go-llm"
 	"github.com/pkieltyka/go-llm/internal/testutil"
 	"github.com/pkieltyka/go-llm/providers/chatcompletions"
 )
+
+type unsupportedParallelExtrasDialect struct{ replayDialect }
+
+func (unsupportedParallelExtrasDialect) Capabilities() []llm.Capability {
+	return []llm.Capability{
+		llm.CapabilityStreaming,
+		llm.CapabilityTools,
+		llm.CapabilityToolStreaming,
+	}
+}
+
+func (unsupportedParallelExtrasDialect) ApplyRequest(_ *llm.Request, _ *sdk.ChatCompletionNewParams, extras chatcompletions.JSONObject) error {
+	extras["parallel_tool_calls"] = true
+	return nil
+}
 
 func newReplayProvider(t *testing.T) *chatcompletions.Provider {
 	t.Helper()
@@ -210,6 +226,65 @@ func TestBuildParamsToolChoiceModes(t *testing.T) {
 		if !strings.Contains(string(raw), `"tool_choice":`+want) {
 			t.Fatalf("tool choice %s missing %s: %s", mode, want, raw)
 		}
+	}
+}
+
+func TestBuildParamsOmitsParallelToolCallsWithoutCapability(t *testing.T) {
+	p, err := chatcompletions.New("http://localhost.invalid/v1",
+		chatcompletions.WithCapabilities(
+			llm.CapabilityStreaming,
+			llm.CapabilityTools,
+			llm.CapabilityToolStreaming,
+		),
+	)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	params, err := p.BuildParams(&llm.Request{
+		Model:    "m",
+		Messages: []llm.Message{llm.UserText("hi")},
+		Tools: []llm.Tool{{
+			Name:        "lookup",
+			InputSchema: json.RawMessage(`{"type":"object"}`),
+		}},
+	}, true)
+	if err != nil {
+		t.Fatalf("BuildParams returned error: %v", err)
+	}
+	raw, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("marshal params returned error: %v", err)
+	}
+	if strings.Contains(string(raw), `"parallel_tool_calls"`) {
+		t.Fatalf("parallel_tool_calls must be omitted without capability: %s", raw)
+	}
+}
+
+func TestBuildParamsRejectsDialectParallelToolExtraWithoutCapability(t *testing.T) {
+	p, err := chatcompletions.NewWithDialect(chatcompletions.Config{
+		Dialect: unsupportedParallelExtrasDialect{},
+		APIKey:  "replay-key",
+	})
+	if err != nil {
+		t.Fatalf("NewWithDialect returned error: %v", err)
+	}
+	params, err := p.BuildParams(&llm.Request{
+		Model:    "m",
+		Messages: []llm.Message{llm.UserText("hi")},
+		Tools: []llm.Tool{{
+			Name:        "lookup",
+			InputSchema: json.RawMessage(`{"type":"object"}`),
+		}},
+	}, true)
+	if err != nil {
+		t.Fatalf("BuildParams returned error: %v", err)
+	}
+	raw, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("marshal params returned error: %v", err)
+	}
+	if strings.Contains(string(raw), `"parallel_tool_calls"`) {
+		t.Fatalf("dialect extra bypassed unsupported capability: %s", raw)
 	}
 }
 

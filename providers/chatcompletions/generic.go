@@ -7,6 +7,7 @@ import (
 
 	sdk "github.com/openai/openai-go/v3"
 	llm "github.com/pkieltyka/go-llm"
+	"github.com/pkieltyka/go-llm/providers/internal/providerutil"
 )
 
 // genericDialect is the quirk-free dialect behind New: standard
@@ -130,7 +131,7 @@ func DefaultModels(ctx context.Context, p *Provider) ([]llm.ModelInfo, error) {
 			ID string `json:"id"`
 		}
 		if err := json.Unmarshal(rawRow, &row); err != nil {
-			return nil, err
+			return nil, providerutil.NormalizeRemoteError(p.Name(), err)
 		}
 		models = append(models, llm.ModelInfo{
 			ID:  row.ID,

@@ -79,6 +79,11 @@ func DerefEvent(event llm.Event) llm.Event {
 			return nil
 		}
 		return *e
+	case *llm.ToolCallIDChanged:
+		if e == nil {
+			return nil
+		}
+		return *e
 	case *llm.ToolCallEnd:
 		if e == nil {
 			return nil

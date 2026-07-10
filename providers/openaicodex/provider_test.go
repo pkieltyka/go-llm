@@ -379,6 +379,172 @@ func TestOpenAICodexTransportNoRetryOn400(t *testing.T) {
 	}
 }
 
+func TestOpenAICodexStreamProviderContractEOF(t *testing.T) {
+	tests := []struct {
+		name        string
+		body        string
+		wantPartial bool
+	}{
+		{name: "empty EOF"},
+		{
+			name:        "truncated EOF",
+			body:        "data: {\"type\":\"response.output_text.delta\",\"output_index\":4,\"content_index\":0,\"delta\":\"partial\"}\n\n",
+			wantPartial: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := newCodexStreamFixtureProvider(t, func(req *http.Request) (*http.Response, error) {
+				return codexStreamResponse(req, tt.body), nil
+			})
+			resp, err := llm.Collect(p.ChatStream(context.Background(), codexStreamFixtureRequest()))
+			assertCodexProviderServerError(t, err)
+			if tt.wantPartial {
+				if resp == nil || resp.Text() != "partial" || resp.Model != "requested-model" {
+					t.Fatalf("partial response = %#v, want text partial and request model", resp)
+				}
+			} else if resp != nil {
+				t.Fatalf("empty stream response = %#v, want nil", resp)
+			}
+		})
+	}
+}
+
+func TestOpenAICodexStreamProviderFlushesPreStartContentBeforeError(t *testing.T) {
+	body := "data: {\"type\":\"response.output_text.delta\",\"output_index\":4,\"content_index\":0,\"delta\":\"partial\"}\n\n" +
+		"data: {\"type\":\"error\",\"code\":\"server_error\",\"message\":\"remote failure\"}\n\n"
+	p := newCodexStreamFixtureProvider(t, func(req *http.Request) (*http.Response, error) {
+		return codexStreamResponse(req, body), nil
+	})
+
+	resp, err := llm.Collect(p.ChatStream(context.Background(), codexStreamFixtureRequest()))
+	assertCodexProviderServerError(t, err)
+	if resp == nil || resp.Model != "requested-model" || resp.Text() != "partial" {
+		t.Fatalf("partial errored response = %#v, want flushed content and request-model fallback", resp)
+	}
+}
+
+func TestOpenAICodexBlockingChatReturnsPartialResponseWithError(t *testing.T) {
+	body := "data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"content_index\":0,\"delta\":\"partial\"}\n\n" +
+		"data: {\"type\":\"error\",\"code\":\"server_error\",\"message\":\"remote failure\"}\n\n"
+	p := newCodexStreamFixtureProvider(t, func(req *http.Request) (*http.Response, error) {
+		return codexStreamResponse(req, body), nil
+	})
+
+	resp, err := p.Chat(context.Background(), codexStreamFixtureRequest())
+	assertCodexProviderServerError(t, err)
+	if resp == nil || resp.Model != "requested-model" || resp.Text() != "partial" {
+		t.Fatalf("blocking partial response = %#v, want collected content alongside error", resp)
+	}
+}
+
+func TestOpenAICodexStreamPreservesInterleavedContentBeforeDecodeError(t *testing.T) {
+	body := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"response-model\",\"status\":\"in_progress\",\"output\":[]}}\n\n" +
+		"data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"fc_partial\",\"type\":\"function_call\",\"call_id\":\"call_partial\",\"name\":\"lookup\",\"arguments\":\"\",\"status\":\"in_progress\"}}\n\n" +
+		"data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"delta\":\"{\\\"q\\\":\"}\n\n" +
+		"data: {\"type\":\"response.output_text.delta\",\"output_index\":1,\"content_index\":0,\"delta\":\"deferred text\"}\n\n" +
+		"data: {\"type\":\"response.reasoning_text.delta\",\"output_index\":2,\"delta\":\"deferred reasoning\"}\n\n" +
+		"data: {not-json}\n\n"
+	p := newCodexStreamFixtureProvider(t, func(req *http.Request) (*http.Response, error) {
+		return codexStreamResponse(req, body), nil
+	})
+
+	resp, err := llm.Collect(p.ChatStream(context.Background(), codexStreamFixtureRequest()))
+	assertCodexProviderServerError(t, err)
+	if resp == nil || resp.Text() != "deferred text" || resp.Reasoning() != "deferred reasoning" {
+		t.Fatalf("partial response = %#v, want all deferred wire content", resp)
+	}
+	if calls := resp.ToolCalls(); len(calls) != 1 || string(calls[0].Args) != `{"q":` {
+		t.Fatalf("partial tool calls = %#v, want visible incomplete arguments", calls)
+	}
+}
+
+func TestOpenAICodexStreamProviderEarlyBreakDoesNotSynthesizeError(t *testing.T) {
+	body := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-test\",\"status\":\"in_progress\",\"output\":[]}}\n\n" +
+		"data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"content_index\":0,\"delta\":\"unread\"}\n\n"
+	p := newCodexStreamFixtureProvider(t, func(req *http.Request) (*http.Response, error) {
+		return codexStreamResponse(req, body), nil
+	})
+
+	count := 0
+	for event, err := range p.ChatStream(context.Background(), codexStreamFixtureRequest()) {
+		if err != nil {
+			t.Fatalf("early-break event returned error: %v", err)
+		}
+		if _, ok := event.(llm.MessageStart); !ok {
+			t.Fatalf("first event = %T, want MessageStart", event)
+		}
+		count++
+		break
+	}
+	if count != 1 {
+		t.Fatalf("events before break = %d, want 1", count)
+	}
+}
+
+func TestOpenAICodexStreamProviderNormalizesDecodeAndTransportErrors(t *testing.T) {
+	t.Run("decode", func(t *testing.T) {
+		p := newCodexStreamFixtureProvider(t, func(req *http.Request) (*http.Response, error) {
+			return codexStreamResponse(req, "data: {not-json}\n\n"), nil
+		})
+		_, err := llm.Collect(p.ChatStream(context.Background(), codexStreamFixtureRequest()))
+		assertCodexProviderServerError(t, err)
+	})
+
+	t.Run("transport", func(t *testing.T) {
+		p := newCodexStreamFixtureProvider(t, func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("remote transport failed")
+		})
+		_, err := llm.Collect(p.ChatStream(context.Background(), codexStreamFixtureRequest()))
+		assertCodexProviderServerError(t, err)
+	})
+}
+
+func newCodexStreamFixtureProvider(t *testing.T, roundTrip testutil.RoundTripFunc) *Provider {
+	t.Helper()
+	p, err := New(
+		WithOAuth(llm.AuthCredential{
+			Type:    "oauth",
+			Access:  fakeCodexJWT(t, "acct-fixture"),
+			Refresh: "refresh-fixture",
+		}, nil),
+		WithBaseURL("https://codex.fixture.test"),
+		WithHTTPClient(&http.Client{Transport: roundTrip}),
+		WithMaxRetries(0),
+	)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	return p
+}
+
+func codexStreamResponse(req *http.Request, body string) *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Request:    req,
+	}
+}
+
+func codexStreamFixtureRequest() *llm.Request {
+	return &llm.Request{
+		Model:    "requested-model",
+		Messages: []llm.Message{llm.UserText("hello")},
+	}
+}
+
+func assertCodexProviderServerError(t *testing.T, err error) {
+	t.Helper()
+	if !errors.Is(err, llm.ErrServer) {
+		t.Fatalf("error = %v, want ErrServer", err)
+	}
+	var providerErr *llm.ProviderError
+	if !errors.As(err, &providerErr) || providerErr.Provider != providerName {
+		t.Fatalf("error = %#v, want %s ProviderError", err, providerName)
+	}
+}
+
 func TestOpenAICodexTransportMaxRetriesBounds(t *testing.T) {
 	tests := []struct {
 		name       string
