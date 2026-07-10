@@ -831,3 +831,90 @@ The codebase does not need a new direction. It needs one hardening cycle
 that makes its strongest ideas -- normalized contracts, explicit provider
 boundaries, safe replay, and executable conformance -- true at the edges as
 well as on the happy path.
+
+---
+
+## 14. Verification addendum (2026-07-09, independent adversarial pass)
+
+Every finding was re-verified against HEAD 38a5e9b: R1 reproduced live
+(the repro command fails exactly as described), R2/C5 confirmed by source
+reading, and the remaining ~30 claims verified by two independent
+clean-context agents with empirical probes (typed-nil panic reproduced,
+truncated-stream nil-error reproduced, phantom-user-turn reproduced,
+middleware factory triple-invocation counted, coverage numbers re-measured
+to the exact decimals — 82.1% / 76.9%).
+
+**Result: 31 of 33 checked claims fully confirmed.** The review's line
+references were accurate throughout and its fixes are right-sized. Two
+corrections:
+
+- **Struck (refuted)**: §7 "RetryAfter is absent from the normative API
+  design" — architecture.md:421-424 already documents it as the shared
+  helper. No action needed beyond an optional FS echo.
+- **Amended (stale)**: S4's missing-lockfile sub-claim — commit 38a5e9b
+  (the review's own commit) added `scripts/pnpm-lock.yaml` and a
+  `--frozen-lockfile` Makefile target. Implementers should skip that
+  sub-item; the silent-empty/atomic-write/invariant sub-items stand.
+
+**Added findings (V-series), surfaced during verification in the same code
+areas — fold into the hardening cycle:**
+
+- **V1 (with C7, same fix site)**: `captureExtras` reads
+  `chunk.Choices[0]` positionally while `mapDelta` keys by `choice.Index`
+  (chatcompletions/stream.go:391-394) — a chunk carrying only choice
+  index 1 has its extras/finish_reason captured as choice 0. Any C7 fix
+  must filter on `choice.Index == 0`, not slice position.
+- **V2 (with C2, fourth instance of the class)**: Anthropic MessageEnd
+  derives solely from `message_delta`; `message_stop` maps to nothing
+  (anthropic/stream.go:57-66) — a stream ending with `message_stop` but
+  no prior `message_delta` returns silently without MessageEnd. The
+  shared stream-contract wrapper must cover it; add a dedicated fixture.
+- **V3 (with C9, same fix site)**: enum matching false-rejects across
+  JSON number spellings — `normalizeJSONNumber` yields int64 for `1` and
+  float64 for `1.0`, and `reflect.DeepEqual` across them is false
+  (schemajson/validate.go:255-273), so schema `enum:[1.0]` rejects
+  argument `1`.
+- **V4 (elevates C4)**: when ModeNative preserves a caller's JSON-mode
+  format, the derived schema is **not sent at all** — Parse silently
+  degrades to unvalidated server-side JSON mode while reporting native
+  mode. Client-side validation is the only remaining guard.
+- **V5 (with S1)**: WireTap response captures fire only on `Body.Close()`
+  (wiretap.go:173-184) — an abandoned body silently drops that exchange
+  from recording, undermining scenario-set completeness by a mechanism
+  distinct from the ones S1 names.
+- **V6 (with S2)**: WireTap silently rewrites `req.ContentLength` to the
+  buffered length (wiretap.go:120-123), converting chunked/unknown-length
+  requests to fixed-length — the tee rewrite must preserve or explicitly
+  drop this behavior.
+- **V7 (with S1)**: tokens rotated mid-run by `PersistOnRefresh` are not
+  in WriteFixture's known-secret list (only start-of-run credentials
+  are); rotated values are protected solely by the finite regex layer — a
+  concrete instance of S1's "novel field" risk.
+- **V8 (with T1)**: `providers/ollama` is the one preset with no
+  conformance test; confirmed missing.
+
+**Execution caveats on the proposed fixes** (verified against recorded
+design decisions — no conflicts found, but these edges matter):
+
+- S1's "require a complete expected scenario set" would block intentional
+  single-scenario re-records — make completeness a warning + flag, not a
+  hard gate; entropy scanning needs an allowlist for the committed
+  red-pixel PNG (internal/e2e/scenario.go:13).
+- T1's cancellation assertion should use `errors.Is(err, context.Canceled)`
+  (identity through wrapping), not literal equality.
+- T3's "fail when configured model absent" must resolve aliases first
+  (vLLM's `ResolveModel` and the existing Logf exist precisely because
+  overrides can be aliases) or it will false-positive.
+- C1's MaxTokens<0 rejection is a reject-not-clamp — consistent with
+  FS §18; typed-nil detection needs reflection over all nil-able kinds,
+  not just pointers.
+- C4's "single synthetic tool": replacing caller tools is the safer
+  spec-keeper reading of FS §8; regardless, decode must match by name.
+- C12's fix should omit `parallel_tool_calls` when the capability is
+  absent rather than sending `false`.
+- C2's wrapper must distinguish consumer early-break from upstream
+  exhaustion (the engine loop knows which occurred).
+
+**Priorities confirmed** as written (P0→P3), with V1–V8 slotting into
+their companion findings' tiers. The §11 "what not to do" list is
+endorsed without amendment.
