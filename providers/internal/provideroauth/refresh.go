@@ -34,8 +34,8 @@ func RefreshError(providerName string, status int) error {
 
 // ExpiresAt converts a token endpoint's expires_in (seconds) into an absolute
 // Unix-millisecond expiry. It records the TRUE server expiry — no safety
-// margin is subtracted here, because credentials handed to onRefresh are
-// persisted verbatim; the Source applies its refresh-before-expiry margin at
+// margin is subtracted here, because credentials handed to persistence are
+// stored verbatim; the Source applies its refresh-before-expiry margin at
 // read time instead.
 func ExpiresAt(expiresIn int64) int64 {
 	if expiresIn <= 0 {

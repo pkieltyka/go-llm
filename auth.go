@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -20,6 +21,15 @@ type AuthCredential struct {
 	Model     string
 	BaseURL   string
 }
+
+// OAuthPersistenceFunc durably persists a renewed OAuth credential before it
+// becomes visible to provider requests. Implementations MUST honor ctx and
+// return only after persistence is durable; returning an error prevents the
+// provider from publishing the renewed credential. Refreshable credentials
+// require a non-nil callback. A context-aware no-op explicitly opts into
+// in-memory-only rotation, which can leave stored refresh tokens stale after a
+// restart.
+type OAuthPersistenceFunc func(context.Context, AuthCredential) error
 
 // LoadAuthFile parses a pi-compatible credential file from path.
 func LoadAuthFile(path string) (AuthFile, error) {

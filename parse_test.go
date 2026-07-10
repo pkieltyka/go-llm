@@ -2,12 +2,17 @@ package llm_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	llm "github.com/pkieltyka/go-llm"
 	"github.com/pkieltyka/go-llm/llmtest"
+	"github.com/pkieltyka/go-llm/providers/chatcompletions"
 )
 
 func TestParseModes(t *testing.T) {
@@ -326,6 +331,126 @@ func TestParseModes(t *testing.T) {
 			t.Fatalf("provider was called %d times, want 0", len(p.Requests()))
 		}
 	})
+}
+
+func TestParseNativeSchemaOnWire(t *testing.T) {
+	t.Run("derived schema replaces JSON mode", func(t *testing.T) {
+		p, requestBody := newParseWireProvider(t, `{"name":"Ada","age":37}`)
+		req := parseRequest()
+		req.ResponseFormat = &llm.ResponseFormat{Type: llm.FormatJSONMode, Name: "wire_person"}
+
+		got, _, err := llm.Parse[parsePerson](context.Background(), p, req, llm.WithParseMode(llm.ModeNative))
+		if err != nil {
+			t.Fatalf("Parse returned error: %v", err)
+		}
+		if got.Name != "Ada" || got.Age != 37 {
+			t.Fatalf("parsed = %+v", got)
+		}
+		format := decodeWireResponseFormat(t, <-requestBody)
+		if format.Type != "json_schema" || format.JSONSchema.Name != "wire_person" || !format.JSONSchema.Strict {
+			t.Fatalf("wire response_format = %+v", format)
+		}
+		properties, _ := format.JSONSchema.Schema["properties"].(map[string]any)
+		if _, ok := properties["name"]; !ok {
+			t.Fatalf("derived schema was not sent on wire: %+v", format.JSONSchema.Schema)
+		}
+		if req.ResponseFormat.Type != llm.FormatJSONMode || req.ResponseFormat.Schema != nil {
+			t.Fatalf("caller request was mutated: %+v", req.ResponseFormat)
+		}
+	})
+
+	t.Run("name and schema overrides survive", func(t *testing.T) {
+		p, requestBody := newParseWireProvider(t, `{"name":"Ada"}`)
+		custom := json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"],"additionalProperties":false}`)
+		req := parseRequest()
+		req.ResponseFormat = &llm.ResponseFormat{
+			Type:   llm.FormatJSONMode,
+			Name:   "custom_wire_person",
+			Schema: custom,
+		}
+
+		if _, _, err := llm.Parse[parseCustomSchemaPerson](context.Background(), p, req, llm.WithParseMode(llm.ModeNative)); err != nil {
+			t.Fatalf("Parse returned error: %v", err)
+		}
+		format := decodeWireResponseFormat(t, <-requestBody)
+		if format.Type != "json_schema" || format.JSONSchema.Name != "custom_wire_person" || !format.JSONSchema.Strict {
+			t.Fatalf("wire response_format = %+v", format)
+		}
+		properties, _ := format.JSONSchema.Schema["properties"].(map[string]any)
+		if len(properties) != 1 || properties["name"] == nil {
+			t.Fatalf("schema override was not preserved on wire: %+v", format.JSONSchema.Schema)
+		}
+	})
+
+	t.Run("client validation remains enforced", func(t *testing.T) {
+		p, requestBody := newParseWireProvider(t, `{}`)
+		_, _, err := llm.Parse[parsePerson](context.Background(), p, parseRequest(), llm.WithParseMode(llm.ModeNative))
+		if !errors.Is(err, llm.ErrBadRequest) || !strings.Contains(err.Error(), "$.name is required") {
+			t.Fatalf("Parse error = %v, want client schema validation failure", err)
+		}
+		format := decodeWireResponseFormat(t, <-requestBody)
+		if format.Type != "json_schema" || format.JSONSchema.Schema == nil {
+			t.Fatalf("schema was not sent before client validation: %+v", format)
+		}
+	})
+}
+
+type wireResponseFormat struct {
+	Type       string `json:"type"`
+	JSONSchema struct {
+		Name   string         `json:"name"`
+		Schema map[string]any `json:"schema"`
+		Strict bool           `json:"strict"`
+	} `json:"json_schema"`
+}
+
+func newParseWireProvider(t *testing.T, content string) (llm.Provider, <-chan []byte) {
+	t.Helper()
+	requestBody := make(chan []byte, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("ReadAll request: %v", err)
+			http.Error(w, "read request", http.StatusInternalServerError)
+			return
+		}
+		requestBody <- body
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":    "parse-1",
+			"model": "model-a",
+			"choices": []any{map[string]any{
+				"index":         0,
+				"finish_reason": "stop",
+				"message": map[string]any{
+					"role":    "assistant",
+					"content": content,
+				},
+			}},
+		})
+	}))
+	t.Cleanup(server.Close)
+	p, err := chatcompletions.New(
+		server.URL,
+		chatcompletions.WithHTTPClient(server.Client()),
+		chatcompletions.WithMaxRetries(0),
+		chatcompletions.WithCapabilities(llm.CapabilityJSONSchema),
+	)
+	if err != nil {
+		t.Fatalf("chatcompletions.New returned error: %v", err)
+	}
+	return p, requestBody
+}
+
+func decodeWireResponseFormat(t *testing.T, body []byte) wireResponseFormat {
+	t.Helper()
+	var request struct {
+		ResponseFormat wireResponseFormat `json:"response_format"`
+	}
+	if err := json.Unmarshal(body, &request); err != nil {
+		t.Fatalf("wire request did not decode: %v\n%s", err, body)
+	}
+	return request.ResponseFormat
 }
 
 type parsePerson struct {

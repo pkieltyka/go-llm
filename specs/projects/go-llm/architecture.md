@@ -543,15 +543,16 @@ syntaxes/message splicing are explicitly rejected feature requests.
   header honored).
 - `Models()`: `GET /v1/models` via SDK, mapped to `ModelInfo` (context
   window, max output, capabilities available on that endpoint).
-- **OAuth mode** (FS §17C): `anthropic.WithOAuth(cred, onRefresh)` — the
+- **OAuth mode** (FS §17C): `anthropic.WithOAuth(cred, persist)` — the
   SDK's auth-token option (bearer) + the full Claude Code identity set
   (FS §17C: `anthropic-beta: claude-code-20250219,oauth-2025-04-20`,
   `claude-cli` user-agent, `x-app: cli`, Claude Code identity line as
   first system block — subscription tokens are rejected otherwise); token
   lifecycle via the internal `provideroauth.Source` (§3.4 auth block): refresh
   before expiry, one forced-refresh retry on 401, renewed credentials →
-  `onRefresh`. Refresh-endpoint 4xx (`invalid_grant` etc.) maps to
-  `ErrAuth`, not `ErrBadRequest` — a stale token is an auth failure.
+  the context-aware persistence callback. Refresh-endpoint 4xx
+  (`invalid_grant` etc.) maps to `ErrAuth`, not `ErrBadRequest` — a stale
+  token is an auth failure.
 
 ### 3.2 OpenAI (direct wrap, Responses API)
 
@@ -607,7 +608,7 @@ wire shape at `chatgpt.com/backend-api/codex`:
   extract `providers/openai`'s request/response/stream mapping into a
   shared internal package (e.g. `providers/internal/responses`) consumed
   by both — the codex provider adds only endpoint, auth, and headers.
-- Construction: `openaicodex.New(openaicodex.WithOAuth(cred, onRefresh), ...)`
+- Construction: `openaicodex.New(openaicodex.WithOAuth(cred, persist), ...)`
   — no API-key path (subscription-only). openai-go client configured
   with the codex base URL, bearer from the internal `provideroauth.Source`, and per-request
   headers: `chatgpt-account-id` (resolved from the stored credential's
@@ -898,10 +899,16 @@ logs provider names only).
 // zero consumers and v0.2 removed it.
 
 // Subscription-capable provider packages expose:
-//   WithOAuth(cred llm.AuthCredential, onRefresh func(llm.AuthCredential)) Option
+//   WithOAuth(cred llm.AuthCredential, persist llm.OAuthPersistenceFunc) Option
+// OAuthPersistenceFunc is func(context.Context, llm.AuthCredential) error.
 // Semantics: refresh before expiry; one forced-refresh retry on 401
-// (zero's SendWithAuthRetry pattern); every renewal invokes onRefresh so
-// the CALLER persists (go-llm never writes credential files).
+// (zero's SendWithAuthRetry pattern); every renewal invokes persist with the
+// finite generation context. The callback MUST honor that context and return
+// only after durable storage. Publication occurs only after a nil return;
+// cancellation, deadline, and persistence errors wake waiters unchanged.
+// Refresh-token credentials require non-nil persist at construction;
+// access-only credentials may pass nil. An explicit context-aware no-op is the
+// opt-in for in-memory-only rotation and carries stale-on-restart risk.
 ```
 
 ## 4. Request Pipeline (all providers)

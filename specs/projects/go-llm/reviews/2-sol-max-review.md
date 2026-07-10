@@ -329,7 +329,7 @@ validate the supported schema shape before validating arguments.
 Severity: **Moderate**
 
 provideroauth.Source publishes the refreshed credential, clears inflight,
-and wakes waiters before invoking onRefresh
+and wakes waiters before invoking the persistence callback
 (providers/internal/provideroauth/source.go:137-154). A second forced refresh
 can complete and persist credential B while callback A is blocked, after
 which A persists the older credential last.
@@ -886,7 +886,7 @@ areas — fold into the hardening cycle:**
   buffered length (wiretap.go:120-123), converting chunked/unknown-length
   requests to fixed-length — the tee rewrite must preserve or explicitly
   drop this behavior.
-- **V7 (with S1)**: tokens rotated mid-run by `PersistOnRefresh` are not
+- **V7 (with S1)**: tokens rotated mid-run by `AuthFilePersistence` are not
   in WriteFixture's known-secret list (only start-of-run credentials
   are); rotated values are protected solely by the finite regex layer — a
   concrete instance of S1's "novel field" risk.

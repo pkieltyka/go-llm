@@ -131,6 +131,18 @@ func TestNormalizeRemoteError(t *testing.T) {
 	}
 }
 
+func TestNormalizeRemoteErrorPreservesOriginalCause(t *testing.T) {
+	cause := errors.New("persist credential")
+	err := NormalizeRemoteError("test", cause)
+
+	if !errors.Is(err, llm.ErrServer) {
+		t.Fatalf("NormalizeRemoteError() = %v, want ErrServer", err)
+	}
+	if !errors.Is(err, cause) {
+		t.Fatalf("NormalizeRemoteError() = %v, want original cause", err)
+	}
+}
+
 func eventStream(events ...llm.Event) iter.Seq2[llm.Event, error] {
 	return func(yield func(llm.Event, error) bool) {
 		for _, event := range events {

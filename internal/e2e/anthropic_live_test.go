@@ -69,8 +69,8 @@ func TestLiveAnthropic(t *testing.T) {
 	if providerCfg.Auth.Type == "oauth" {
 		// Persist rotated refresh tokens back to gollm-test.json — dropping
 		// them strands the stored credential after the provider refreshes.
-		onRefresh := PersistOnRefresh(filepath.Join(root, "gollm-test.json"), "anthropic", t.Logf, secrets)
-		opts = append(opts, anthropic.WithOAuth(providerCfg.Auth, onRefresh))
+		persist := AuthFilePersistence(filepath.Join(root, "gollm-test.json"), "anthropic", t.Logf, secrets)
+		opts = append(opts, anthropic.WithOAuth(providerCfg.Auth, persist))
 	} else {
 		opts = append(opts, anthropic.WithAPIKey(providerCfg.Auth.Key))
 	}

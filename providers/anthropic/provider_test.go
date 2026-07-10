@@ -1292,6 +1292,7 @@ func TestAnthropicOAuthHeadersAndRetry(t *testing.T) {
 	var messageBodies []string
 	var refreshBody string
 	var refreshed llm.AuthCredential
+	var persistenceHadDeadline bool
 	messageCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -1322,8 +1323,10 @@ func TestAnthropicOAuthHeadersAndRetry(t *testing.T) {
 	defer server.Close()
 
 	p, err := New(
-		WithOAuth(llm.AuthCredential{Type: "oauth", Access: "old-access", Refresh: "old-refresh"}, func(cred llm.AuthCredential) {
+		WithOAuth(llm.AuthCredential{Type: "oauth", Access: "old-access", Refresh: "old-refresh"}, func(ctx context.Context, cred llm.AuthCredential) error {
+			_, persistenceHadDeadline = ctx.Deadline()
 			refreshed = cred
+			return nil
 		}),
 		withOAuthTokenURL(server.URL+"/oauth/token"),
 		WithBaseURL(server.URL),
@@ -1382,6 +1385,89 @@ func TestAnthropicOAuthHeadersAndRetry(t *testing.T) {
 	}
 	if refreshed.Access != "new-access" || refreshed.Refresh != "new-refresh" {
 		t.Fatalf("refreshed credential = %+v", refreshed)
+	}
+	if !persistenceHadDeadline {
+		t.Fatal("persistence callback did not receive generation deadline")
+	}
+}
+
+func TestAnthropicOAuthPersistenceContract(t *testing.T) {
+	networkCalls := 0
+	client := &http.Client{Transport: testutil.RoundTripFunc(func(*http.Request) (*http.Response, error) {
+		networkCalls++
+		return nil, errors.New("unexpected network request")
+	})}
+
+	p, err := New(
+		WithOAuth(llm.AuthCredential{Type: "oauth", Access: "access", Refresh: "refresh"}, nil),
+		WithHTTPClient(client),
+	)
+	if !errors.Is(err, llm.ErrBadRequest) {
+		t.Fatalf("refreshable New error = %v, want ErrBadRequest", err)
+	}
+	if p != nil || networkCalls != 0 {
+		t.Fatalf("refreshable New provider/network calls = %+v/%d, want nil/0", p, networkCalls)
+	}
+
+	p, err = New(
+		WithOAuth(llm.AuthCredential{Type: "oauth", Access: "access-only"}, nil),
+		WithHTTPClient(client),
+	)
+	if err != nil {
+		t.Fatalf("access-only New returned error: %v", err)
+	}
+	if p == nil || networkCalls != 0 {
+		t.Fatalf("access-only New provider/network calls = %+v/%d, want non-nil/0", p, networkCalls)
+	}
+}
+
+func TestAnthropicOAuthPersistenceErrorStopsRetry(t *testing.T) {
+	persistErr := errors.New("persist anthropic credential")
+	messageCalls := 0
+	persistenceCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/messages":
+			messageCalls++
+			http.Error(w, `{"error":{"type":"authentication_error","message":"expired"}}`, http.StatusUnauthorized)
+		case "/oauth/token":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"access_token":"new-access","refresh_token":"new-refresh","expires_in":3600}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	p, err := New(
+		WithOAuth(llm.AuthCredential{Type: "oauth", Access: "old-access", Refresh: "old-refresh"}, func(ctx context.Context, _ llm.AuthCredential) error {
+			persistenceCalls++
+			if _, ok := ctx.Deadline(); !ok {
+				t.Error("persistence context has no generation deadline")
+			}
+			return persistErr
+		}),
+		withOAuthTokenURL(server.URL+"/oauth/token"),
+		WithBaseURL(server.URL),
+		WithHTTPClient(server.Client()),
+		WithMaxRetries(0),
+	)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	resp, err := p.Chat(context.Background(), &llm.Request{
+		Model:     "claude-test",
+		MaxTokens: 8,
+		Messages:  []llm.Message{llm.UserText("ping")},
+	})
+	if !errors.Is(err, persistErr) {
+		t.Fatalf("Chat error = %v, want persistence error", err)
+	}
+	if resp != nil {
+		t.Fatalf("Chat response = %+v, want nil", resp)
+	}
+	if messageCalls != 1 || persistenceCalls != 1 {
+		t.Fatalf("message/persistence calls = %d/%d, want 1/1", messageCalls, persistenceCalls)
 	}
 }
 

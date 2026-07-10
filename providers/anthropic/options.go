@@ -53,7 +53,7 @@ type config struct {
 	defaultMaxTokens int
 	oauth            bool
 	oauthCred        llm.AuthCredential
-	oauthOnRefresh   func(llm.AuthCredential)
+	oauthPersistence llm.OAuthPersistenceFunc
 	oauthTokenURL    string
 }
 
@@ -82,12 +82,16 @@ func WithAPIKeyFunc(fn func(context.Context) (string, error)) Option {
 	}
 }
 
-// WithOAuth enables Claude subscription OAuth credentials.
-func WithOAuth(cred llm.AuthCredential, onRefresh func(llm.AuthCredential)) Option {
+// WithOAuth enables Claude subscription OAuth credentials. A credential with
+// a refresh token requires non-nil persist; access-only credentials may pass
+// nil. persist must honor its context and return only after durable storage.
+// An explicit no-op opts into in-memory-only rotation and risks a stale stored
+// refresh token after restart.
+func WithOAuth(cred llm.AuthCredential, persist llm.OAuthPersistenceFunc) Option {
 	return func(c *config) {
 		c.oauth = true
 		c.oauthCred = cred
-		c.oauthOnRefresh = onRefresh
+		c.oauthPersistence = persist
 		c.apiKey = ""
 		c.apiKeyFunc = nil
 	}
@@ -142,6 +146,9 @@ func (c config) validate() error {
 		if c.oauthCred.Access == "" && c.oauthCred.Refresh == "" {
 			return fmt.Errorf("%w: missing Anthropic OAuth credential", llm.ErrAuth)
 		}
+		if err := provideroauth.ValidatePersistence(c.oauthCred, c.oauthPersistence); err != nil {
+			return err
+		}
 	} else if c.apiKeyFunc == nil && c.apiKey == "" {
 		return fmt.Errorf("%w: missing Anthropic API key; set WithAPIKey or %s", llm.ErrAuth, apiKeyEnv)
 	}
@@ -157,7 +164,7 @@ func (c config) validate() error {
 	return nil
 }
 
-func (c config) sdkOptions() []sdkoption.RequestOption {
+func (c config) sdkOptions(source *provideroauth.Source) []sdkoption.RequestOption {
 	client := providerutil.ObservedHTTPClient(c.httpClient, providerName, c.logger, c.wireCapture)
 
 	opts := []sdkoption.RequestOption{
@@ -168,7 +175,6 @@ func (c config) sdkOptions() []sdkoption.RequestOption {
 		opts = append(opts, sdkoption.WithBaseURL(c.baseURL))
 	}
 	if c.oauth {
-		source := newAnthropicOAuthSource(c)
 		opts = append(opts,
 			sdkoption.WithAuthToken("oauth"),
 			sdkoption.WithHeaderDel("X-Api-Key"),
@@ -253,7 +259,15 @@ func New(opts ...Option) (*Provider, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
-	client := sdk.NewClient(cfg.sdkOptions()...)
+	var source *provideroauth.Source
+	if cfg.oauth {
+		var err error
+		source, err = newAnthropicOAuthSource(cfg)
+		if err != nil {
+			return nil, err
+		}
+	}
+	client := sdk.NewClient(cfg.sdkOptions(source)...)
 	return &Provider{
 		client:           &client,
 		defaultMaxTokens: cfg.defaultMaxTokens,

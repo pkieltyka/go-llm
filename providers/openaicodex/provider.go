@@ -58,7 +58,10 @@ func New(opts ...Option) (*Provider, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
-	source := newCodexOAuthSource(cfg)
+	source, err := newCodexOAuthSource(cfg)
+	if err != nil {
+		return nil, err
+	}
 	client := sdk.NewClient(cfg.sdkOptions(source)...)
 	return &Provider{
 		client:     &client,

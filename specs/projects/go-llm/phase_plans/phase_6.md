@@ -23,7 +23,7 @@ replay isolated per provider id.
 2. Add shared OAuth primitives in provider-owned internal code:
    - implement goroutine-safe token sources with refresh-before-expiry and single-flight behavior.
    - support `Token(ctx)` and an internal forced refresh used for one 401 retry.
-   - expose only provider package options as public API: `WithOAuth(cred llm.AuthCredential, onRefresh func(llm.AuthCredential))`.
+   - expose only provider package options as public API: `WithOAuth(cred llm.AuthCredential, persist llm.OAuthPersistenceFunc)` where the callback honors context and returns after durable persistence; require it for credentials with refresh tokens while permitting nil for access-only credentials.
 3. Wire Anthropic OAuth mode in `providers/anthropic`:
    - extend config with OAuth token source.
    - set bearer `Authorization`, remove `X-Api-Key`, and add `anthropic-beta: oauth-2025-04-20`.
@@ -47,7 +47,7 @@ replay isolated per provider id.
    - add live tests that run Anthropic API-key and OpenAI Codex OAuth paths when valid credentials are present, skipping visibly when missing.
 7. Add focused tests:
    - auth-file parse/load tests for bare and nested formats plus placeholders.
-   - OAuth token refresh state-machine tests against `httptest`: expiry, 401 forced refresh retry, `onRefresh`, and single-flight concurrency.
+   - OAuth token refresh state-machine tests against `httptest`: expiry, 401 forced refresh retry, durable persistence, and single-flight concurrency.
    - Anthropic OAuth header/retry tests.
    - OpenAI Codex request golden tests for endpoint, bearer, account id, originator, and provider-specific reasoning replay.
    - shared Responses fixture tests reused for OpenAI and Codex mapping.
@@ -55,7 +55,7 @@ replay isolated per provider id.
 ## Tests
 
 - `TestParseAuthFileNestedAndBare`: verifies `LoadAuthFile`/`ParseAuthFile` accept both supported credential file shapes.
-- `TestTokenSourceRefreshesExpiredCredential`: verifies expired OAuth credentials refresh and invoke `onRefresh`.
+- `TestTokenSourceRefreshesExpiredCredential`: verifies expired OAuth credentials refresh and invoke durable persistence.
 - `TestTokenSourceSingleFlight`: verifies concurrent token calls issue one refresh under `-race`.
 - `TestAnthropicOAuthHeadersAndRetry`: verifies bearer auth, OAuth beta header, one forced 401 refresh retry, and no API-key header.
 - `TestOpenAICodexBuildRequestGolden`: verifies codex request JSON, headers, and stateless Responses mapping.

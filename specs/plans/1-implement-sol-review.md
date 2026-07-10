@@ -13,7 +13,7 @@ The plan artifact is complete; implementation checkboxes remain open. Execute ph
 - [x] Phase 1: credential boundaries and fail-closed fixture recording
 - [x] Phase 2: stream grammar and provider equivalence
 - [x] Phase 3: core lifecycle and API correctness
-- [ ] Phase 4: schema and OAuth correctness
+- [x] Phase 4: schema and OAuth correctness
 - [ ] Phase 5: first-party consumers and release tooling
 - [ ] Phase 6: executable conformance and live/coverage confidence
 - [ ] Phase 7: SDK surface, documentation synchronization, and final gates
@@ -27,7 +27,7 @@ Findings: R1, R2, S1, V5, V7.
 3. Stage fixture output in the destination directory; structurally sanitize URL/query values, headers, JSON bodies, and JSON carried in SSE data; run the fixture guard and entropy scan on staged bytes; atomically rename only after the test and recording finalize successfully.
 4. Make expected-scenario completeness a warning plus explicit `-record-allow-incomplete` acknowledgement, not an absolute gate, so intentional single-scenario recordings remain possible. Never silently replace a complete fixture with a partial run.
 5. Finalize response captures on EOF or Close, track outstanding response bodies, and report an abandoned body as an incomplete exchange before fixture replacement. This must not turn a consumer early break into a transport error.
-6. Feed all credentials produced by `PersistOnRefresh` into the recorder's secret set before staging. Replace private hosts with one stable fixture hostname and use per-fixture sequential `MOCK_*` identifiers where correlation is needed.
+6. Feed all credentials produced by `AuthFilePersistence` into the recorder's secret set before staging. Replace private hosts with one stable fixture hostname and use per-fixture sequential `MOCK_*` identifiers where correlation is needed.
 7. Add a narrow entropy allowlist for the exact committed red-pixel PNG in `internal/e2e/scenario.go`; do not allowlist a general image, base64, or entropy pattern.
 
 Acceptance:

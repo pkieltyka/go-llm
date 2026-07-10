@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
-	"strconv"
 	"strings"
 )
 
@@ -190,7 +189,7 @@ func (b *schemaBuilder) addStructFields(typ reflect.Type, requiredParent bool, p
 			continue
 		}
 
-		name, omitEmpty, stringOpt, skip, tagged := jsonFieldName(field)
+		name, omitEmpty, omitZero, stringOpt, skip, tagged := jsonFieldName(field)
 		if skip {
 			continue
 		}
@@ -215,7 +214,9 @@ func (b *schemaBuilder) addStructFields(typ reflect.Type, requiredParent bool, p
 				return fmt.Errorf("schema: recursive type %s is unsupported", embeddedType)
 			}
 			b.stack[embeddedType] = true
-			embeddedRequired := requiredParent && fieldRequired(field.Type, omitEmpty, tagOptions)
+			// encoding/json ignores field options on an unnamed anonymous struct
+			// because the struct itself is not emitted; only its promoted fields are.
+			embeddedRequired := requiredParent && fieldRequired(field.Type, false, false, tagOptions)
 			err = b.addStructFields(embeddedType, embeddedRequired, properties, requiredSet)
 			delete(b.stack, embeddedType)
 			if err != nil {
@@ -229,7 +230,7 @@ func (b *schemaBuilder) addStructFields(typ reflect.Type, requiredParent bool, p
 			return fmt.Errorf("schema: field %s: %w", field.Name, err)
 		}
 
-		tagOptions, err := applyJSONSchemaTag(field.Tag.Get("jsonschema"), fieldSchema)
+		tagOptions, err := applyJSONSchemaTag(field.Tag.Get("jsonschema"), field.Type, fieldSchema)
 		if err != nil {
 			return fmt.Errorf("schema: field %s: %w", field.Name, err)
 		}
@@ -241,7 +242,7 @@ func (b *schemaBuilder) addStructFields(typ reflect.Type, requiredParent bool, p
 			return fmt.Errorf("schema: duplicate JSON field %q", name)
 		}
 		properties[name] = fieldSchema
-		if requiredParent && fieldRequired(field.Type, omitEmpty, tagOptions) {
+		if requiredParent && fieldRequired(field.Type, omitEmpty, omitZero, tagOptions) {
 			requiredSet[name] = struct{}{}
 		}
 	}
@@ -273,7 +274,7 @@ func schemaFromSelfDescriber(typ reflect.Type) (json.RawMessage, bool, error) {
 
 func schemaObjectFromRaw(raw json.RawMessage) (map[string]any, error) {
 	var out map[string]any
-	if err := json.Unmarshal(raw, &out); err != nil {
+	if err := decodeJSON(raw, &out); err != nil {
 		return nil, err
 	}
 	if out == nil {
@@ -302,7 +303,7 @@ type fieldTagOptions struct {
 	enumSet     bool
 }
 
-func applyJSONSchemaTag(tag string, schema map[string]any) (fieldTagOptions, error) {
+func applyJSONSchemaTag(tag string, fieldType reflect.Type, schema map[string]any) (fieldTagOptions, error) {
 	opts, err := parseJSONSchemaTag(tag)
 	if err != nil {
 		return opts, err
@@ -311,7 +312,7 @@ func applyJSONSchemaTag(tag string, schema map[string]any) (fieldTagOptions, err
 		schema["description"] = *opts.description
 	}
 	if opts.enumSet {
-		enum, err := enumValuesForSchema(schema, opts.enum)
+		enum, err := enumValuesForSchema(schema, fieldType, opts.enum)
 		if err != nil {
 			return opts, err
 		}
@@ -377,7 +378,7 @@ func (opts fieldTagOptions) hasFieldAnnotations() bool {
 	return opts.description != nil || opts.enumSet || opts.format != nil
 }
 
-func enumValuesForSchema(schema map[string]any, values []string) ([]any, error) {
+func enumValuesForSchema(schema map[string]any, fieldType reflect.Type, values []string) ([]any, error) {
 	typ, _ := schema["type"].(string)
 	enum := make([]any, len(values))
 	switch typ {
@@ -387,27 +388,29 @@ func enumValuesForSchema(schema map[string]any, values []string) ([]any, error) 
 		}
 	case "integer":
 		for i, v := range values {
-			n, err := strconv.ParseInt(v, 10, 64)
-			if err != nil {
+			n, ok := canonicalJSONNumber(v)
+			if !ok || !n.isInteger() || isUnsigned(fieldType) && n.negative {
 				return nil, fmt.Errorf("enum value %q is not an integer", v)
 			}
-			enum[i] = n
+			enum[i] = json.Number(v)
 		}
 	case "number":
 		for i, v := range values {
-			n, err := strconv.ParseFloat(v, 64)
-			if err != nil {
+			if _, ok := canonicalJSONNumber(v); !ok {
 				return nil, fmt.Errorf("enum value %q is not a number", v)
 			}
-			enum[i] = n
+			enum[i] = json.Number(v)
 		}
 	case "boolean":
 		for i, v := range values {
-			b, err := strconv.ParseBool(v)
-			if err != nil {
+			switch v {
+			case "true":
+				enum[i] = true
+			case "false":
+				enum[i] = false
+			default:
 				return nil, fmt.Errorf("enum value %q is not a boolean", v)
 			}
-			enum[i] = b
 		}
 	default:
 		return nil, fmt.Errorf("enum is unsupported for schema type %q", typ)
@@ -415,23 +418,23 @@ func enumValuesForSchema(schema map[string]any, values []string) ([]any, error) 
 	return enum, nil
 }
 
-func fieldRequired(typ reflect.Type, omitEmpty bool, tag fieldTagOptions) bool {
+func fieldRequired(typ reflect.Type, omitEmpty, omitZero bool, tag fieldTagOptions) bool {
 	if tag.required {
 		return true
 	}
 	if tag.optional {
 		return false
 	}
-	return typ.Kind() != reflect.Pointer && !omitEmpty
+	return typ.Kind() != reflect.Pointer && !omitEmpty && !omitZero
 }
 
-func jsonFieldName(field reflect.StructField) (name string, omitEmpty bool, stringOpt bool, skip bool, tagged bool) {
+func jsonFieldName(field reflect.StructField) (name string, omitEmpty, omitZero, stringOpt, skip, tagged bool) {
 	tag := field.Tag.Get("json")
 	if tag == "-" {
-		return "", false, false, true, false
+		return "", false, false, false, true, false
 	}
 	if tag == "" {
-		return field.Name, false, false, false, false
+		return field.Name, false, false, false, false, false
 	}
 
 	parts := strings.Split(tag, ",")
@@ -445,11 +448,23 @@ func jsonFieldName(field reflect.StructField) (name string, omitEmpty bool, stri
 		switch opt {
 		case "omitempty":
 			omitEmpty = true
+		case "omitzero":
+			omitZero = true
 		case "string":
 			stringOpt = true
 		}
 	}
-	return name, omitEmpty, stringOpt, false, tagged
+	return name, omitEmpty, omitZero, stringOpt, false, tagged
+}
+
+func isUnsigned(typ reflect.Type) bool {
+	typ = indirectType(typ)
+	switch typ.Kind() {
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return true
+	default:
+		return false
+	}
 }
 
 func fieldVisibleToJSON(field reflect.StructField) bool {

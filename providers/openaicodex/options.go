@@ -30,7 +30,7 @@ type Option func(*config)
 
 type config struct {
 	oauthCred     llm.AuthCredential
-	onRefresh     func(llm.AuthCredential)
+	persistence   llm.OAuthPersistenceFunc
 	baseURL       string
 	httpClient    *http.Client
 	maxRetries    *int
@@ -51,11 +51,15 @@ func defaultConfig() config {
 	}
 }
 
-// WithOAuth sets the ChatGPT subscription OAuth credential.
-func WithOAuth(cred llm.AuthCredential, onRefresh func(llm.AuthCredential)) Option {
+// WithOAuth sets the ChatGPT subscription OAuth credential. A credential with
+// a refresh token requires non-nil persist; access-only credentials may pass
+// nil. persist must honor its context and return only after durable storage.
+// An explicit no-op opts into in-memory-only rotation and risks a stale stored
+// refresh token after restart.
+func WithOAuth(cred llm.AuthCredential, persist llm.OAuthPersistenceFunc) Option {
 	return func(c *config) {
 		c.oauthCred = cred
-		c.onRefresh = onRefresh
+		c.persistence = persist
 	}
 }
 
@@ -122,6 +126,9 @@ func withOAuthTokenURL(url string) Option {
 func (c config) validate() error {
 	if c.oauthCred.Access == "" && c.oauthCred.Refresh == "" {
 		return fmt.Errorf("%w: missing OpenAI Codex OAuth credential", llm.ErrAuth)
+	}
+	if err := provideroauth.ValidatePersistence(c.oauthCred, c.persistence); err != nil {
+		return err
 	}
 	if c.httpClient == nil {
 		return fmt.Errorf("%w: nil HTTP client", llm.ErrBadRequest)

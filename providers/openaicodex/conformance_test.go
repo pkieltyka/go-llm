@@ -1,6 +1,7 @@
 package openaicodex
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -20,7 +21,9 @@ func TestOpenAICodexConformance(t *testing.T) {
 		t.Cleanup(server.Close)
 
 		p, err := New(
-			WithOAuth(llm.AuthCredential{Type: "oauth", Access: fakeCodexJWT(t, "acct-conformance"), Refresh: "refresh"}, nil),
+			WithOAuth(llm.AuthCredential{Type: "oauth", Access: fakeCodexJWT(t, "acct-conformance"), Refresh: "refresh"}, func(ctx context.Context, _ llm.AuthCredential) error {
+				return ctx.Err()
+			}),
 			WithBaseURL(server.URL),
 			withOAuthTokenURL(server.URL+"/oauth/token"),
 			WithHTTPClient(server.Client()),

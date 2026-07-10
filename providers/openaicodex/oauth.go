@@ -20,10 +20,10 @@ const (
 	codexAccountClaimPath    = "https://api.openai.com/auth"
 )
 
-func newCodexOAuthSource(cfg config) *provideroauth.Source {
+func newCodexOAuthSource(cfg config) (*provideroauth.Source, error) {
 	return provideroauth.New(cfg.oauthCred, func(ctx context.Context, cred llm.AuthCredential) (llm.AuthCredential, error) {
 		return refreshCodexOAuth(ctx, cfg.httpClient, cfg.tokenURL, cred)
-	}, cfg.onRefresh)
+	}, cfg.persistence)
 }
 
 func refreshCodexOAuth(ctx context.Context, client *http.Client, tokenURL string, cred llm.AuthCredential) (llm.AuthCredential, error) {

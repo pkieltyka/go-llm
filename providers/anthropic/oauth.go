@@ -30,10 +30,10 @@ const (
 	claudeCodeSystemPrompt = "You are Claude Code, Anthropic's official CLI for Claude."
 )
 
-func newAnthropicOAuthSource(cfg config) *provideroauth.Source {
+func newAnthropicOAuthSource(cfg config) (*provideroauth.Source, error) {
 	return provideroauth.New(cfg.oauthCred, func(ctx context.Context, cred llm.AuthCredential) (llm.AuthCredential, error) {
 		return refreshAnthropicOAuth(ctx, cfg.httpClient, cfg.oauthTokenURL, cred)
-	}, cfg.oauthOnRefresh)
+	}, cfg.oauthPersistence)
 }
 
 func refreshAnthropicOAuth(ctx context.Context, client *http.Client, tokenURL string, cred llm.AuthCredential) (llm.AuthCredential, error) {

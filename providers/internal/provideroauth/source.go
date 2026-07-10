@@ -13,21 +13,31 @@ import (
 // the Source decides whether a credential still has useful life. Refresh
 // endpoints must persist the TRUE server expiry (see ExpiresAt) so the margin
 // is never baked into stored credentials.
-const defaultRefreshBefore = 5 * time.Minute
+const (
+	defaultRefreshBefore  = 5 * time.Minute
+	defaultRefreshTimeout = 30 * time.Second
+)
 
 // RefreshFunc exchanges a refresh token for a renewed credential.
 type RefreshFunc func(context.Context, llm.AuthCredential) (llm.AuthCredential, error)
 
 // Source is a goroutine-safe OAuth token source with single-flight refresh.
 type Source struct {
-	mu            sync.Mutex
-	cred          llm.AuthCredential
-	refresh       RefreshFunc
-	onRefresh     func(llm.AuthCredential)
-	refreshBefore time.Duration
-	now           func() time.Time
-	inflight      chan struct{}
-	refreshErr    error
+	mu             sync.Mutex
+	cred           llm.AuthCredential
+	refresh        RefreshFunc
+	persist        llm.OAuthPersistenceFunc
+	refreshBefore  time.Duration
+	refreshTimeout time.Duration
+	now            func() time.Time
+	inflight       *refreshGeneration
+}
+
+type refreshGeneration struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	done   chan struct{}
+	err    error
 }
 
 // Option configures a Source.
@@ -42,6 +52,16 @@ func WithRefreshBefore(d time.Duration) Option {
 	}
 }
 
+// WithRefreshTimeout bounds a complete refresh generation, including
+// credential persistence. It is internal to provider implementations.
+func WithRefreshTimeout(d time.Duration) Option {
+	return func(s *Source) {
+		if d > 0 {
+			s.refreshTimeout = d
+		}
+	}
+}
+
 // WithNow overrides the source clock for tests.
 func WithNow(fn func() time.Time) Option {
 	return func(s *Source) {
@@ -51,19 +71,40 @@ func WithNow(fn func() time.Time) Option {
 	}
 }
 
+// WithPersistence installs the callback that durably persists renewed
+// credentials before they become visible to callers.
+func WithPersistence(fn llm.OAuthPersistenceFunc) Option {
+	return func(s *Source) {
+		s.persist = fn
+	}
+}
+
 // New constructs a token source around an initial credential.
-func New(cred llm.AuthCredential, refresh RefreshFunc, onRefresh func(llm.AuthCredential), opts ...Option) *Source {
+func New(cred llm.AuthCredential, refresh RefreshFunc, persist llm.OAuthPersistenceFunc, opts ...Option) (*Source, error) {
 	s := &Source{
-		cred:          cred,
-		refresh:       refresh,
-		onRefresh:     onRefresh,
-		refreshBefore: defaultRefreshBefore,
-		now:           time.Now,
+		cred:           cred,
+		refresh:        refresh,
+		persist:        persist,
+		refreshBefore:  defaultRefreshBefore,
+		refreshTimeout: defaultRefreshTimeout,
+		now:            time.Now,
 	}
 	for _, opt := range opts {
 		opt(s)
 	}
-	return s
+	if err := ValidatePersistence(s.cred, s.persist); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+// ValidatePersistence rejects refreshable credentials whose rotated tokens
+// cannot be durably stored before publication.
+func ValidatePersistence(cred llm.AuthCredential, persist llm.OAuthPersistenceFunc) error {
+	if cred.Refresh != "" && persist == nil {
+		return fmt.Errorf("%w: OAuthPersistenceFunc is required for a credential with a refresh token", llm.ErrBadRequest)
+	}
+	return nil
 }
 
 // Token returns a valid bearer token, refreshing first when needed.
@@ -114,44 +155,114 @@ func (s *Source) credential(ctx context.Context, needsRefresh func(llm.AuthCrede
 		s.mu.Unlock()
 		return credentialWithAccess(cred)
 	}
-	if done := s.inflight; done != nil {
-		s.mu.Unlock()
-		select {
-		case <-done:
-			s.mu.Lock()
-			err := s.refreshErr
-			cred := s.cred
-			s.mu.Unlock()
-			if err != nil {
-				return llm.AuthCredential{}, err
-			}
-			return credentialWithAccess(cred)
-		case <-ctx.Done():
-			return llm.AuthCredential{}, ctx.Err()
+	generation := s.inflight
+	if generation == nil {
+		base := context.WithoutCancel(ctx)
+		generationCtx, cancel := context.WithTimeout(base, s.refreshTimeout)
+		generation = &refreshGeneration{
+			ctx:    generationCtx,
+			cancel: cancel,
+			done:   make(chan struct{}),
 		}
+		s.inflight = generation
+		go s.runRefresh(generation)
 	}
-	done := make(chan struct{})
-	s.inflight = done
 	s.mu.Unlock()
 
-	cred, err := s.refreshCredential(ctx)
+	select {
+	case <-generation.done:
+		if generation.err != nil {
+			return llm.AuthCredential{}, generation.err
+		}
+		s.mu.Lock()
+		cred := s.cred
+		s.mu.Unlock()
+		return credentialWithAccess(cred)
+	case <-ctx.Done():
+		return llm.AuthCredential{}, ctx.Err()
+	}
+}
+
+type refreshResult struct {
+	cred llm.AuthCredential
+	err  error
+}
+
+func (s *Source) runRefresh(generation *refreshGeneration) {
+	result := make(chan refreshResult, 1)
+	go func() {
+		cred, err := s.refreshCredential(generation.ctx)
+		result <- refreshResult{cred: cred, err: err}
+	}()
+
+	select {
+	case <-generation.ctx.Done():
+		s.finishRefresh(generation, llm.AuthCredential{}, generation.ctx.Err())
+	case refreshed := <-result:
+		if err := generation.ctx.Err(); err != nil {
+			s.finishRefresh(generation, llm.AuthCredential{}, err)
+			return
+		}
+		if refreshed.err != nil {
+			s.finishRefresh(generation, llm.AuthCredential{}, refreshed.err)
+			return
+		}
+
+		s.mu.Lock()
+		cred := mergeCredential(s.cred, refreshed.cred)
+		persist := s.persist
+		s.mu.Unlock()
+		if persist == nil {
+			s.finishRefresh(generation, cred, nil)
+			return
+		}
+		if err := generation.ctx.Err(); err != nil {
+			s.finishRefresh(generation, llm.AuthCredential{}, err)
+			return
+		}
+
+		persisted := make(chan error, 1)
+		go func() {
+			if err := generation.ctx.Err(); err != nil {
+				persisted <- err
+				return
+			}
+			persisted <- persist(generation.ctx, cred)
+		}()
+		select {
+		case <-generation.ctx.Done():
+			s.finishRefresh(generation, llm.AuthCredential{}, generation.ctx.Err())
+		case err := <-persisted:
+			if ctxErr := generation.ctx.Err(); ctxErr != nil {
+				s.finishRefresh(generation, llm.AuthCredential{}, ctxErr)
+				return
+			}
+			if err != nil {
+				err = fmt.Errorf("persist refreshed OAuth credential: %w", err)
+			}
+			s.finishRefresh(generation, cred, err)
+		}
+	}
+}
+
+func (s *Source) finishRefresh(generation *refreshGeneration, cred llm.AuthCredential, err error) {
 	s.mu.Lock()
+	if s.inflight != generation {
+		s.mu.Unlock()
+		return
+	}
 	if err == nil {
-		s.cred = mergeCredential(s.cred, cred)
+		if ctxErr := generation.ctx.Err(); ctxErr != nil {
+			err = ctxErr
+		} else {
+			s.cred = cred
+		}
 	}
-	s.refreshErr = err
+	generation.err = err
 	s.inflight = nil
-	close(done)
-	cred = s.cred
-	onRefresh := s.onRefresh
+	close(generation.done)
 	s.mu.Unlock()
-	if err != nil {
-		return llm.AuthCredential{}, err
-	}
-	if onRefresh != nil {
-		onRefresh(cred)
-	}
-	return cred, nil
+	generation.cancel()
 }
 
 func credentialWithAccess(cred llm.AuthCredential) (llm.AuthCredential, error) {
@@ -169,6 +280,9 @@ func (s *Source) needsRefreshLocked() bool {
 		return false
 	}
 	expires := time.UnixMilli(s.cred.Expires)
+	if s.cred.Refresh == "" {
+		return !s.now().Before(expires)
+	}
 	return !s.now().Add(s.refreshBefore).Before(expires)
 }
 

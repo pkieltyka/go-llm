@@ -171,6 +171,70 @@ func TestForCoercesEnumValuesToFieldType(t *testing.T) {
 	}
 }
 
+func TestForPreservesUnsignedEnumAboveMaxInt64(t *testing.T) {
+	type enumArgs struct {
+		Count uint64 `json:"count" jsonschema:"enum=18446744073709551615"`
+	}
+	raw, err := schema.For[enumArgs]()
+	if err != nil {
+		t.Fatalf("For returned error: %v", err)
+	}
+	if !strings.Contains(string(raw), `"enum":[18446744073709551615]`) {
+		t.Fatalf("unsigned enum was not preserved exactly: %s", raw)
+	}
+	tool := llm.Tool{Name: "enum", InputSchema: raw}
+	if err := schema.ValidateArgs(tool, json.RawMessage(`{"count":18446744073709551615}`)); err != nil {
+		t.Fatalf("ValidateArgs rejected uint64 enum: %v", err)
+	}
+
+	type negativeUnsignedEnum struct {
+		Count uint64 `json:"count" jsonschema:"enum=-1"`
+	}
+	if _, err := schema.For[negativeUnsignedEnum](); err == nil {
+		t.Fatalf("For accepted a negative unsigned enum")
+	}
+}
+
+func TestForRecognizesOmitZeroRequiredness(t *testing.T) {
+	type embedded struct {
+		Promoted int `json:"promoted"`
+	}
+	type args struct {
+		Required      int `json:"required"`
+		OptionalZero  int `json:"optional_zero,omitzero"`
+		NamedOmitZero int `json:"omitzero"`
+		Forced        int `json:"forced,omitzero" jsonschema:"required"`
+		embedded      `json:",omitzero"`
+	}
+	raw, err := schema.For[args]()
+	if err != nil {
+		t.Fatalf("For returned error: %v", err)
+	}
+	var generated struct {
+		Required []string `json:"required"`
+	}
+	if err := json.Unmarshal(raw, &generated); err != nil {
+		t.Fatalf("generated schema did not decode: %v", err)
+	}
+	if want := []string{"forced", "omitzero", "promoted", "required"}; !reflect.DeepEqual(generated.Required, want) {
+		t.Fatalf("required = %v, want %v; schema=%s", generated.Required, want, raw)
+	}
+
+	encoded, err := json.Marshal(args{})
+	if err != nil {
+		t.Fatalf("Marshal returned error: %v", err)
+	}
+	if strings.Contains(string(encoded), "optional_zero") {
+		t.Fatalf("encoding/json did not omit omitzero field: %s", encoded)
+	}
+	if !strings.Contains(string(encoded), `"omitzero":0`) {
+		t.Fatalf(`json:"omitzero" was treated as an option instead of a name: %s`, encoded)
+	}
+	if !strings.Contains(string(encoded), `"promoted":0`) {
+		t.Fatalf("encoding/json unexpectedly applied omitzero to a flattened struct: %s", encoded)
+	}
+}
+
 func TestForAllowsEscapedCommaInDescription(t *testing.T) {
 	type describedArgs struct {
 		Place string `json:"place" jsonschema:"description=City\\, Province"`

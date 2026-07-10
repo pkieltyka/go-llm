@@ -141,8 +141,8 @@ func handoffProvider(t *testing.T, root string, cfg Config, name string, secrets
 		opts := []anthropic.Option{anthropic.WithMaxRetries(0)}
 		switch {
 		case providerCfg.Auth.Type == "oauth" && providerCfg.Auth.Access != "":
-			onRefresh := PersistOnRefresh(filepath.Join(root, "gollm-test.json"), "anthropic", t.Logf, secrets)
-			opts = append(opts, anthropic.WithOAuth(providerCfg.Auth, onRefresh))
+			persist := AuthFilePersistence(filepath.Join(root, "gollm-test.json"), "anthropic", t.Logf, secrets)
+			opts = append(opts, anthropic.WithOAuth(providerCfg.Auth, persist))
 		case providerCfg.Auth.Key != "":
 			opts = append(opts, anthropic.WithAPIKey(providerCfg.Auth.Key))
 		default:
@@ -196,9 +196,9 @@ func handoffProvider(t *testing.T, root string, cfg Config, name string, secrets
 		if providerCfg.Auth.Type != "oauth" || providerCfg.Auth.Access == "" {
 			return nil, "", false
 		}
-		onRefresh := PersistOnRefresh(filepath.Join(root, "gollm-test.json"), "openai-codex", t.Logf, secrets)
+		persist := AuthFilePersistence(filepath.Join(root, "gollm-test.json"), "openai-codex", t.Logf, secrets)
 		opts := []openaicodex.Option{
-			openaicodex.WithOAuth(providerCfg.Auth, onRefresh),
+			openaicodex.WithOAuth(providerCfg.Auth, persist),
 			openaicodex.WithMaxRetries(0),
 		}
 		if providerCfg.BaseURL != "" {

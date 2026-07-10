@@ -1,17 +1,20 @@
 package e2e
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	llm "github.com/pkieltyka/go-llm"
 )
 
-// All onRefresh persistence tests run against temp files with FAKE
+// All OAuth persistence tests run against temp files with FAKE
 // credentials only — never against the real gollm-test.json.
 
 func TestPersistRefreshedCredentialPreservesOtherEntriesAndUnknownFields(t *testing.T) {
@@ -32,14 +35,16 @@ func TestPersistRefreshedCredentialPreservesOtherEntriesAndUnknownFields(t *test
 		t.Fatalf("write fixture: %v", err)
 	}
 
-	persist := PersistOnRefresh(path, "openai-codex", t.Logf, NewSecretSet())
-	persist(llm.AuthCredential{
+	persist := AuthFilePersistence(path, "openai-codex", t.Logf, NewSecretSet())
+	if err := persist(context.Background(), llm.AuthCredential{
 		Type:      "oauth",
 		Access:    "fake-new-access",
 		Refresh:   "fake-new-refresh",
 		Expires:   999,
 		AccountID: "fake-acct-2",
-	})
+	}); err != nil {
+		t.Fatalf("AuthFilePersistence returned error: %v", err)
+	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -103,7 +108,7 @@ func TestPersistRefreshedCredentialProvidersWrapper(t *testing.T) {
 		t.Fatalf("write fixture: %v", err)
 	}
 
-	if err := persistRefreshedCredential(path, "openai-codex", llm.AuthCredential{
+	if err := persistRefreshedCredential(context.Background(), path, "openai-codex", llm.AuthCredential{
 		Type:    "oauth",
 		Access:  "fake-new",
 		Refresh: "fake-new-refresh",
@@ -138,7 +143,7 @@ func TestPersistRefreshedCredentialKeepsRefreshWhenRotatedEmpty(t *testing.T) {
 		t.Fatalf("write fixture: %v", err)
 	}
 
-	if err := persistRefreshedCredential(path, "openai-codex", llm.AuthCredential{
+	if err := persistRefreshedCredential(context.Background(), path, "openai-codex", llm.AuthCredential{
 		Type:   "oauth",
 		Access: "fake-new",
 	}); err != nil {
@@ -154,10 +159,10 @@ func TestPersistRefreshedCredentialKeepsRefreshWhenRotatedEmpty(t *testing.T) {
 	}
 }
 
-func TestPersistOnRefreshAddsEveryRotatedCredentialToSecretSet(t *testing.T) {
+func TestAuthFilePersistenceAddsEveryRotatedCredentialToSecretSet(t *testing.T) {
 	secrets := NewSecretSet("initial-secret")
 	var logged bool
-	persist := PersistOnRefresh(filepath.Join(t.TempDir(), "missing", "credentials.json"), "openai-codex", func(string, ...any) {
+	persist := AuthFilePersistence(filepath.Join(t.TempDir(), "missing", "credentials.json"), "openai-codex", func(string, ...any) {
 		logged = true
 	}, secrets)
 	rotated := llm.AuthCredential{
@@ -166,7 +171,10 @@ func TestPersistOnRefreshAddsEveryRotatedCredentialToSecretSet(t *testing.T) {
 		Refresh:   "rotated-refresh-secret",
 		AccountID: "rotated-account-secret",
 	}
-	persist(rotated)
+	err := persist(context.Background(), rotated)
+	if err == nil {
+		t.Fatal("AuthFilePersistence returned nil for persistence failure")
+	}
 	if !logged {
 		t.Fatal("persistence failure was not logged")
 	}
@@ -178,11 +186,37 @@ func TestPersistOnRefreshAddsEveryRotatedCredentialToSecretSet(t *testing.T) {
 	}
 }
 
-func TestPersistOnRefreshRequiresSecretSet(t *testing.T) {
+func TestAuthFilePersistenceRequiresSecretSet(t *testing.T) {
 	defer func() {
 		if recover() == nil {
-			t.Fatal("PersistOnRefresh accepted a nil recording secret set")
+			t.Fatal("AuthFilePersistence accepted a nil recording secret set")
 		}
 	}()
-	PersistOnRefresh("unused", "openai-codex", nil, nil)
+	AuthFilePersistence("unused", "openai-codex", nil, nil)
+}
+
+func TestAuthFilePersistenceHonorsContextWhileWaiting(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fake-creds.json")
+	original := `{"openai-codex":{"type":"oauth","access":"fake-old","refresh":"fake-refresh"}}`
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	persistGate <- struct{}{}
+	defer func() { <-persistGate }()
+	persist := AuthFilePersistence(path, "openai-codex", nil, NewSecretSet())
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	err := persist(ctx, llm.AuthCredential{Type: "oauth", Access: "fake-new", Refresh: "fake-new-refresh"})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("persistence error = %v, want context.DeadlineExceeded", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	if string(data) != original {
+		t.Fatalf("canceled persistence changed file: %s", data)
+	}
 }

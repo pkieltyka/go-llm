@@ -153,15 +153,29 @@ if err != nil {
 	panic(err)
 }
 
-codex, err := openaicodex.New(openaicodex.WithOAuth(auth["openai-codex"], func(updated llm.AuthCredential) {
-	// Persist rotated refresh credentials in your application.
+codex, err := openaicodex.New(openaicodex.WithOAuth(auth["openai-codex"], func(ctx context.Context, updated llm.AuthCredential) error {
+	return persistCredential(ctx, updated)
 }))
 ```
 
-The same `WithOAuth(cred, onRefresh)` option exists on `providers/anthropic`
-for Claude Pro/Max subscriptions. Provider-specific request extensions live
-in each provider's `Options` type, passed through `Request.ProviderOptions`;
-the raw SDK client is always reachable via each provider's `Client()`.
+The same `WithOAuth(cred, persist)` option exists on `providers/anthropic`
+for Claude Pro/Max subscriptions. Persistence callbacks must honor their
+context and return only after the rotated credential is durably stored; an
+error prevents the provider from publishing it. A credential containing a
+refresh token requires a non-nil callback; access-only credentials may pass
+`nil`. To deliberately keep rotations only in memory, pass an explicit
+context-aware no-op:
+
+```go
+discardRotation := func(ctx context.Context, _ llm.AuthCredential) error {
+	return ctx.Err()
+}
+```
+
+This can leave the stored refresh token stale after restart and should be a
+conscious application decision. Provider-specific request extensions live in
+each provider's `Options` type, passed through `Request.ProviderOptions`; the
+raw SDK client is always reachable via each provider's `Client()`.
 
 ## Self-hosted (vLLM, Ollama, any OpenAI-compatible server)
 

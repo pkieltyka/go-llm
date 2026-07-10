@@ -49,9 +49,9 @@ func TestLiveOpenAICodex(t *testing.T) {
 	}
 	// Persist rotated refresh tokens back to gollm-test.json — dropping them
 	// strands the stored credential after the provider refreshes.
-	onRefresh := PersistOnRefresh(filepath.Join(root, "gollm-test.json"), "openai-codex", t.Logf, secrets)
+	persist := AuthFilePersistence(filepath.Join(root, "gollm-test.json"), "openai-codex", t.Logf, secrets)
 	opts := []openaicodex.Option{
-		openaicodex.WithOAuth(providerCfg.Auth, onRefresh),
+		openaicodex.WithOAuth(providerCfg.Auth, persist),
 		openaicodex.WithMaxRetries(0),
 		openaicodex.WithWireCapture(captures.Capture),
 	}

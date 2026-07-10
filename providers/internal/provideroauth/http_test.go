@@ -13,13 +13,13 @@ import (
 
 func TestDoWithAuthRetryUsesAlreadyRefreshedCredential(t *testing.T) {
 	var refreshCalls int
-	source := New(
+	source := mustNewSource(t,
 		llm.AuthCredential{Type: "oauth", Access: "old", Refresh: "refresh"},
 		func(context.Context, llm.AuthCredential) (llm.AuthCredential, error) {
 			refreshCalls++
 			return llm.AuthCredential{Type: "oauth", Access: "new"}, nil
 		},
-		nil,
+		noOpPersistence,
 	)
 
 	var authHeaders []string
@@ -60,12 +60,12 @@ func TestDoWithAuthRetryUsesAlreadyRefreshedCredential(t *testing.T) {
 
 func TestDoWithAuthRetryReturnsRefreshError(t *testing.T) {
 	refreshErr := errors.New("refresh failed")
-	source := New(
+	source := mustNewSource(t,
 		llm.AuthCredential{Type: "oauth", Access: "old", Refresh: "refresh"},
 		func(context.Context, llm.AuthCredential) (llm.AuthCredential, error) {
 			return llm.AuthCredential{}, refreshErr
 		},
-		nil,
+		noOpPersistence,
 	)
 	req := mustRequest(t, "")
 	resp, err := DoWithAuthRetry(req, func(r *http.Request) (*http.Response, error) {

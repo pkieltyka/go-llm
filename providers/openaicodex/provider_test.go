@@ -19,6 +19,10 @@ import (
 	"github.com/pkieltyka/go-llm/providers/internal/providerutil"
 )
 
+func discardOAuthPersistence(ctx context.Context, _ llm.AuthCredential) error {
+	return ctx.Err()
+}
+
 func TestOpenAICodexBuildRequestGolden(t *testing.T) {
 	rawReasoning := json.RawMessage(`{"id":"rs_1","type":"reasoning","summary":[{"type":"summary_text","text":"because"}],"encrypted_content":"enc","status":"completed"}`)
 	params, err := (&Provider{}).adapter().BuildParams(&llm.Request{
@@ -192,6 +196,7 @@ func TestOpenAICodexHeadersAndRetry(t *testing.T) {
 	var ambientHeaders []string
 	var refreshForm string
 	var refreshed llm.AuthCredential
+	var persistenceHadDeadline bool
 	var requestBodies []string
 	responseCalls := 0
 
@@ -227,8 +232,10 @@ func TestOpenAICodexHeadersAndRetry(t *testing.T) {
 	defer server.Close()
 
 	p, err := New(
-		WithOAuth(llm.AuthCredential{Type: "oauth", Access: oldAccess, Refresh: "old-refresh"}, func(cred llm.AuthCredential) {
+		WithOAuth(llm.AuthCredential{Type: "oauth", Access: oldAccess, Refresh: "old-refresh"}, func(ctx context.Context, cred llm.AuthCredential) error {
+			_, persistenceHadDeadline = ctx.Deadline()
 			refreshed = cred
+			return nil
 		}),
 		WithBaseURL(server.URL),
 		withOAuthTokenURL(server.URL+"/oauth/token"),
@@ -298,6 +305,91 @@ func TestOpenAICodexHeadersAndRetry(t *testing.T) {
 	if refreshed.Access != newAccess || refreshed.Refresh != "new-refresh" || refreshed.AccountID != "acct-new" {
 		t.Fatalf("refreshed credential = %+v", refreshed)
 	}
+	if !persistenceHadDeadline {
+		t.Fatal("persistence callback did not receive generation deadline")
+	}
+}
+
+func TestOpenAICodexPersistenceContract(t *testing.T) {
+	networkCalls := 0
+	client := &http.Client{Transport: testutil.RoundTripFunc(func(*http.Request) (*http.Response, error) {
+		networkCalls++
+		return nil, errors.New("unexpected network request")
+	})}
+
+	p, err := New(
+		WithOAuth(llm.AuthCredential{Type: "oauth", Access: "access", Refresh: "refresh"}, nil),
+		WithHTTPClient(client),
+	)
+	if !errors.Is(err, llm.ErrBadRequest) {
+		t.Fatalf("refreshable New error = %v, want ErrBadRequest", err)
+	}
+	if p != nil || networkCalls != 0 {
+		t.Fatalf("refreshable New provider/network calls = %+v/%d, want nil/0", p, networkCalls)
+	}
+
+	p, err = New(
+		WithOAuth(llm.AuthCredential{Type: "oauth", Access: "access-only"}, nil),
+		WithHTTPClient(client),
+	)
+	if err != nil {
+		t.Fatalf("access-only New returned error: %v", err)
+	}
+	if p == nil || networkCalls != 0 {
+		t.Fatalf("access-only New provider/network calls = %+v/%d, want non-nil/0", p, networkCalls)
+	}
+}
+
+func TestOpenAICodexPersistenceErrorStopsRetry(t *testing.T) {
+	persistErr := errors.New("persist codex credential")
+	access := fakeCodexJWT(t, "acct-old")
+	newAccess := fakeCodexJWT(t, "acct-new")
+	responseCalls := 0
+	persistenceCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/responses":
+			responseCalls++
+			http.Error(w, `{"error":{"code":"invalid_token","message":"expired","type":"authentication_error"}}`, http.StatusUnauthorized)
+		case "/oauth/token":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"access_token":`+strconvQuote(newAccess)+`,"refresh_token":"new-refresh","expires_in":3600}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	p, err := New(
+		WithOAuth(llm.AuthCredential{Type: "oauth", Access: access, Refresh: "old-refresh"}, func(ctx context.Context, _ llm.AuthCredential) error {
+			persistenceCalls++
+			if _, ok := ctx.Deadline(); !ok {
+				t.Error("persistence context has no generation deadline")
+			}
+			return persistErr
+		}),
+		WithBaseURL(server.URL),
+		withOAuthTokenURL(server.URL+"/oauth/token"),
+		WithHTTPClient(server.Client()),
+		WithMaxRetries(0),
+	)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	resp, err := p.Chat(context.Background(), &llm.Request{
+		Model:     "gpt-5.4-mini",
+		MaxTokens: 8,
+		Messages:  []llm.Message{llm.UserText("ping")},
+	})
+	if !errors.Is(err, persistErr) {
+		t.Fatalf("Chat error = %v, want persistence error", err)
+	}
+	if resp != nil {
+		t.Fatalf("Chat response = %+v, want nil", resp)
+	}
+	if responseCalls != 1 || persistenceCalls != 1 {
+		t.Fatalf("response/persistence calls = %d/%d, want 1/1", responseCalls, persistenceCalls)
+	}
 }
 
 func writeCodexSSESuccess(w http.ResponseWriter) {
@@ -310,7 +402,7 @@ func newCodexRetryTestProvider(t *testing.T, server *httptest.Server, delays *[]
 	t.Helper()
 	access := fakeCodexJWT(t, "acct-1")
 	base := []Option{
-		WithOAuth(llm.AuthCredential{Type: "oauth", Access: access, Refresh: "refresh"}, nil),
+		WithOAuth(llm.AuthCredential{Type: "oauth", Access: access, Refresh: "refresh"}, discardOAuthPersistence),
 		WithBaseURL(server.URL),
 		withOAuthTokenURL(server.URL + "/oauth/token"),
 		WithHTTPClient(server.Client()),
@@ -507,7 +599,7 @@ func newCodexStreamFixtureProvider(t *testing.T, roundTrip testutil.RoundTripFun
 			Type:    "oauth",
 			Access:  fakeCodexJWT(t, "acct-fixture"),
 			Refresh: "refresh-fixture",
-		}, nil),
+		}, discardOAuthPersistence),
 		WithBaseURL("https://codex.fixture.test"),
 		WithHTTPClient(&http.Client{Transport: roundTrip}),
 		WithMaxRetries(0),

@@ -33,7 +33,7 @@ func NormalizeRemoteError(provider string, err error) error {
 	return &llm.ProviderError{
 		Provider: provider,
 		Message:  err.Error(),
-		Kind:     kind,
+		Kind:     errors.Join(kind, err),
 	}
 }
 

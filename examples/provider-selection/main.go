@@ -80,9 +80,17 @@ func fromAuthFile(path string) (llm.Provider, string, error) {
 		return p, modelOr(cred.Model, "qwen/qwen3.6-27b"), err
 	}
 	if cred, ok := auth["openai-codex"]; ok && cred.Access != "" {
-		// Subscription OAuth. The second argument is an optional callback for
-		// persisting refreshed credentials back to your credential store.
-		p, err := openaicodex.New(openaicodex.WithOAuth(cred, nil))
+		var persist llm.OAuthPersistenceFunc
+		if cred.Refresh != "" {
+			// This demo deliberately keeps rotations in memory. Production code
+			// should durably update path instead; this no-op can leave the stored
+			// refresh token stale after restart.
+			fmt.Fprintln(os.Stderr, "warning: OAuth rotations are not persisted by this demo")
+			persist = func(ctx context.Context, _ llm.AuthCredential) error {
+				return ctx.Err()
+			}
+		}
+		p, err := openaicodex.New(openaicodex.WithOAuth(cred, persist))
 		return p, modelOr(cred.Model, "gpt-5.4-mini"), err
 	}
 	return nil, "", fmt.Errorf("no usable credentials in %s", path)

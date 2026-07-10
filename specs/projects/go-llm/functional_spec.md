@@ -913,9 +913,19 @@ deferred; natural future home: `llm-cli auth login`).
 - **Credential shape**: the `oauth` variant of the pi-compatible format
   (§17): `{access, refresh?, expires?, accountId?}`.
 - **Provider option**: subscription-capable providers accept
-  `WithOAuth(cred, onRefresh)` — bearer auth, automatic refresh on expiry
-  (plus one forced-refresh retry on 401), refreshed credentials handed to
-  `onRefresh` so the *caller* persists them (go-llm never writes files).
+  `WithOAuth(cred, persist)` where `persist` is
+  `llm.OAuthPersistenceFunc` (`func(context.Context, AuthCredential) error`)
+  — bearer auth, automatic refresh on expiry (plus one forced-refresh retry
+  on 401), with renewed credentials handed to the caller for persistence
+  (go-llm never writes files). The callback MUST honor its generation context
+  and return only after durable persistence. Cancellation, deadline, or any
+  returned error prevents publication of the renewed credential and is
+  propagated to all waiters with `errors.Is` compatibility. A credential with
+  a non-empty refresh token is rejected at provider construction when persist
+  is nil. An access-only credential may omit persist because it cannot renew.
+  Callers may deliberately pass an explicit context-aware no-op for
+  in-memory-only rotation, but doing so risks restart with a stale stored
+  refresh token.
 - **Anthropic (Claude Pro/Max)** — an auth *mode* on the existing
   provider, not a new one: same Messages API, `Authorization: Bearer` +
   refresh via Anthropic's OAuth token endpoint. **Identity requirements**:
