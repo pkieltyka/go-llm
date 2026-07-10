@@ -284,11 +284,13 @@ adapter and its OpenRouter, vLLM, and Ollama presets.
 
 - Usage always surfaces on the `MessageEnd` event regardless of where the
   provider reports it.
-- **Every stream terminates with exactly one `MessageEnd`** (enforced by a
-  shared stream-contract wrapper across all engines). A provider's own
-  completion signal is authoritative: Anthropic's `message_stop` yields a
-  `MessageEnd` even without a preceding `message_delta` (empty `StopReason`
-  in that case — the server signaled completion, so this is not an error).
+- **Every fully consumed successful stream terminates with exactly one
+  `MessageEnd`** (enforced by a shared stream-contract wrapper across all
+  engines). Failed or canceled streams terminate with their error instead. A
+  provider's own completion signal is authoritative: Anthropic's
+  `message_stop` yields a `MessageEnd` even without a preceding
+  `message_delta` (empty `StopReason` in that case — the server signaled
+  completion, so this is not an error).
   A stream that drains to clean EOF *without* any terminal signal is a
   truncation → `ProviderError` wrapping `ErrServer`, never a silent success;
   a 2xx stream with zero content events is likewise `ErrServer`. Consumer
@@ -313,14 +315,16 @@ adapter and its OpenRouter, vLLM, and Ollama presets.
 - **Argument validation**: an opt-in helper validates model-emitted tool
   arguments against the tool's schema before the caller dispatches them —
   uniform protection against malformed tool calls across providers.
-  Validation is **fail-closed on the schema itself**: a hand-written schema
-  outside the supported focused subset (a node lacking a string `type`, a
-  union/nullable `type` such as `["string","null"]`, or an array without
-  `items`) is rejected with `ErrBadRequest` before arguments are checked,
-  rather than silently passing everything. Schemas produced by `schema.For`
-  never hit this; it guards hand-authored schemas only. (Still no full
-  JSON-Schema dialect — `oneOf`/`$ref`/etc. remain out of scope per the
-  focused-subset decision.)
+  Before checking arguments, validation checks the structural requirements
+  used by the focused subset: every visited node must have one supported
+  string `type`; arrays require object-valued `items`; and `properties`,
+  `required`, `enum`, and `additionalProperties` must have their expected
+  shapes. Malformed schemas fail with `ErrBadRequest` rather than silently
+  passing every argument. This is not a full JSON Schema dialect: unsupported
+  constraint keywords such as `oneOf`, `$ref`, and `pattern` are not enforced
+  and must not be relied upon. Reflection-derived `schema.For` output conforms
+  to the subset; schemas supplied by `JSONSchemaer` or changed through
+  `WithModifier` remain caller-controlled and may be rejected.
 - **Annotations**: optional, MCP-aligned behavioral hints on `Tool`
   (`ReadOnly`, `Destructive`, `Idempotent`, `OpenWorld`). Informational
   only — never sent to providers; consumed by callers (e.g. `go-agent`
