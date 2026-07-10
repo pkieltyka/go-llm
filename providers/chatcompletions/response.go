@@ -2,7 +2,6 @@ package chatcompletions
 
 import (
 	"encoding/json"
-	"fmt"
 	"sort"
 	"strings"
 
@@ -14,7 +13,11 @@ import (
 // mapResponse converts a chat completion response into the normalized shape.
 func (p *Provider) mapResponse(resp *sdk.ChatCompletion) (*llm.Response, error) {
 	if resp == nil {
-		return nil, providerutil.NormalizeRemoteError(p.Name(), fmt.Errorf("%w: nil %s response", llm.ErrServer, p.Name()))
+		return nil, &llm.ProviderError{
+			Provider: p.Name(),
+			Message:  "chat completion returned a nil response",
+			Kind:     llm.ErrServer,
+		}
 	}
 	var raw rawChatCompletion
 	if err := json.Unmarshal([]byte(resp.RawJSON()), &raw); err != nil {

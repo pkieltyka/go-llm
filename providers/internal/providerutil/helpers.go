@@ -49,7 +49,7 @@ func ContextWithTimeout(ctx context.Context, timeout time.Duration) (context.Con
 // OptionsOf extracts typed request options after ValidateProviderOptions has
 // established the provider identity. It accepts both value and pointer forms
 // and deliberately does not call ForProvider again.
-func OptionsOf[T any](req *llm.Request) (T, bool, error) {
+func OptionsOf[T llm.ProviderOptions](req *llm.Request) (T, bool, error) {
 	var zero T
 	if req == nil || req.ProviderOptions == nil {
 		return zero, false, nil

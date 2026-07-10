@@ -449,3 +449,27 @@ func TestValidateArgsDocumentsAnnotationSubset(t *testing.T) {
 		t.Fatalf("ValidateArgs enforced annotation keywords: %v", err)
 	}
 }
+
+func TestValidateSchema(t *testing.T) {
+	conformant := json.RawMessage(`{
+		"type":"object",
+		"properties":{"name":{"type":"string"}},
+		"required":["name"],
+		"additionalProperties":false
+	}`)
+	if err := schema.ValidateSchema(conformant); err != nil {
+		t.Fatalf("ValidateSchema rejected conformant schema: %v", err)
+	}
+
+	for name, raw := range map[string]json.RawMessage{
+		"root missing type":   json.RawMessage(`{"properties":{"name":{"type":"string"}}}`),
+		"union type":          json.RawMessage(`{"type":["object","null"]}`),
+		"array missing items": json.RawMessage(`{"type":"array"}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := schema.ValidateSchema(raw); !errors.Is(err, llm.ErrBadRequest) {
+				t.Fatalf("ValidateSchema(%s) error = %v, want ErrBadRequest", name, err)
+			}
+		})
+	}
+}

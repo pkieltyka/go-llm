@@ -71,13 +71,10 @@ func ValidateProviderOptions(provider string, req *Request) error {
 }
 
 func isNilProviderOptions(options ProviderOptions) bool {
+	// reflect.ValueOf already unwraps the interface to its concrete dynamic
+	// value, so Kind() is never reflect.Interface here. Reject typed-nil
+	// pointers and other nilable kinds so a nil options value fails closed.
 	value := reflect.ValueOf(options)
-	for value.IsValid() && value.Kind() == reflect.Interface {
-		if value.IsNil() {
-			return true
-		}
-		value = value.Elem()
-	}
 	if !value.IsValid() {
 		return true
 	}

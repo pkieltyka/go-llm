@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -55,7 +56,7 @@ func (p *Provider) BuildParams(req *llm.Request, stream bool) (sdk.ChatCompletio
 		if err != nil {
 			return sdk.ChatCompletionNewParams{}, err
 		}
-		if p.hasCapability(llm.CapabilityParallelTools) {
+		if slices.Contains(p.Capabilities(), llm.CapabilityParallelTools) {
 			params.ParallelToolCalls = sdk.Bool(true)
 		}
 	}
@@ -80,7 +81,7 @@ func (p *Provider) BuildParams(req *llm.Request, stream bool) (sdk.ChatCompletio
 	if err := p.dialect.ApplyRequest(req, &params, extras); err != nil {
 		return sdk.ChatCompletionNewParams{}, err
 	}
-	if !p.hasCapability(llm.CapabilityParallelTools) {
+	if !slices.Contains(p.Capabilities(), llm.CapabilityParallelTools) {
 		params.ParallelToolCalls = sdkparam.Opt[bool]{}
 		delete(extras, "parallel_tool_calls")
 	}
@@ -88,15 +89,6 @@ func (p *Provider) BuildParams(req *llm.Request, stream bool) (sdk.ChatCompletio
 		params.SetExtraFields(extras)
 	}
 	return params, nil
-}
-
-func (p *Provider) hasCapability(want llm.Capability) bool {
-	for _, capability := range p.Capabilities() {
-		if capability == want {
-			return true
-		}
-	}
-	return false
 }
 
 // mapEffort translates the unified Effort into top-level wire request fields,

@@ -17,7 +17,9 @@ const (
 	// ModeAuto picks the best supported strategy: native json-schema, then
 	// forced-tool extraction, then json mode.
 	ModeAuto ParseMode = ""
-	// ModeNative forces provider-native json-schema structured output.
+	// ModeNative forces provider-native json-schema structured output. It sets
+	// ResponseFormat to FormatJSONSchema with Strict=true, overriding a caller's
+	// ResponseFormat.Strict:false (and any non-json-schema Type) without signal.
 	ModeNative ParseMode = "native"
 	// ModeTool forces extraction through a synthetic forced tool call.
 	ModeTool ParseMode = "tool"
@@ -84,6 +86,14 @@ func Parse[T any](ctx context.Context, p Provider, req *Request, opts ...ParseOp
 
 	rawSchema, formatName, err := parseSchemaForRequest[T](req)
 	if err != nil {
+		return zero, nil, err
+	}
+	// Preflight the resolved schema shape once, before any provider call. A
+	// caller-supplied schema outside the focused subset can never satisfy
+	// post-response validation, so retrying would only burn provider budget on
+	// a correction the model cannot act on. Schemas from schema.For[T] are
+	// conformant by construction and pass here.
+	if err := validateParseSchema(rawSchema); err != nil {
 		return zero, nil, err
 	}
 	caps := p.Capabilities()
@@ -250,6 +260,17 @@ func decodeParseResponse[T any](mode ParseMode, rawSchema any, toolName string, 
 
 func validateParseRaw(name string, rawSchema any, raw json.RawMessage) error {
 	err := schemajson.ValidateArgs(name, rawSchema, raw)
+	if errors.Is(err, schemajson.ErrBadRequest) {
+		return fmt.Errorf("%w: %s", ErrBadRequest, schemajson.BadRequestDetail(err))
+	}
+	return err
+}
+
+// validateParseSchema fails closed on a resolved schema whose shape falls
+// outside the focused strict-mode subset, mapping the internal sentinel onto
+// ErrBadRequest so Parse can reject it before any provider call.
+func validateParseSchema(rawSchema any) error {
+	err := schemajson.ValidateSchema(rawSchema)
 	if errors.Is(err, schemajson.ErrBadRequest) {
 		return fmt.Errorf("%w: %s", ErrBadRequest, schemajson.BadRequestDetail(err))
 	}

@@ -121,6 +121,11 @@ func (s *Session) Continue(ctx context.Context) (*Response, error) {
 
 // ChatStream appends a user turn and returns a stream that appends the
 // collected assistant response when the stream completes without error.
+//
+// Consume each returned stream to completion before starting another: within
+// the Session's not-goroutine-safe envelope, lazy streams interleaved (for
+// example via iter.Pull) share the same history and can misorder appended
+// turns or cross-truncate history on a failed call.
 func (s *Session) ChatStream(ctx context.Context, parts ...Part) iter.Seq2[Event, error] {
 	pendingParts := cloneParts(parts)
 	var consumedMu sync.Mutex

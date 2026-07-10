@@ -288,20 +288,6 @@ func (s *streamState) settleBlocksOnError() []llm.Event {
 	return events
 }
 
-func (s *streamState) settleToolCallsOnError() []llm.Event {
-	sources := make([]int, 0, len(s.tools))
-	for source := range s.tools {
-		sources = append(sources, source)
-	}
-	sort.Ints(sources)
-
-	var events []llm.Event
-	for _, source := range sources {
-		events = append(events, s.settleToolCallOnError(source)...)
-	}
-	return events
-}
-
 func (s *streamState) settleToolCallOnError(source int) []llm.Event {
 	call := s.tools[source]
 	if call == nil || call.started {

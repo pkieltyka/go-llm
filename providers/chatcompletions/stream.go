@@ -349,9 +349,6 @@ type streamState struct {
 	// annotations accumulates annotation elements across chunks for the
 	// dialect's terminal extras.
 	annotations []json.RawMessage
-	// reasoningRawSettled prevents duplicate Raw replacement events when an
-	// upstream failure is normalized through more than one local path.
-	reasoningRawSettled bool
 }
 
 type streamToolCall struct {
@@ -601,18 +598,17 @@ func (s *streamState) emitActiveToolDeltas() []llm.Event {
 // canResolveToolID ensures an explicit ID is owned by the lowest observed
 // stable tool position. Higher positions wait only while an absent or
 // metadata-incomplete lower position could still claim the same ID.
+// A call without a wire ID can never be started here (startTool refuses empty
+// wire IDs when synthesize is false), so it is a precondition of resolution.
 func (s *streamState) canResolveToolID(position int, call *streamToolCall) bool {
+	if call.wireID == "" {
+		return false
+	}
 	if position > s.toolPrefix {
 		return false
 	}
 	for lowerPosition, lower := range s.tools {
 		if lowerPosition >= position {
-			continue
-		}
-		if call.wireID == "" {
-			if !lower.started {
-				return false
-			}
 			continue
 		}
 		if lower.wireID == "" {
@@ -762,10 +758,6 @@ func (s *streamState) reasoningRawEvents() ([]llm.Event, []json.RawMessage) {
 }
 
 func (s *streamState) settleReasoningRaw() []llm.Event {
-	if s.reasoningRawSettled {
-		return nil
-	}
-	s.reasoningRawSettled = true
 	events, _ := s.reasoningRawEvents()
 	return events
 }

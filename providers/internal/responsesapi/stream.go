@@ -15,7 +15,6 @@ import (
 type StreamState struct {
 	adapter      Adapter
 	requestModel string
-	id           string
 	model        string
 	started      bool
 	ended        bool
@@ -115,7 +114,7 @@ func (s *StreamState) mapEvent(event responses.ResponseStreamEventUnion) ([]llm.
 		outputIndex := int(event.OutputIndex)
 		s.textBlock(outputIndex).WriteString(event.Delta)
 		s.textSegment(outputIndex, int(event.ContentIndex)).WriteString(event.Delta)
-		return s.emit(llm.TextDelta{Index: blockIndex(event.OutputIndex), Text: event.Delta}), nil
+		return s.emit(llm.TextDelta{Index: outputIndex, Text: event.Delta}), nil
 	case "response.output_text.done":
 		events, err := s.mapOutputTextDone(event)
 		return s.emit(events...), err
@@ -288,7 +287,7 @@ func (s *StreamState) mapFunctionCallDone(outputIndex int, item responses.Respon
 	}
 	if call.name == "" {
 		if finalize {
-			return []llm.Event{s.dropToolCall(outputIndex, "missing tool name")}, nil
+			return []llm.Event{s.dropToolCall(outputIndex, "missing tool name", true)}, nil
 		}
 		return nil, nil
 	}
@@ -316,7 +315,7 @@ func (s *StreamState) mapFunctionCallDone(outputIndex int, item responses.Respon
 
 	if !json.Valid([]byte(wantArgs)) {
 		if finalize {
-			events = append(events, s.dropToolCall(outputIndex, "invalid tool arguments JSON"))
+			events = append(events, s.dropToolCall(outputIndex, "invalid tool arguments JSON", false))
 		}
 		return events, nil
 	}
@@ -431,7 +430,10 @@ func (s *StreamState) reconcileAuthoritativeOutput(output []responses.ResponseOu
 				if _, alreadyDropped := s.droppedTools[outputIndex]; alreadyDropped {
 					continue
 				}
-				event := s.dropToolCall(outputIndex, drop.Reason)
+				// mapFunctionCall reports "missing tool name" exactly when the
+				// authoritative item has no name, so derive the owner-release
+				// signal from item.Name rather than matching the display text.
+				event := s.dropToolCall(outputIndex, drop.Reason, item.Name == "")
 				events = append(events, event)
 				continue
 			}
@@ -583,7 +585,10 @@ func (s *StreamState) dropIncompleteTerminalTools(reason string) []llm.Event {
 	sort.Ints(indexes)
 	events := make([]llm.Event, 0, len(indexes))
 	for _, outputIndex := range indexes {
-		events = append(events, s.dropToolCall(outputIndex, reason))
+		// Terminal reconciliation failures are not name-absence drops, so the
+		// explicit-owner reservation is released only for genuinely unnamed
+		// calls (call.name == "" inside dropToolCall).
+		events = append(events, s.dropToolCall(outputIndex, reason, false))
 	}
 	return events
 }
@@ -701,7 +706,7 @@ func (s *StreamState) settleProvisionalToolsForError() []llm.Event {
 			continue
 		}
 		if call.name == "" {
-			events = append(events, s.dropToolCall(outputIndex, "missing tool name"))
+			events = append(events, s.dropToolCall(outputIndex, "missing tool name", true))
 			continue
 		}
 		args := call.args.String()
@@ -712,7 +717,7 @@ func (s *StreamState) settleProvisionalToolsForError() []llm.Event {
 		events = append(events, s.startFinalToolCall(outputIndex, call)...)
 		events = append(events, pendingToolArgumentEvents(call)...)
 		if !json.Valid([]byte(args)) {
-			events = append(events, s.dropToolCall(outputIndex, "invalid tool arguments JSON"))
+			events = append(events, s.dropToolCall(outputIndex, "invalid tool arguments JSON", false))
 			continue
 		}
 		delete(s.tools, outputIndex)
@@ -746,7 +751,6 @@ func (s *StreamState) ensureStarted(resp responses.Response) []llm.Event {
 		return nil
 	}
 	s.started = true
-	s.id = resp.ID
 	s.model = string(resp.Model)
 	if s.model == "" {
 		s.model = s.requestModel
@@ -763,10 +767,6 @@ func (s *StreamState) emit(events ...llm.Event) []llm.Event {
 		return append(started, events...)
 	}
 	return events
-}
-
-func blockIndex(outputIndex int64) int {
-	return int(outputIndex)
 }
 
 func (s *StreamState) startIncrementalToolCall(outputIndex int, call *streamToolCall) []llm.Event {
@@ -862,12 +862,18 @@ func pendingToolArgumentEvents(call *streamToolCall) []llm.Event {
 	return []llm.Event{llm.ToolCallDelta{Index: call.index, ArgsFragment: fragment}}
 }
 
-func (s *StreamState) dropToolCall(outputIndex int, reason string) llm.ToolCallDropped {
+// dropToolCall drops the tool at outputIndex and emits ToolCallDropped with
+// reason. missingName reports that the drop is caused by an absent tool name
+// (either the provisional call never received one, or the authoritative output
+// item carried none); in that case the explicit-owner reservation is released
+// so a later stable position can claim the same provider ID. reason is display
+// text only and never drives control flow.
+func (s *StreamState) dropToolCall(outputIndex int, reason string, missingName bool) llm.ToolCallDropped {
 	if call := s.tools[outputIndex]; call != nil {
 		if call.id != "" {
 			delete(s.seenIDs, call.id)
 		}
-		if (call.name == "" || reason == "missing tool name") && call.providerID != "" && s.explicitOwners[call.providerID] == outputIndex {
+		if (call.name == "" || missingName) && call.providerID != "" && s.explicitOwners[call.providerID] == outputIndex {
 			delete(s.explicitOwners, call.providerID)
 		}
 	}

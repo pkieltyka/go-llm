@@ -331,6 +331,30 @@ func TestParseModes(t *testing.T) {
 			t.Fatalf("provider was called %d times, want 0", len(p.Requests()))
 		}
 	})
+
+	t.Run("shape-invalid caller schema fails before any provider call", func(t *testing.T) {
+		p := llmtest.New(llmtest.WithCapabilities(llm.CapabilityJSONSchema))
+		// This response would satisfy the parse if the loop ever reached the
+		// provider; the preflight must reject the schema before it is used.
+		p.EnqueueResponse(&llm.Response{Parts: []llm.Part{llm.Text(`{"name":"Ada"}`)}})
+		req := parseRequest()
+		// Caller-supplied schema outside the focused subset: the root object is
+		// missing "type", so post-response validation can never succeed and the
+		// retry budget would be spent on a correction the model cannot act on.
+		req.ResponseFormat = &llm.ResponseFormat{
+			Type:   llm.FormatJSONSchema,
+			Name:   "broken",
+			Schema: []byte(`{"properties":{"name":{"type":"string"}}}`),
+		}
+
+		_, _, err := llm.Parse[parsePerson](context.Background(), p, req, llm.WithParseRetries(2))
+		if !errors.Is(err, llm.ErrBadRequest) {
+			t.Fatalf("error = %v, want ErrBadRequest", err)
+		}
+		if len(p.Requests()) != 0 {
+			t.Fatalf("provider preflight burned %d calls, want 0", len(p.Requests()))
+		}
+	})
 }
 
 func TestParseNativeSchemaOnWire(t *testing.T) {

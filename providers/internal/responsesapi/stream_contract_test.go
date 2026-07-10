@@ -12,6 +12,7 @@ import (
 	sdk "github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/responses"
 	llm "github.com/pkieltyka/go-llm"
+	"github.com/pkieltyka/go-llm/internal/testutil"
 	"github.com/pkieltyka/go-llm/providers/internal/providerutil"
 	"github.com/pkieltyka/go-llm/providers/internal/responsesapi"
 )
@@ -132,7 +133,7 @@ func TestToolCallStreamsIncrementallyAndCollectsLikeBlocking(t *testing.T) {
 	mapped = append(mapped, secondDelta...)
 	mapped = append(mapped, done...)
 	mapped = append(mapped, terminal...)
-	streamed, err := llm.Collect(providerutil.StreamContract(replayAdapterName, eventsSeq(mapped)))
+	streamed, err := llm.Collect(providerutil.StreamContract(replayAdapterName, testutil.EventSeq(mapped...)))
 	if err != nil {
 		t.Fatalf("Collect returned error: %v", err)
 	}
@@ -477,7 +478,7 @@ func TestDuplicateExplicitToolIDLowestOutputIndexWinsReversedArrival(t *testing.
 		if len(changes) != 1 || changes[0].Index != 1 || changes[0].OldID != "duplicate" || changes[0].NewID == "" {
 			t.Fatalf("identity changes = %#v, want one in-place correction for index 1", changes)
 		}
-		streamed, err := llm.Collect(providerutil.StreamContract(replayAdapterName, eventsSeq(mapped)))
+		streamed, err := llm.Collect(providerutil.StreamContract(replayAdapterName, testutil.EventSeq(mapped...)))
 		if err != nil {
 			t.Fatalf("Collect returned error: %v", err)
 		}
@@ -585,7 +586,7 @@ func TestMissingNameToolNeverOwnsExplicitID(t *testing.T) {
 			}
 			mapped = append(mapped, events...)
 		}
-		streamed, err := llm.Collect(providerutil.StreamContract(replayAdapterName, eventsSeq(mapped)))
+		streamed, err := llm.Collect(providerutil.StreamContract(replayAdapterName, testutil.EventSeq(mapped...)))
 		if err != nil {
 			t.Fatalf("Collect returned error: %v", err)
 		}
@@ -658,7 +659,7 @@ func TestTerminalToolArgumentsRepairAndContradiction(t *testing.T) {
 			t.Fatalf("MapEvent(completed) returned error: %v", err)
 		}
 		mapped = append(mapped, events...)
-		streamed, err := llm.Collect(providerutil.StreamContract(replayAdapterName, eventsSeq(mapped)))
+		streamed, err := llm.Collect(providerutil.StreamContract(replayAdapterName, testutil.EventSeq(mapped...)))
 		if err != nil {
 			t.Fatalf("Collect returned error: %v", err)
 		}
@@ -705,7 +706,7 @@ func TestAuthoritativeToolArgumentsPreserveExactStreamedBytes(t *testing.T) {
 			}
 			mapped = append(mapped, events...)
 		}
-		streamed, err := llm.Collect(providerutil.StreamContract(replayAdapterName, eventsSeq(mapped)))
+		streamed, err := llm.Collect(providerutil.StreamContract(replayAdapterName, testutil.EventSeq(mapped...)))
 		if err != nil {
 			t.Fatalf("Collect returned error: %v", err)
 		}
@@ -740,7 +741,7 @@ func TestAuthoritativeToolArgumentsPreserveExactStreamedBytes(t *testing.T) {
 			}
 			mapped = append(mapped, events...)
 		}
-		streamed, err := llm.Collect(providerutil.StreamContract(replayAdapterName, eventsSeq(mapped)))
+		streamed, err := llm.Collect(providerutil.StreamContract(replayAdapterName, testutil.EventSeq(mapped...)))
 		if err != nil {
 			t.Fatalf("Collect returned error: %v", err)
 		}
@@ -790,7 +791,7 @@ func TestOutputItemDoneRepairsAuthoritativeToolArguments(t *testing.T) {
 			}
 			mapped = append(mapped, events...)
 		}
-		streamed, err := llm.Collect(providerutil.StreamContract(replayAdapterName, eventsSeq(mapped)))
+		streamed, err := llm.Collect(providerutil.StreamContract(replayAdapterName, testutil.EventSeq(mapped...)))
 		if err != nil {
 			t.Fatalf("Collect returned error: %v", err)
 		}
@@ -944,7 +945,7 @@ func TestTerminalResponseReconcilesLowerDuplicateBeforeStart(t *testing.T) {
 			var streamed *llm.Response
 			var err error
 			if status == "completed" {
-				streamed, err = llm.Collect(providerutil.StreamContract(replayAdapterName, eventsSeq(mapped)))
+				streamed, err = llm.Collect(providerutil.StreamContract(replayAdapterName, testutil.EventSeq(mapped...)))
 			} else {
 				streamed, err = llm.Collect(eventsThenErrorSeq(mapped, streamErr))
 				if err == nil {
@@ -1042,7 +1043,7 @@ func TestTerminalReasoningRevalidatesOutputItemDone(t *testing.T) {
 			t.Fatalf("terminal event = %T, want MessageEnd", terminal[0])
 		}
 		mapped = append(mapped, terminal...)
-		resp, err := llm.Collect(providerutil.StreamContract(replayAdapterName, eventsSeq(mapped)))
+		resp, err := llm.Collect(providerutil.StreamContract(replayAdapterName, testutil.EventSeq(mapped...)))
 		if err != nil || resp == nil || resp.Reasoning() != "streamed" {
 			t.Fatalf("Collect = %#v, %v; want one validated reasoning block", resp, err)
 		}
@@ -1074,7 +1075,7 @@ func TestTerminalReasoningRevalidatesOutputItemDone(t *testing.T) {
 			t.Fatalf("replacement = %#v, want final wire-verbatim Raw", terminal[0])
 		}
 		mapped = append(mapped, terminal...)
-		resp, err := llm.Collect(providerutil.StreamContract(replayAdapterName, eventsSeq(mapped)))
+		resp, err := llm.Collect(providerutil.StreamContract(replayAdapterName, testutil.EventSeq(mapped...)))
 		if err != nil || resp == nil {
 			t.Fatalf("Collect = %#v, %v", resp, err)
 		}
@@ -1168,7 +1169,7 @@ func TestTerminalFinalizesProvisionalToolCalls(t *testing.T) {
 		if _, ok := providerutil.DerefEvent(mapped[len(mapped)-1]).(llm.MessageEnd); !ok {
 			t.Fatalf("last event = %T, want MessageEnd", mapped[len(mapped)-1])
 		}
-		streamed, err := llm.Collect(providerutil.StreamContract(replayAdapterName, eventsSeq(mapped)))
+		streamed, err := llm.Collect(providerutil.StreamContract(replayAdapterName, testutil.EventSeq(mapped...)))
 		if err != nil {
 			t.Fatalf("Collect returned error: %v", err)
 		}
@@ -1210,7 +1211,7 @@ func TestTerminalFinalizesProvisionalToolCalls(t *testing.T) {
 		if drop, ok := providerutil.DerefEvent(mapped[len(mapped)-2]).(llm.ToolCallDropped); !ok || drop.Index != 0 {
 			t.Fatalf("penultimate event = %#v, want ToolCallDropped index 0", mapped[len(mapped)-2])
 		}
-		streamed, err := llm.Collect(providerutil.StreamContract(replayAdapterName, eventsSeq(mapped)))
+		streamed, err := llm.Collect(providerutil.StreamContract(replayAdapterName, testutil.EventSeq(mapped...)))
 		if err != nil {
 			t.Fatalf("Collect returned error: %v", err)
 		}
@@ -1263,7 +1264,7 @@ func TestEmptyAuthoritativeOutputFinalizesEveryProvisionalTool(t *testing.T) {
 		if _, ok := providerutil.DerefEvent(events[0]).(llm.ToolCallEnd); !ok {
 			t.Fatalf("first terminal event = %T, want ToolCallEnd", events[0])
 		}
-		resp, err := llm.Collect(providerutil.StreamContract(replayAdapterName, eventsSeq(mapped)))
+		resp, err := llm.Collect(providerutil.StreamContract(replayAdapterName, testutil.EventSeq(mapped...)))
 		if err != nil {
 			t.Fatalf("Collect returned error: %v", err)
 		}
@@ -1285,7 +1286,7 @@ func TestEmptyAuthoritativeOutputFinalizesEveryProvisionalTool(t *testing.T) {
 		if drop, ok := providerutil.DerefEvent(events[0]).(llm.ToolCallDropped); !ok || drop.Index != 0 {
 			t.Fatalf("first terminal event = %#v, want ToolCallDropped index 0", events[0])
 		}
-		resp, err := llm.Collect(providerutil.StreamContract(replayAdapterName, eventsSeq(mapped)))
+		resp, err := llm.Collect(providerutil.StreamContract(replayAdapterName, testutil.EventSeq(mapped...)))
 		if err != nil {
 			t.Fatalf("Collect returned error: %v", err)
 		}
@@ -1381,7 +1382,7 @@ func TestTerminalSettlesToolsOmittedFromAuthoritativeOutput(t *testing.T) {
 				if streamErr != nil {
 					t.Fatalf("completed terminal error: %v", streamErr)
 				}
-				resp, err = llm.Collect(providerutil.StreamContract(replayAdapterName, eventsSeq(mapped)))
+				resp, err = llm.Collect(providerutil.StreamContract(replayAdapterName, testutil.EventSeq(mapped...)))
 			} else {
 				if streamErr == nil {
 					t.Fatal("failed terminal returned nil error")
@@ -1484,7 +1485,7 @@ func TestTerminalFinalizesReasoningWithoutOutputItemDone(t *testing.T) {
 	if !ok || reasoningEvent.Index != 0 || reasoningEvent.Text != "private thought" || len(reasoningEvent.Raw) == 0 {
 		t.Fatalf("penultimate event = %#v, want finalized reasoning before MessageEnd", mapped[len(mapped)-2])
 	}
-	streamed, err := llm.Collect(providerutil.StreamContract(replayAdapterName, eventsSeq(mapped)))
+	streamed, err := llm.Collect(providerutil.StreamContract(replayAdapterName, testutil.EventSeq(mapped...)))
 	if err != nil {
 		t.Fatalf("Collect returned error: %v", err)
 	}
@@ -1519,7 +1520,7 @@ func TestCompleteTerminalReasoningMapping(t *testing.T) {
 			}
 			mapped = append(mapped, events...)
 		}
-		streamed, err := llm.Collect(providerutil.StreamContract(replayAdapterName, eventsSeq(mapped)))
+		streamed, err := llm.Collect(providerutil.StreamContract(replayAdapterName, testutil.EventSeq(mapped...)))
 		if err != nil {
 			t.Fatalf("Collect returned error: %v", err)
 		}
@@ -1595,7 +1596,7 @@ func TestIncrementalEmptyToolArgumentsMatchBlockingBytes(t *testing.T) {
 		}
 		mapped = append(mapped, events...)
 	}
-	streamed, err := llm.Collect(providerutil.StreamContract(replayAdapterName, eventsSeq(mapped)))
+	streamed, err := llm.Collect(providerutil.StreamContract(replayAdapterName, testutil.EventSeq(mapped...)))
 	if err != nil {
 		t.Fatalf("Collect returned error: %v", err)
 	}
@@ -1641,7 +1642,7 @@ func TestInterleavedDropsCollectInStableProviderOrder(t *testing.T) {
 		}
 		mapped = append(mapped, events...)
 	}
-	streamed, err := llm.Collect(providerutil.StreamContract(replayAdapterName, eventsSeq(mapped)))
+	streamed, err := llm.Collect(providerutil.StreamContract(replayAdapterName, testutil.EventSeq(mapped...)))
 	if err != nil {
 		t.Fatalf("Collect returned error: %v", err)
 	}
@@ -1705,7 +1706,7 @@ func TestInterleavedMalformedToolStreamsLaterStablePartImmediately(t *testing.T)
 	if textAt < 0 || dropAt <= textAt || dropIndex != 0 || textIndex != 1 {
 		t.Fatalf("text/drop order and indexes = %d/%d and %d/%d, want immediate text 1 before late drop 0", textAt, dropAt, textIndex, dropIndex)
 	}
-	streamed, err := llm.Collect(providerutil.StreamContract(replayAdapterName, eventsSeq(mapped)))
+	streamed, err := llm.Collect(providerutil.StreamContract(replayAdapterName, testutil.EventSeq(mapped...)))
 	if err != nil {
 		t.Fatalf("Collect returned error: %v", err)
 	}
@@ -1848,7 +1849,7 @@ func TestStartedPartialToolSurvivesSemanticAndTruncatedErrors(t *testing.T) {
 	t.Run("truncated", func(t *testing.T) {
 		state, mapped := build(t)
 		mapped = append(mapped, state.Finish()...)
-		resp, err := llm.Collect(providerutil.StreamContract(replayAdapterName, eventsSeq(mapped)))
+		resp, err := llm.Collect(providerutil.StreamContract(replayAdapterName, testutil.EventSeq(mapped...)))
 		assertPartial(t, resp, err)
 	})
 }
@@ -1929,7 +1930,7 @@ func TestDroppedToolCallPreservesStableProviderIndexes(t *testing.T) {
 		t.Fatalf("tool event order start/delta/drop = %d/%d/%d, want observable partial call before drop", startAt, deltaAt, dropAt)
 	}
 
-	streamed, err := llm.Collect(providerutil.StreamContract(replayAdapterName, eventsSeq(mapped)))
+	streamed, err := llm.Collect(providerutil.StreamContract(replayAdapterName, testutil.EventSeq(mapped...)))
 	if err != nil {
 		t.Fatalf("Collect returned error: %v", err)
 	}
@@ -1969,16 +1970,6 @@ func TestBuildParamsOmitsParallelToolCallsWhenUnsupported(t *testing.T) {
 	wire := marshalWire(t, params)
 	if strings.Contains(wire, "parallel_tool_calls") {
 		t.Fatalf("unsupported parallel_tool_calls must be omitted, got: %s", wire)
-	}
-}
-
-func eventsSeq(events []llm.Event) iter.Seq2[llm.Event, error] {
-	return func(yield func(llm.Event, error) bool) {
-		for _, event := range events {
-			if !yield(event, nil) {
-				return
-			}
-		}
 	}
 }
 

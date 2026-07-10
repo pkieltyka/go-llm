@@ -15,6 +15,7 @@ import (
 	sdk "github.com/openai/openai-go/v3"
 	llm "github.com/pkieltyka/go-llm"
 	"github.com/pkieltyka/go-llm/internal/e2e"
+	"github.com/pkieltyka/go-llm/internal/testutil"
 	"github.com/pkieltyka/go-llm/providers/chatcompletions"
 )
 
@@ -376,7 +377,7 @@ func TestStreamToolCallUsesLateProviderID(t *testing.T) {
 	if len(starts) != 1 || starts[0].ID != "real_call_id" || starts[0].Index != 3 || startPosition < 0 || endPosition <= startPosition {
 		t.Fatalf("late-ID events = %#v, want one incremental real-ID call", events)
 	}
-	streamed, err := llm.Collect(eventsSequence(events))
+	streamed, err := llm.Collect(testutil.EventSeq(events...))
 	if err != nil {
 		t.Fatalf("Collect returned error: %v", err)
 	}
@@ -447,7 +448,7 @@ func TestToolAndLaterTextUseStableIndexes(t *testing.T) {
 	if toolIndex != 3 || textIndex != 1 {
 		t.Fatalf("tool/text indexes = %d/%d, want stable positions 3/1; events=%#v", toolIndex, textIndex, events)
 	}
-	resp, err := llm.Collect(eventsSequence(events))
+	resp, err := llm.Collect(testutil.EventSeq(events...))
 	if err != nil {
 		t.Fatalf("Collect returned error: %v", err)
 	}
@@ -487,7 +488,7 @@ func TestMalformedCallReservesIndexBeforeRetainedTool(t *testing.T) {
 	if textIndex != 1 || droppedIndex != 3 || retainedToolIndex != 4 {
 		t.Fatalf("text/drop/retained indexes = %d/%d/%d, want stable positions 1/3/4; events=%#v", textIndex, droppedIndex, retainedToolIndex, events)
 	}
-	streamed, err := llm.Collect(eventsSequence(events))
+	streamed, err := llm.Collect(testutil.EventSeq(events...))
 	if err != nil {
 		t.Fatalf("Collect returned error: %v", err)
 	}
@@ -584,7 +585,7 @@ func TestReversedArrivalDuplicateToolIDStableOwnership(t *testing.T) {
 		if !reflect.DeepEqual(starts, wantStarts) {
 			t.Fatalf("stream starts = %#v, want lowest-index ownership %#v", starts, wantStarts)
 		}
-		streamed, err := llm.Collect(eventsSequence(events))
+		streamed, err := llm.Collect(testutil.EventSeq(events...))
 		if err != nil {
 			t.Fatalf("Collect returned error: %v", err)
 		}
@@ -681,7 +682,7 @@ func TestSparseHugeToolIndexIsBounded(t *testing.T) {
 	if startIndex != position+3 {
 		t.Fatalf("start index = %d, want sparse stable index %d", startIndex, position+3)
 	}
-	streamed, err := llm.Collect(eventsSequence(events))
+	streamed, err := llm.Collect(testutil.EventSeq(events...))
 	if err != nil {
 		t.Fatalf("Collect returned error: %v", err)
 	}
@@ -1285,14 +1286,4 @@ func collectStreamEvents(t *testing.T, seq iter.Seq2[llm.Event, error]) []llm.Ev
 		events = append(events, event)
 	}
 	return events
-}
-
-func eventsSequence(events []llm.Event) iter.Seq2[llm.Event, error] {
-	return func(yield func(llm.Event, error) bool) {
-		for _, event := range events {
-			if !yield(event, nil) {
-				return
-			}
-		}
-	}
 }

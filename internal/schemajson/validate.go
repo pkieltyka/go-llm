@@ -55,6 +55,23 @@ func ValidateArgs(toolName string, inputSchema any, args json.RawMessage) error 
 	return validateValue("$", s, value)
 }
 
+// ValidateSchema checks that inputSchema is inside the supported strict-mode
+// JSON Schema subset (the SHAPE only), without validating any arguments against
+// it. It fails closed on schemas outside the focused subset: a root missing
+// "type", a union/nullable type, or an array without "items". Schemas produced
+// by For are conformant by construction and always pass. Callers use this to
+// reject an unusable caller-supplied schema before spending provider calls.
+func ValidateSchema(inputSchema any) error {
+	if inputSchema == nil {
+		return fmt.Errorf("%w: schema is nil", ErrBadRequest)
+	}
+	s, err := schemaFromAny(inputSchema)
+	if err != nil {
+		return err
+	}
+	return validateSchemaShape("$", s)
+}
+
 func schemaFromAny(input any) (map[string]any, error) {
 	var raw []byte
 	switch s := input.(type) {

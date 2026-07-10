@@ -8,10 +8,11 @@ import (
 	"testing"
 
 	llm "github.com/pkieltyka/go-llm"
+	"github.com/pkieltyka/go-llm/internal/testutil"
 )
 
 func TestStreamContractSuccess(t *testing.T) {
-	stream := StreamContract("test", eventStream(
+	stream := StreamContract("test", testutil.EventSeq(
 		llm.MessageStart{Provider: "test", Model: "model"},
 		llm.TextDelta{Index: 0, Text: "ok"},
 		llm.MessageEnd{StopReason: llm.StopReasonEndTurn},
@@ -30,8 +31,8 @@ func TestStreamContractRejectsEmptyAndTruncatedEOF(t *testing.T) {
 		name string
 		seq  iter.Seq2[llm.Event, error]
 	}{
-		{name: "empty", seq: eventStream()},
-		{name: "truncated", seq: eventStream(
+		{name: "empty", seq: testutil.EventSeq()},
+		{name: "truncated", seq: testutil.EventSeq(
 			llm.MessageStart{Provider: "test", Model: "model"},
 			llm.TextDelta{Index: 0, Text: "partial"},
 		)},
@@ -140,15 +141,5 @@ func TestNormalizeRemoteErrorPreservesOriginalCause(t *testing.T) {
 	}
 	if !errors.Is(err, cause) {
 		t.Fatalf("NormalizeRemoteError() = %v, want original cause", err)
-	}
-}
-
-func eventStream(events ...llm.Event) iter.Seq2[llm.Event, error] {
-	return func(yield func(llm.Event, error) bool) {
-		for _, event := range events {
-			if !yield(event, nil) {
-				return
-			}
-		}
 	}
 }

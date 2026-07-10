@@ -1051,7 +1051,7 @@ func TestAnthropicStreamSemanticErrorSettlesLateMetadata(t *testing.T) {
 	if semanticErr == nil {
 		t.Fatal("semantic map error = nil, want unsupported input error")
 	}
-	for _, event := range state.settleToolCallsOnError() {
+	for _, event := range state.settleBlocksOnError() {
 		items = append(items, anthropicObservedItem{event: event})
 	}
 	items = append(items, anthropicObservedItem{err: mapError(semanticErr)})
@@ -1085,7 +1085,7 @@ func TestAnthropicStreamSemanticErrorDropsUnresolvedTool(t *testing.T) {
 	if semanticErr == nil {
 		t.Fatal("semantic map error = nil, want unsupported input error")
 	}
-	for _, event := range state.settleToolCallsOnError() {
+	for _, event := range state.settleBlocksOnError() {
 		items = append(items, anthropicObservedItem{event: event})
 	}
 	items = append(items, anthropicObservedItem{err: mapError(semanticErr)})

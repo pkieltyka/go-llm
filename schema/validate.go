@@ -20,3 +20,15 @@ func ValidateArgs(t llm.Tool, args json.RawMessage) error {
 	}
 	return err
 }
+
+// ValidateSchema checks that schema is inside the supported strict-mode JSON
+// Schema subset (its shape only), without validating any arguments against it.
+// It fails closed on a root missing "type", a union/nullable type, or an array
+// without "items". Schemas produced by For are conformant by construction.
+func ValidateSchema(schema any) error {
+	err := schemajson.ValidateSchema(schema)
+	if errors.Is(err, schemajson.ErrBadRequest) {
+		return fmt.Errorf("%w: %s", llm.ErrBadRequest, schemajson.BadRequestDetail(err))
+	}
+	return err
+}

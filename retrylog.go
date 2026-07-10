@@ -154,7 +154,6 @@ func parseRetryDuration(value string, unit time.Duration) (time.Duration, bool) 
 	if exponent <= -baseIntegerDigits {
 		return 0, true
 	}
-	integerDigits := baseIntegerDigits + exponent
 	shift := exponent - fractionalDigits + unitDigits
 
 	integer := append([]byte(nil), digits...)
@@ -173,9 +172,9 @@ func parseRetryDuration(value string, unit time.Duration) (time.Duration, bool) 
 		}
 		integer = integer[:cut]
 	}
-	if int64(len(integer)) != integerDigits {
-		return 0, false
-	}
+	// Invariant: len(integer) == baseIntegerDigits+exponent by construction in
+	// both shift branches (append of `shift` zeros, or truncation to `cut`), so
+	// no length re-check is needed here.
 	nanoseconds, err := strconv.ParseUint(string(integer), 10, 64)
 	if err != nil {
 		return 0, false
