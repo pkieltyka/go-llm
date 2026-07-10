@@ -8,9 +8,10 @@
 // reference implementation of the llm.Provider contract.
 //
 // RunConformance is the checked form of that contract: it verifies
-// single-use stream semantics, mid-stream context cancellation without
-// goroutine leaks, goroutine-safe concurrent use, panic-freedom on odd but
-// valid requests, and Collect's partial-response-on-error shape. Every
+// single-use and early-break stream semantics, prompt mid-stream context
+// cancellation, successful MessageStart/MessageEnd grammar, empty/truncated
+// EOF normalization, independent concurrent streams, panic-freedom on odd
+// but valid requests, and Collect's partial-response-on-error shape. Every
 // provider package in this module runs it against offline fixture servers,
 // and third-party Provider implementations are encouraged to run it too.
 //

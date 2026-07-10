@@ -16,7 +16,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.x"
+          go-version: "1.26.5"
           cache: true
 
       - name: Download modules
@@ -34,8 +34,15 @@ jobs:
       - name: Race tests
         run: go test -race ./...
 
+      - name: Compile live-tag tests without credentials
+        run: |
+          go test -count=1 -tags=live -run '^TestLiveRunnerManifests$' ./internal/e2e
+          go test -count=1 -tags=live -run '^$' ./...
+
       - name: Coverage floors
-        run: ./scripts/check-coverage.sh
+        run: |
+          ./scripts/check-coverage_test.sh
+          ./scripts/check-coverage.sh
 
       - name: Vulnerability check
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.5.0 ./...

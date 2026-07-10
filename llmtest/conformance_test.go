@@ -40,6 +40,26 @@ func TestRunConformance(t *testing.T) {
 			},
 			Stream: func(next llm.StreamFunc) llm.StreamFunc {
 				return func(ctx context.Context, req *llm.Request) iter.Seq2[llm.Event, error] {
+					switch llmtest.ConformanceScenarioForModel(req.Model) {
+					case llmtest.ConformanceCancel:
+						return func(yield func(llm.Event, error) bool) {
+							if !yield(llm.MessageStart{ID: "msg_conformance", Provider: "llmtest-conformance", Model: req.Model}, nil) {
+								return
+							}
+							<-ctx.Done()
+							yield(nil, ctx.Err())
+						}
+					case llmtest.ConformanceEmpty:
+						return func(yield func(llm.Event, error) bool) {
+							yield(nil, llm.ErrServer)
+						}
+					case llmtest.ConformanceTruncated:
+						return func(yield func(llm.Event, error) bool) {
+							if yield(llm.MessageStart{ID: "msg_conformance", Provider: "llmtest-conformance", Model: req.Model}, nil) {
+								yield(nil, llm.ErrServer)
+							}
+						}
+					}
 					mu.Lock()
 					defer mu.Unlock()
 					// llmtest pops the scripted step when ChatStream is

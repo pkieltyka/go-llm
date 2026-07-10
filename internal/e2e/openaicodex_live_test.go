@@ -32,9 +32,7 @@ func TestLiveOpenAICodex(t *testing.T) {
 		t.Fatalf("LoadConfig returned error: %v", err)
 	}
 	providerCfg := cfg.Provider("openai-codex", "")
-	if providerCfg.Auth.Type != "oauth" || providerCfg.Auth.Access == "" {
-		t.Skip("OpenAI Codex OAuth credential missing from gollm-test.json")
-	}
+	requireLiveProviderConfig(t, "openai-codex", providerCfg)
 	model := providerCfg.Model
 	if model == "" {
 		model = openAICodexCheapModel
@@ -66,27 +64,21 @@ func TestLiveOpenAICodex(t *testing.T) {
 	defer cancel()
 	ctx = RecordingContext(ctx, captures, secrets)
 	if err := liveOpenAICodexAuthPreflight(ctx, p, model); err != nil {
-		if errors.Is(err, llm.ErrAuth) {
-			t.Skipf("OpenAI Codex OAuth credential is invalid or expired: %v", err)
-		}
-		t.Fatalf("OpenAI Codex auth preflight returned error: %v", err)
+		t.Fatalf("configured OpenAI Codex OAuth credential failed auth preflight: %v", err)
 	}
-	scenarioReport = RunScenarios(ctx, t, p, model, []Scenario{
-		{Name: "chat", Run: liveChatScenario},
-		{Name: "stream", Capability: llm.CapabilityStreaming, Run: liveStreamScenario},
-		{Name: "models", Capability: llm.CapabilityModelsListing, Run: liveModelsScenario},
-		{Name: "tools", Capability: llm.CapabilityTools, Run: liveOpenAICodexToolsScenario},
-		{Name: "tools_stream", Capability: llm.CapabilityToolStreaming, Run: liveToolsStreamScenario},
-		{Name: "parallel_tools", Capability: llm.CapabilityParallelTools, Run: liveParallelToolsScenario},
-		{Name: "parse", Capability: llm.CapabilityJSONSchema, Run: liveOpenAIParseScenario},
-		{Name: "reasoning", Capability: llm.CapabilityReasoning, Run: liveOpenAICodexReasoningScenario},
-		{Name: "reasoning_replay", Capability: llm.CapabilityReasoning, Run: liveOpenAICodexReasoningReplayScenario},
-		{Name: "multimodal", Capability: llm.CapabilityImageInput, Run: liveMultimodalScenario},
-		{Name: "prompt_cache", Capability: llm.CapabilityPromptCaching, Run: liveOpenAICodexPromptCacheScenario},
-		{Name: "usage", Run: liveUsageScenario},
-		{Name: "error_mapping", Run: liveOpenAICodexErrorMappingScenario},
-		{Name: "cross_provider_handoff", Capability: llm.CapabilityTools, Run: liveCrossProviderHandoffScenario},
-	})
+	runners := openAICodexLiveScenarioRunners()
+	scenarioReport = RunCapabilityScenarios(ctx, t, "openai-codex", p, model, runners)
+}
+
+func openAICodexLiveScenarioRunners() map[string]ScenarioRun {
+	runners := commonLiveScenarioRunners()
+	runners["tools"] = liveOpenAICodexToolsScenario
+	runners["parse"] = liveOpenAIParseScenario
+	runners["reasoning"] = liveOpenAICodexReasoningScenario
+	runners["reasoning_replay"] = liveOpenAICodexReasoningReplayScenario
+	runners["prompt_cache"] = liveOpenAICodexPromptCacheScenario
+	runners["error_mapping"] = liveOpenAICodexErrorMappingScenario
+	return runners
 }
 
 // liveOpenAICodexToolsScenario extends the shared tools round trip with a
@@ -154,9 +146,8 @@ func liveOpenAICodexErrorMappingScenario(ctx context.Context, t *testing.T, p ll
 	}
 }
 
-// liveOpenAICodexPromptCacheScenario exercises SessionID → prompt_cache_key.
-// Cache hits are observed with a soft assertion: the codex backend does not
-// guarantee cache reads on the second call, so a zero count only logs.
+// liveOpenAICodexPromptCacheScenario exercises SessionID → prompt_cache_key
+// and requires provider-reported cache-read evidence.
 func liveOpenAICodexPromptCacheScenario(ctx context.Context, t *testing.T, p llm.Provider, model string) {
 	t.Helper()
 	req := &llm.Request{
@@ -165,22 +156,14 @@ func liveOpenAICodexPromptCacheScenario(ctx context.Context, t *testing.T, p llm
 		SessionID: "gollm-live-prompt-cache",
 		Messages:  []llm.Message{llm.UserText("Answer exactly: cached")},
 	}
-	first, err := p.Chat(ctx, req)
+	first, second, err := probePromptCache(ctx, p.Name(), defaultPromptCacheProbePolicy(), func(ctx context.Context) (*llm.Response, error) {
+		return p.Chat(ctx, req)
+	})
 	if err != nil {
-		t.Fatalf("prompt cache first Chat returned error: %v", err)
-	}
-	second, err := p.Chat(ctx, req)
-	if err != nil {
-		t.Fatalf("prompt cache second Chat returned error: %v", err)
+		t.Fatalf("prompt cache evidence failed: %v (first=%+v last=%+v)", err, responseUsage(first), responseUsage(second))
 	}
 	if first.Usage.InputTokens == 0 || second.Usage.InputTokens+second.Usage.CacheReadTokens == 0 {
 		t.Fatalf("prompt cache usage missing input tokens: first=%+v second=%+v", first.Usage, second.Usage)
-	}
-	if second.Usage.CacheReadTokens < 0 {
-		t.Fatalf("prompt cache read tokens negative: %+v", second.Usage)
-	}
-	if second.Usage.CacheReadTokens == 0 {
-		t.Logf("prompt cache soft-miss: second call read no cached tokens (first=%+v second=%+v)", first.Usage, second.Usage)
 	}
 }
 
@@ -248,7 +231,7 @@ func liveOpenAICodexReasoningReplayScenario(ctx context.Context, t *testing.T, p
 
 func liveOpenAICodexReasoningResponse(ctx context.Context, t *testing.T, p llm.Provider, model string) *llm.Response {
 	t.Helper()
-	resp, err := llm.Collect(p.ChatStream(ctx, &llm.Request{
+	resp, err := CollectLiveStream(p.Name(), p.ChatStream(ctx, &llm.Request{
 		Model:     liveOpenAICodexReasoningModel(model),
 		MaxTokens: 768,
 		Effort:    llm.EffortLow,

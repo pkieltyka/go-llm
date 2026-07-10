@@ -25,9 +25,8 @@ func RedPixelPNG(t *testing.T) []byte {
 
 // Scenario is a provider-neutral live e2e check.
 type Scenario struct {
-	Name       string
-	Capability llm.Capability
-	Run        func(context.Context, *testing.T, llm.Provider, string)
+	Name string
+	Run  ScenarioRun
 }
 
 // ScenarioReport records the capability-applicable scenarios and the subset
@@ -71,31 +70,32 @@ func ScheduleFixtureRecording(t *testing.T, path string, captures *CaptureLog, s
 	})
 }
 
-// RunScenarios executes scenarios whose required capability is declared by p.
+// RunCapabilityScenarios derives the provider's live suite from its advertised
+// capabilities and the explicit provider profile.
+func RunCapabilityScenarios(ctx context.Context, t *testing.T, providerID string, p llm.Provider, model string, runners map[string]ScenarioRun) ScenarioReport {
+	t.Helper()
+	scenarios, exemptions, err := liveScenarios(providerID, p, runners)
+	if err != nil {
+		t.Fatalf("build %s live scenarios: %v", providerID, err)
+	}
+	for _, exemption := range exemptions {
+		t.Logf("live capability exemption: provider=%s capability=%s reason=%s", exemption.Provider, exemption.Capability, exemption.Reason)
+	}
+	return RunScenarios(ctx, t, p, model, scenarios)
+}
+
+// RunScenarios executes the already capability-derived scenario list.
 func RunScenarios(ctx context.Context, t *testing.T, p llm.Provider, model string, scenarios []Scenario) ScenarioReport {
 	t.Helper()
-	caps := map[llm.Capability]struct{}{}
-	for _, cap := range p.Capabilities() {
-		caps[cap] = struct{}{}
-	}
 	report := ScenarioReport{}
 	for _, scenario := range scenarios {
 		scenario := scenario
-		applicable := scenario.Capability == ""
-		if _, ok := caps[scenario.Capability]; ok {
-			applicable = true
-		}
-		if applicable {
-			report.Expected = append(report.Expected, scenario.Name)
-		}
+		report.Expected = append(report.Expected, scenario.Name)
 		completed := false
 		t.Run(scenario.Name, func(t *testing.T) {
 			defer func() {
 				completed = !t.Failed() && !t.Skipped()
 			}()
-			if !applicable {
-				t.Skipf("provider %s lacks capability %s", p.Name(), scenario.Capability)
-			}
 			scenario.Run(ctx, t, p, model)
 		})
 		if completed {

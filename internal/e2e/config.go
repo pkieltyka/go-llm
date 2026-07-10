@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,11 +24,61 @@ type ProviderConfig struct {
 	BaseURL string
 }
 
+var errLiveCredentialsMissing = errors.New("live credentials missing")
+
 // Configured reports whether the entry carries enough to construct a live
 // provider: an API key, an OAuth access token, or — for keyless self-hosted
 // servers (vLLM) — a base URL alone.
 func (pc ProviderConfig) Configured() bool {
 	return pc.Auth.Key != "" || pc.Auth.Access != "" || pc.BaseURL != ""
+}
+
+// ValidateLiveProviderConfig distinguishes an absent live-test setup from a
+// present but malformed one. Callers may skip only errLiveCredentialsMissing;
+// malformed or remotely rejected configured credentials are test failures.
+func ValidateLiveProviderConfig(provider string, pc ProviderConfig) error {
+	switch provider {
+	case "anthropic":
+		switch pc.Auth.Type {
+		case "", "api_key":
+			if pc.Auth.Key == "" {
+				return fmt.Errorf("%w: anthropic API key", errLiveCredentialsMissing)
+			}
+		case "oauth":
+			if pc.Auth.Access == "" {
+				return errors.New("anthropic OAuth credential is configured without an access token")
+			}
+		default:
+			return fmt.Errorf("anthropic credential has unsupported type %q", pc.Auth.Type)
+		}
+	case "openai", "openrouter":
+		if pc.Auth.Type != "" && pc.Auth.Type != "api_key" {
+			return fmt.Errorf("%s credential has unsupported type %q", provider, pc.Auth.Type)
+		}
+		if pc.Auth.Key == "" {
+			return fmt.Errorf("%w: %s API key", errLiveCredentialsMissing, provider)
+		}
+	case "openai-codex":
+		if pc.Auth.Type == "" && pc.Auth.Access == "" && pc.Auth.Refresh == "" && pc.Auth.AccountID == "" {
+			return fmt.Errorf("%w: openai-codex OAuth credential", errLiveCredentialsMissing)
+		}
+		if pc.Auth.Type != "oauth" {
+			return fmt.Errorf("openai-codex credential must use oauth, got %q", pc.Auth.Type)
+		}
+		if pc.Auth.Access == "" {
+			return errors.New("openai-codex OAuth credential is configured without an access token")
+		}
+	case "vllm":
+		if pc.BaseURL == "" {
+			if pc.Auth.Key != "" {
+				return errors.New("vllm API key is configured without a base URL")
+			}
+			return fmt.Errorf("%w: vllm base URL", errLiveCredentialsMissing)
+		}
+	default:
+		return fmt.Errorf("unknown live provider %q", provider)
+	}
+	return nil
 }
 
 // LoadConfig reads gollm-test.json from repoRoot. Missing files return an empty

@@ -17,11 +17,23 @@ import (
 func TestOpenAIConformance(t *testing.T) {
 	llmtest.RunConformance(t, func(t *testing.T) llm.Provider {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			scenario := llmtest.ConformanceScenarioFromRequest(r)
 			body, _ := io.ReadAll(r.Body)
 			if strings.Contains(string(body), `"stream":true`) {
 				w.Header().Set("Content-Type", "text/event-stream")
+				if scenario == llmtest.ConformanceEmpty {
+					return
+				}
 				_, _ = io.WriteString(w, `event: response.created`+"\n")
 				_, _ = io.WriteString(w, `data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_1","model":"gpt-test","status":"in_progress","output":[]}}`+"\n\n")
+				switch scenario {
+				case llmtest.ConformanceCancel:
+					w.(http.Flusher).Flush()
+					<-r.Context().Done()
+					return
+				case llmtest.ConformanceTruncated:
+					return
+				}
 				_, _ = io.WriteString(w, `event: response.output_text.delta`+"\n")
 				_, _ = io.WriteString(w, `data: {"type":"response.output_text.delta","sequence_number":1,"item_id":"msg_1","output_index":0,"content_index":0,"delta":"pong","logprobs":[]}`+"\n\n")
 				_, _ = io.WriteString(w, `event: response.completed`+"\n")

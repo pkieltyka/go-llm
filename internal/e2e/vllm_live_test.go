@@ -36,11 +36,7 @@ func TestLiveVLLM(t *testing.T) {
 		t.Fatalf("LoadConfig returned error: %v", err)
 	}
 	providerCfg := cfg.Provider("vllm", "")
-	// vLLM is host-first: a base URL is the one thing this suite requires
-	// (Configured() would also accept a key-only entry, which is useless here).
-	if providerCfg.BaseURL == "" {
-		t.Skip("vLLM base_url missing from gollm-test.json (keyless self-hosted entry)")
-	}
+	requireLiveProviderConfig(t, "vllm", providerCfg)
 
 	captures := &CaptureLog{}
 	secrets := NewSecretSet(providerCfg.Auth.Key)
@@ -68,11 +64,10 @@ func TestLiveVLLM(t *testing.T) {
 	if modelPreference == "" {
 		modelPreference = "qwen"
 	}
-	resolvedModel, err := p.ResolveModel(ctx, modelPreference)
+	model, err := ResolveConfiguredModel(ctx, p, modelPreference)
 	if err != nil {
 		t.Fatalf("vLLM model discovery failed for preference %q: %v", modelPreference, err)
 	}
-	model := resolvedModel.ID
 	if model != providerCfg.Model {
 		t.Logf("resolved vLLM model preference %q to served model %q", modelPreference, model)
 	}
@@ -81,30 +76,28 @@ func TestLiveVLLM(t *testing.T) {
 	// so unset Effort defaults to none through go-llm's own middleware.
 	scenarioProvider := llm.Wrap(p, defaultEffortNoneMiddleware())
 
-	scenarioReport = RunScenarios(ctx, t, scenarioProvider, model, []Scenario{
-		{Name: "chat", Run: liveChatScenario},
-		{Name: "stream", Capability: llm.CapabilityStreaming, Run: liveStreamScenario},
-		{Name: "models", Capability: llm.CapabilityModelsListing, Run: liveVLLMModelsScenario},
-		{Name: "tools", Capability: llm.CapabilityTools, Run: liveToolsScenario},
-		{Name: "tools_stream", Capability: llm.CapabilityToolStreaming, Run: liveVLLMToolsStreamScenario},
-		{Name: "parallel_tools", Capability: llm.CapabilityParallelTools, Run: liveParallelToolsScenario},
-		{Name: "parse", Capability: llm.CapabilityJSONSchema, Run: liveParseScenario},
-		{Name: "structured_choice", Run: liveVLLMStructuredChoiceScenario},
-		{Name: "structured_regex", Run: liveVLLMStructuredRegexScenario},
-		{Name: "tokenize", Run: func(ctx context.Context, t *testing.T, _ llm.Provider, model string) {
-			// Extension methods live on the concrete provider, not the
-			// wrapped llm.Provider.
-			liveVLLMTokenizeScenario(ctx, t, p, model)
-		}},
-		{Name: "reasoning", Capability: llm.CapabilityReasoning, Run: liveVLLMReasoningScenario},
-		{Name: "reasoning_replay", Capability: llm.CapabilityReasoning, Run: liveVLLMReasoningReplayScenario},
-		{Name: "usage", Run: liveUsageScenario},
-		{Name: "error_mapping", Run: liveVLLMErrorMappingScenario},
-		{Name: "cross_provider_handoff", Capability: llm.CapabilityTools, Run: liveCrossProviderHandoffScenario},
-		{Name: "anthropic_messages", Run: func(ctx context.Context, t *testing.T, _ llm.Provider, model string) {
-			liveVLLMAnthropicMessagesScenario(ctx, t, providerCfg.BaseURL, model)
-		}},
-	})
+	runners := vllmLiveScenarioRunners(p, providerCfg.BaseURL)
+	scenarioReport = RunCapabilityScenarios(ctx, t, "vllm", scenarioProvider, model, runners)
+}
+
+func vllmLiveScenarioRunners(p *vllmProvider.Provider, baseURL string) map[string]ScenarioRun {
+	runners := commonLiveScenarioRunners()
+	runners["models"] = liveVLLMModelsScenario
+	runners["tools_stream"] = liveVLLMToolsStreamScenario
+	runners["reasoning"] = liveVLLMReasoningScenario
+	runners["reasoning_replay"] = liveVLLMReasoningReplayScenario
+	runners["error_mapping"] = liveVLLMErrorMappingScenario
+	runners["structured_choice"] = liveVLLMStructuredChoiceScenario
+	runners["structured_regex"] = liveVLLMStructuredRegexScenario
+	runners["tokenize"] = func(ctx context.Context, t *testing.T, _ llm.Provider, model string) {
+		// Extension methods live on the concrete provider, not the wrapped
+		// llm.Provider.
+		liveVLLMTokenizeScenario(ctx, t, p, model)
+	}
+	runners["anthropic_messages"] = func(ctx context.Context, t *testing.T, _ llm.Provider, model string) {
+		liveVLLMAnthropicMessagesScenario(ctx, t, baseURL, model)
+	}
+	return runners
 }
 
 // liveVLLMToolsStreamScenario streams one tool call through the server-side
@@ -116,7 +109,7 @@ func TestLiveVLLM(t *testing.T) {
 func liveVLLMToolsStreamScenario(ctx context.Context, t *testing.T, p llm.Provider, model string) {
 	t.Helper()
 	temperature := 0.0
-	resp, err := llm.Collect(p.ChatStream(ctx, &llm.Request{
+	resp, err := CollectLiveStream(p.Name(), p.ChatStream(ctx, &llm.Request{
 		Model:       model,
 		MaxTokens:   256,
 		Temperature: &temperature,
@@ -236,7 +229,7 @@ func liveVLLMReasoningReplayScenario(ctx context.Context, t *testing.T, p llm.Pr
 
 func liveVLLMReasoningResponse(ctx context.Context, t *testing.T, p llm.Provider, model string) *llm.Response {
 	t.Helper()
-	resp, err := llm.Collect(p.ChatStream(ctx, &llm.Request{
+	resp, err := CollectLiveStream(p.Name(), p.ChatStream(ctx, &llm.Request{
 		Model:     model,
 		MaxTokens: 2048,
 		Effort:    llm.EffortHigh,

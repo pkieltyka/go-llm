@@ -14,9 +14,22 @@ import (
 func TestVLLMConformance(t *testing.T) {
 	llmtest.RunConformance(t, func(t *testing.T) llm.Provider {
 		return newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+			scenario := llmtest.ConformanceScenarioFromRequest(r)
 			if r.Header.Get("Accept") == "text/event-stream" {
 				w.Header().Set("Content-Type", "text/event-stream")
-				mustWrite(t, w, `data: {"id":"c1","model":"Qwen/Qwen3.6-27B-FP8","choices":[{"index":0,"delta":{"role":"assistant","content":"po"},"finish_reason":null}]}`+"\n\n")
+				if scenario == llmtest.ConformanceEmpty {
+					return
+				}
+				mustWrite(t, w, `data: {"id":"c1","model":"Qwen/Qwen3.6-27B-FP8","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`+"\n\n")
+				switch scenario {
+				case llmtest.ConformanceCancel:
+					w.(http.Flusher).Flush()
+					<-r.Context().Done()
+					return
+				case llmtest.ConformanceTruncated:
+					return
+				}
+				mustWrite(t, w, `data: {"id":"c1","model":"Qwen/Qwen3.6-27B-FP8","choices":[{"index":0,"delta":{"content":"po"},"finish_reason":null}]}`+"\n\n")
 				mustWrite(t, w, `data: {"id":"c1","model":"Qwen/Qwen3.6-27B-FP8","choices":[{"index":0,"delta":{"content":"ng"},"finish_reason":"stop","stop_reason":null}]}`+"\n\n")
 				mustWrite(t, w, `data: {"id":"c1","model":"Qwen/Qwen3.6-27B-FP8","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`+"\n\n")
 				mustWrite(t, w, "data: [DONE]\n\n")

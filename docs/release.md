@@ -4,10 +4,14 @@ This checklist captures the credentialed steps for `v0.1.0` readiness. The ordin
 
 ## Local Checks
 
+Release verification requires Go 1.26.5 or newer.
+
 ```sh
 go vet ./...
 go test ./...
 go test -race ./...
+go test -count=1 -tags=live -run '^$' ./...
+./scripts/check-coverage_test.sh
 ./scripts/check-coverage.sh
 ```
 
@@ -73,7 +77,9 @@ intentional `scripts/overrides.json` changes.
 
 The recorded fixture corpus is wired into offline mapping tests: `internal/e2e/replay.go` replays every recorded exchange through each adapter's full mapping paths — response side asserting normalized invariants (parts, usage math, stop reasons, reasoning raw preservation, tool-call parsing, error kinds), and request side asserting invariant-level properties of the outbound body (valid JSON, recorded model echoed, tools present when the recorded scenario had tools, non-empty message/input list). The request-side checks are deliberately not byte goldens; wire-shape goldens live in the provider unit tests. The `llm.Provider` behavioral contract itself is machine-checked by `llmtest.RunConformance`, which every provider package runs against offline fixture servers.
 
-The per-package floors below are enforced by `scripts/check-coverage.sh` (run locally and in CI; self-contained `go test -cover`, no external service); a drop below any floor fails the check and blocks the tag until explained or fixed. Floors only move up: after coverage-improving work, re-measure and ratchet both tables to the new actuals.
+The floors below are enforced by `scripts/check-coverage.sh` (run locally and in CI; self-contained `go test` coverage profiles, no external service). A drop below any floor fails the check and blocks the tag until explained or fixed. Profiles are temporary and never written into the worktree. Floors only move up: after coverage-improving work, re-measure and ratchet both this table and the script to the new actuals.
+
+Ordinary rows measure one package. The two owned-group rows use `-coverpkg`: schema facade and engine tests jointly instrument `internal/schemajson`, while all provider tests jointly instrument `providers/internal/providerutil`. This avoids reporting the facade's trivial coverage or the shared utility's own tests as engine coverage.
 
 | Package | Floor |
 | --- | --- |
@@ -89,7 +95,8 @@ The per-package floors below are enforced by `scripts/check-coverage.sh` (run lo
 | `providers/ollama` | 100% |
 | `providers/internal/responsesapi` | 77% |
 | `providers/internal/provideroauth` | 71% |
-| `schema` | 100% |
+| `internal/schemajson` (owned group) | 82% |
+| `providers/internal/providerutil` (owned group) | 76% |
 
 (v0.3 actuals for the promoted `providers/chatcompletions` — public as of v0.3, previously floored at 75% under `providers/internal/` — plus the new `providers/vllm` — ratcheted 76→84 with the v0.4.0 tokenize/structured-outputs increments — and data-only `providers/ollama`; other rows are v0.2 actuals, ratcheted from the v0.1.0 floors of 71/72/67/78/66/71 for the six originally floored packages.) The floors sit below a full 85% mapping gate on purpose: the remaining uncovered statements are retry/backoff plumbing, OAuth refresh flows, and logging/transport error seams that recorded 200/4xx exchanges cannot reach. Raising the gate requires targeted transport-fault tests, not more recordings.
 
