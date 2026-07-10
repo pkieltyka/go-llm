@@ -182,13 +182,16 @@ func applyOptions(options *Options, params *sdk.MessageNewParams) {
 func buildMessages(messages []llm.Message) ([]sdk.MessageParam, error) {
 	out := make([]sdk.MessageParam, 0, len(messages))
 	for _, msg := range messages {
-		blocks, err := buildContentBlocks(msg.Parts)
+		blocks, filtered, err := buildContentBlocksDetailed(msg.Parts)
 		if err != nil {
 			return nil, err
 		}
 		role, err := messageRole(msg.Role)
 		if err != nil {
 			return nil, err
+		}
+		if msg.Role == llm.RoleAssistant && len(blocks) == 0 && filtered {
+			continue
 		}
 		out = append(out, sdk.MessageParam{Role: role, Content: blocks})
 	}
@@ -209,7 +212,13 @@ func messageRole(role llm.Role) (sdk.MessageParamRole, error) {
 }
 
 func buildContentBlocks(parts []llm.Part) ([]sdk.ContentBlockParamUnion, error) {
+	blocks, _, err := buildContentBlocksDetailed(parts)
+	return blocks, err
+}
+
+func buildContentBlocksDetailed(parts []llm.Part) ([]sdk.ContentBlockParamUnion, bool, error) {
 	blocks := make([]sdk.ContentBlockParamUnion, 0, len(parts))
+	filtered := false
 	for _, part := range parts {
 		switch p := providerutil.DerefPart(part).(type) {
 		case llm.TextPart:
@@ -217,42 +226,45 @@ func buildContentBlocks(parts []llm.Part) ([]sdk.ContentBlockParamUnion, error) 
 		case llm.ImagePart:
 			block, err := imageBlock(p)
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			blocks = append(blocks, block)
 		case llm.FilePart:
 			block, err := fileBlock(p)
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			blocks = append(blocks, block)
 		case llm.ToolCallPart:
 			block, err := toolUseBlock(p)
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			blocks = append(blocks, block)
 		case llm.ToolResultPart:
 			block, err := toolResultBlock(p)
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			blocks = append(blocks, block)
 		case llm.ReasoningPart:
 			block, ok, err := reasoningReplayBlock(p)
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			if ok {
 				blocks = append(blocks, block)
+			} else {
+				filtered = true
 			}
 		case llm.UnknownPart:
+			filtered = true
 			continue
 		default:
-			return nil, fmt.Errorf("%w: anthropic cannot send part %T", llm.ErrUnsupported, part)
+			return nil, false, fmt.Errorf("%w: anthropic cannot send part %T", llm.ErrUnsupported, part)
 		}
 	}
-	return blocks, nil
+	return blocks, filtered, nil
 }
 
 func textBlock(text string, cache *llm.CacheHint) sdk.ContentBlockParamUnion {

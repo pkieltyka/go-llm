@@ -33,21 +33,23 @@ func TestLiveOpenAI(t *testing.T) {
 		t.Fatalf("LoadConfig returned error: %v", err)
 	}
 	providerCfg := cfg.Provider("openai", "OPENAI_API_KEY")
-	if providerCfg.Auth.Key == "" {
-		t.Skip("OpenAI API key missing from gollm-test.json and OPENAI_API_KEY")
-	}
+	requireLiveProviderConfig(t, "openai", providerCfg)
 	model := providerCfg.Model
 	if model == "" {
 		model = openAICheapModel
 	}
 
-	var captures []llm.WireCapture
+	captures := &CaptureLog{}
+	secrets := NewSecretSet(providerCfg.Auth.Key, os.Getenv("OPENAI_API_KEY"))
+	var scenarioReport ScenarioReport
+	if *record {
+		path := filepath.Join(root, "internal", "e2e", "fixtures", "openai", "live.json")
+		ScheduleFixtureRecording(t, path, captures, secrets, &scenarioReport, *recordAllowIncomplete)
+	}
 	opts := []openaiProvider.Option{
 		openaiProvider.WithAPIKey(providerCfg.Auth.Key),
 		openaiProvider.WithMaxRetries(0),
-		openaiProvider.WithWireCapture(func(c llm.WireCapture) {
-			captures = append(captures, c)
-		}),
+		openaiProvider.WithWireCapture(captures.Capture),
 	}
 	if providerCfg.BaseURL != "" {
 		opts = append(opts, openaiProvider.WithBaseURL(providerCfg.BaseURL))
@@ -56,34 +58,23 @@ func TestLiveOpenAI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openai.New returned error: %v", err)
 	}
-	if *record {
-		t.Cleanup(func() {
-			path := filepath.Join(root, "internal", "e2e", "fixtures", "openai", "live.json")
-			if err := WriteFixture(path, captures, providerCfg.Auth.Key, os.Getenv("OPENAI_API_KEY")); err != nil {
-				t.Fatalf("WriteFixture returned error: %v", err)
-			}
-		})
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
-	RunScenarios(ctx, t, p, model, []Scenario{
-		{Name: "chat", Run: liveChatScenario},
-		{Name: "stream", Capability: llm.CapabilityStreaming, Run: liveStreamScenario},
-		{Name: "models", Capability: llm.CapabilityModelsListing, Run: liveModelsScenario},
-		{Name: "tools", Capability: llm.CapabilityTools, Run: liveToolsScenario},
-		{Name: "tools_stream", Capability: llm.CapabilityToolStreaming, Run: liveToolsStreamScenario},
-		{Name: "parallel_tools", Capability: llm.CapabilityParallelTools, Run: liveParallelToolsScenario},
-		{Name: "parse", Capability: llm.CapabilityJSONSchema, Run: liveOpenAIParseScenario},
-		{Name: "reasoning", Capability: llm.CapabilityReasoning, Run: liveOpenAIReasoningScenario},
-		{Name: "reasoning_replay", Capability: llm.CapabilityReasoning, Run: liveOpenAIReasoningReplayScenario},
-		{Name: "multimodal", Capability: llm.CapabilityImageInput, Run: liveMultimodalScenario},
-		{Name: "usage", Run: liveUsageScenario},
-		{Name: "error_mapping", Run: func(ctx context.Context, t *testing.T, p llm.Provider, model string) {
-			liveOpenAIErrorMappingScenario(ctx, t, p, model, providerCfg.BaseURL)
-		}},
-		{Name: "cross_provider_handoff", Capability: llm.CapabilityTools, Run: liveCrossProviderHandoffScenario},
-	})
+	ctx = RecordingContext(ctx, captures, secrets)
+	runners := openAILiveScenarioRunners(providerCfg.BaseURL)
+	scenarioReport = RunCapabilityScenarios(ctx, t, "openai", p, model, runners)
+}
+
+func openAILiveScenarioRunners(baseURL string) map[string]ScenarioRun {
+	runners := commonLiveScenarioRunners()
+	runners["parse"] = liveOpenAIParseScenario
+	runners["reasoning"] = liveOpenAIReasoningScenario
+	runners["reasoning_replay"] = liveOpenAIReasoningReplayScenario
+	runners["prompt_cache"] = liveImplicitPromptCacheScenario
+	runners["error_mapping"] = func(ctx context.Context, t *testing.T, p llm.Provider, model string) {
+		liveOpenAIErrorMappingScenario(ctx, t, p, model, baseURL)
+	}
+	return runners
 }
 
 func liveOpenAIParseScenario(ctx context.Context, t *testing.T, p llm.Provider, model string) {
@@ -158,7 +149,7 @@ func liveOpenAIReasoningReplayScenario(ctx context.Context, t *testing.T, p llm.
 
 func liveOpenAIReasoningResponse(ctx context.Context, t *testing.T, p llm.Provider, model string) *llm.Response {
 	t.Helper()
-	resp, err := llm.Collect(p.ChatStream(ctx, &llm.Request{
+	resp, err := CollectLiveStream(p.Name(), p.ChatStream(ctx, &llm.Request{
 		Model:     liveOpenAIReasoningModel(model),
 		MaxTokens: 768,
 		Effort:    llm.EffortLow,

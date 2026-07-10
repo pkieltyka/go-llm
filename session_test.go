@@ -217,6 +217,65 @@ func TestSessionChatStreamAppendsOnCompletion(t *testing.T) {
 	}
 }
 
+func TestSessionChatStreamIsLazyUntilFirstRange(t *testing.T) {
+	p := llmtest.New(llmtest.WithName("openai"))
+	p.EnqueueStream(
+		llm.MessageStart{Provider: "openai", Model: "gpt-5.2"},
+		llm.TextDelta{Index: 0, Text: "unused"},
+		llm.MessageEnd{StopReason: llm.StopReasonEndTurn},
+	)
+	s := llm.NewSession(p, "gpt-5.2")
+
+	_ = s.ChatStream(context.Background(), llm.Text("never consumed"))
+	if got := p.Requests(); len(got) != 0 {
+		t.Fatalf("provider requests = %d, want 0", len(got))
+	}
+	if got := s.Messages(); len(got) != 0 {
+		t.Fatalf("session messages = %+v, want empty", got)
+	}
+}
+
+func TestSessionChatStreamCreatedBeforeConsumptionUsesCurrentHistory(t *testing.T) {
+	p := llmtest.New(llmtest.WithName("openai"))
+	p.EnqueueStream(
+		llm.MessageStart{Provider: "openai", Model: "gpt-5.2"},
+		llm.TextDelta{Index: 0, Text: "first answer"},
+		llm.MessageEnd{StopReason: llm.StopReasonEndTurn},
+	)
+	p.EnqueueStream(
+		llm.MessageStart{Provider: "openai", Model: "gpt-5.2"},
+		llm.TextDelta{Index: 0, Text: "second answer"},
+		llm.MessageEnd{StopReason: llm.StopReasonEndTurn},
+	)
+	s := llm.NewSession(p, "gpt-5.2")
+
+	first := s.ChatStream(context.Background(), llm.Text("first question"))
+	second := s.ChatStream(context.Background(), llm.Text("second question"))
+	if len(p.Requests()) != 0 || len(s.Messages()) != 0 {
+		t.Fatalf("creating streams changed state: requests=%d messages=%d", len(p.Requests()), len(s.Messages()))
+	}
+	if _, err := llm.Collect(first); err != nil {
+		t.Fatalf("first Collect returned error: %v", err)
+	}
+	if _, err := llm.Collect(second); err != nil {
+		t.Fatalf("second Collect returned error: %v", err)
+	}
+
+	requests := p.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("requests = %d, want 2", len(requests))
+	}
+	if len(requests[0].Messages) != 1 || msgText(requests[0].Messages[0]) != "first question" {
+		t.Fatalf("first request messages = %+v", requests[0].Messages)
+	}
+	if len(requests[1].Messages) != 3 || msgText(requests[1].Messages[0]) != "first question" || msgText(requests[1].Messages[2]) != "second question" {
+		t.Fatalf("second request messages = %+v", requests[1].Messages)
+	}
+	if got := s.Messages(); len(got) != 4 || msgText(got[3]) != "second answer" {
+		t.Fatalf("session messages = %+v", got)
+	}
+}
+
 func TestSessionChatRollsBackUserTurnOnError(t *testing.T) {
 	p := llmtest.New(llmtest.WithName("openai"))
 	p.EnqueueError(llm.ErrRateLimited)
@@ -268,5 +327,22 @@ func TestSessionChatStreamRollsBackOnEarlyBreak(t *testing.T) {
 	}
 	if got := msgText(requests[1].Messages[0]); got != "next" {
 		t.Fatalf("request after early break first message = %q, want next", got)
+	}
+}
+
+func TestSessionChatStreamRollsBackOnProviderError(t *testing.T) {
+	p := llmtest.New(llmtest.WithName("openai"))
+	p.EnqueueError(llm.ErrRateLimited)
+	s := llm.NewSession(p, "gpt-5.2")
+
+	resp, err := llm.Collect(s.ChatStream(context.Background(), llm.Text("failed stream")))
+	if resp != nil {
+		t.Fatalf("response = %+v, want nil", resp)
+	}
+	if !errors.Is(err, llm.ErrRateLimited) {
+		t.Fatalf("error = %v, want ErrRateLimited", err)
+	}
+	if got := s.Messages(); len(got) != 0 {
+		t.Fatalf("messages after provider error = %+v, want empty", got)
 	}
 }

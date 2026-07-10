@@ -2,12 +2,17 @@ package llm_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	llm "github.com/pkieltyka/go-llm"
 	"github.com/pkieltyka/go-llm/llmtest"
+	"github.com/pkieltyka/go-llm/providers/chatcompletions"
 )
 
 func TestParseModes(t *testing.T) {
@@ -27,6 +32,24 @@ func TestParseModes(t *testing.T) {
 		}
 	})
 
+	t.Run("native mode replaces json mode with derived schema", func(t *testing.T) {
+		p := llmtest.New(llmtest.WithCapabilities(llm.CapabilityJSONSchema))
+		p.EnqueueResponse(&llm.Response{Parts: []llm.Part{llm.Text(`{"name":"Ada"}`)}})
+		req := parseRequest()
+		req.ResponseFormat = &llm.ResponseFormat{Type: llm.FormatJSONMode, Name: "person_result"}
+
+		if _, _, err := llm.Parse[parsePerson](context.Background(), p, req, llm.WithParseMode(llm.ModeNative)); err != nil {
+			t.Fatalf("Parse returned error: %v", err)
+		}
+		recorded := p.Requests()[0]
+		if recorded.ResponseFormat == nil || recorded.ResponseFormat.Type != llm.FormatJSONSchema || recorded.ResponseFormat.Name != "person_result" || recorded.ResponseFormat.Schema == nil || !recorded.ResponseFormat.Strict {
+			t.Fatalf("native response format = %+v", recorded.ResponseFormat)
+		}
+		if req.ResponseFormat.Type != llm.FormatJSONMode || req.ResponseFormat.Schema != nil {
+			t.Fatalf("caller request was mutated: %+v", req.ResponseFormat)
+		}
+	})
+
 	t.Run("forced tool", func(t *testing.T) {
 		p := llmtest.New(llmtest.WithCapabilities(llm.CapabilityTools, llm.CapabilityToolChoiceRequired, llm.CapabilityStrictTools))
 		p.EnqueueResponse(&llm.Response{Parts: []llm.Part{llm.ToolCall("call_1", "parse_result", []byte(`{"name":"Ada"}`))}})
@@ -40,6 +63,57 @@ func TestParseModes(t *testing.T) {
 		req := p.Requests()[0]
 		if req.ToolChoice.Mode != llm.ToolChoiceTool || len(req.Tools) != 1 || !req.Tools[0].Strict {
 			t.Fatalf("tool parse request = %+v", req)
+		}
+	})
+
+	t.Run("forced tool replaces caller tools and matches by collision-free name", func(t *testing.T) {
+		p := llmtest.New(llmtest.WithCapabilities(llm.CapabilityTools, llm.CapabilityToolChoiceRequired))
+		p.EnqueueResponse(&llm.Response{Parts: []llm.Part{
+			llm.ToolCall("call_unrelated", "lookup", []byte(`{"q":"Ada"}`)),
+			llm.ToolCall("call_parse", "parse_result_3", []byte(`{"name":"Ada"}`)),
+		}})
+		req := parseRequest()
+		req.Tools = []llm.Tool{{Name: "parse_result"}, {Name: "parse_result_2"}, {Name: "lookup"}}
+
+		got, _, err := llm.Parse[parsePerson](context.Background(), p, req, llm.WithParseMode(llm.ModeTool))
+		if err != nil {
+			t.Fatalf("Parse returned error: %v", err)
+		}
+		if got.Name != "Ada" {
+			t.Fatalf("parsed = %+v", got)
+		}
+		recorded := p.Requests()[0]
+		if len(recorded.Tools) != 1 || recorded.Tools[0].Name != "parse_result_3" {
+			t.Fatalf("tools = %+v, want one collision-free parse tool", recorded.Tools)
+		}
+		if recorded.ToolChoice.Mode != llm.ToolChoiceTool || recorded.ToolChoice.Name != "parse_result_3" {
+			t.Fatalf("tool choice = %+v", recorded.ToolChoice)
+		}
+		if len(req.Tools) != 3 {
+			t.Fatalf("caller tools were mutated: %+v", req.Tools)
+		}
+	})
+
+	t.Run("forced tool requires exactly one matching call", func(t *testing.T) {
+		tests := []struct {
+			name  string
+			parts []llm.Part
+		}{
+			{name: "zero", parts: []llm.Part{llm.ToolCall("call_1", "other", []byte(`{"name":"Ada"}`))}},
+			{name: "multiple", parts: []llm.Part{
+				llm.ToolCall("call_1", "parse_result", []byte(`{"name":"Ada"}`)),
+				llm.ToolCall("call_2", "parse_result", []byte(`{"name":"Grace"}`)),
+			}},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				p := llmtest.New(llmtest.WithCapabilities(llm.CapabilityTools, llm.CapabilityToolChoiceRequired))
+				p.EnqueueResponse(&llm.Response{Parts: tt.parts})
+				_, _, err := llm.Parse[parsePerson](context.Background(), p, parseRequest(), llm.WithParseMode(llm.ModeTool))
+				if !errors.Is(err, llm.ErrBadRequest) {
+					t.Fatalf("error = %v, want ErrBadRequest", err)
+				}
+			})
 		}
 	})
 
@@ -257,6 +331,150 @@ func TestParseModes(t *testing.T) {
 			t.Fatalf("provider was called %d times, want 0", len(p.Requests()))
 		}
 	})
+
+	t.Run("shape-invalid caller schema fails before any provider call", func(t *testing.T) {
+		p := llmtest.New(llmtest.WithCapabilities(llm.CapabilityJSONSchema))
+		// This response would satisfy the parse if the loop ever reached the
+		// provider; the preflight must reject the schema before it is used.
+		p.EnqueueResponse(&llm.Response{Parts: []llm.Part{llm.Text(`{"name":"Ada"}`)}})
+		req := parseRequest()
+		// Caller-supplied schema outside the focused subset: the root object is
+		// missing "type", so post-response validation can never succeed and the
+		// retry budget would be spent on a correction the model cannot act on.
+		req.ResponseFormat = &llm.ResponseFormat{
+			Type:   llm.FormatJSONSchema,
+			Name:   "broken",
+			Schema: []byte(`{"properties":{"name":{"type":"string"}}}`),
+		}
+
+		_, _, err := llm.Parse[parsePerson](context.Background(), p, req, llm.WithParseRetries(2))
+		if !errors.Is(err, llm.ErrBadRequest) {
+			t.Fatalf("error = %v, want ErrBadRequest", err)
+		}
+		if len(p.Requests()) != 0 {
+			t.Fatalf("provider preflight burned %d calls, want 0", len(p.Requests()))
+		}
+	})
+}
+
+func TestParseNativeSchemaOnWire(t *testing.T) {
+	t.Run("derived schema replaces JSON mode", func(t *testing.T) {
+		p, requestBody := newParseWireProvider(t, `{"name":"Ada","age":37}`)
+		req := parseRequest()
+		req.ResponseFormat = &llm.ResponseFormat{Type: llm.FormatJSONMode, Name: "wire_person"}
+
+		got, _, err := llm.Parse[parsePerson](context.Background(), p, req, llm.WithParseMode(llm.ModeNative))
+		if err != nil {
+			t.Fatalf("Parse returned error: %v", err)
+		}
+		if got.Name != "Ada" || got.Age != 37 {
+			t.Fatalf("parsed = %+v", got)
+		}
+		format := decodeWireResponseFormat(t, <-requestBody)
+		if format.Type != "json_schema" || format.JSONSchema.Name != "wire_person" || !format.JSONSchema.Strict {
+			t.Fatalf("wire response_format = %+v", format)
+		}
+		properties, _ := format.JSONSchema.Schema["properties"].(map[string]any)
+		if _, ok := properties["name"]; !ok {
+			t.Fatalf("derived schema was not sent on wire: %+v", format.JSONSchema.Schema)
+		}
+		if req.ResponseFormat.Type != llm.FormatJSONMode || req.ResponseFormat.Schema != nil {
+			t.Fatalf("caller request was mutated: %+v", req.ResponseFormat)
+		}
+	})
+
+	t.Run("name and schema overrides survive", func(t *testing.T) {
+		p, requestBody := newParseWireProvider(t, `{"name":"Ada"}`)
+		custom := json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"],"additionalProperties":false}`)
+		req := parseRequest()
+		req.ResponseFormat = &llm.ResponseFormat{
+			Type:   llm.FormatJSONMode,
+			Name:   "custom_wire_person",
+			Schema: custom,
+		}
+
+		if _, _, err := llm.Parse[parseCustomSchemaPerson](context.Background(), p, req, llm.WithParseMode(llm.ModeNative)); err != nil {
+			t.Fatalf("Parse returned error: %v", err)
+		}
+		format := decodeWireResponseFormat(t, <-requestBody)
+		if format.Type != "json_schema" || format.JSONSchema.Name != "custom_wire_person" || !format.JSONSchema.Strict {
+			t.Fatalf("wire response_format = %+v", format)
+		}
+		properties, _ := format.JSONSchema.Schema["properties"].(map[string]any)
+		if len(properties) != 1 || properties["name"] == nil {
+			t.Fatalf("schema override was not preserved on wire: %+v", format.JSONSchema.Schema)
+		}
+	})
+
+	t.Run("client validation remains enforced", func(t *testing.T) {
+		p, requestBody := newParseWireProvider(t, `{}`)
+		_, _, err := llm.Parse[parsePerson](context.Background(), p, parseRequest(), llm.WithParseMode(llm.ModeNative))
+		if !errors.Is(err, llm.ErrBadRequest) || !strings.Contains(err.Error(), "$.name is required") {
+			t.Fatalf("Parse error = %v, want client schema validation failure", err)
+		}
+		format := decodeWireResponseFormat(t, <-requestBody)
+		if format.Type != "json_schema" || format.JSONSchema.Schema == nil {
+			t.Fatalf("schema was not sent before client validation: %+v", format)
+		}
+	})
+}
+
+type wireResponseFormat struct {
+	Type       string `json:"type"`
+	JSONSchema struct {
+		Name   string         `json:"name"`
+		Schema map[string]any `json:"schema"`
+		Strict bool           `json:"strict"`
+	} `json:"json_schema"`
+}
+
+func newParseWireProvider(t *testing.T, content string) (llm.Provider, <-chan []byte) {
+	t.Helper()
+	requestBody := make(chan []byte, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("ReadAll request: %v", err)
+			http.Error(w, "read request", http.StatusInternalServerError)
+			return
+		}
+		requestBody <- body
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":    "parse-1",
+			"model": "model-a",
+			"choices": []any{map[string]any{
+				"index":         0,
+				"finish_reason": "stop",
+				"message": map[string]any{
+					"role":    "assistant",
+					"content": content,
+				},
+			}},
+		})
+	}))
+	t.Cleanup(server.Close)
+	p, err := chatcompletions.New(
+		server.URL,
+		chatcompletions.WithHTTPClient(server.Client()),
+		chatcompletions.WithMaxRetries(0),
+		chatcompletions.WithCapabilities(llm.CapabilityJSONSchema),
+	)
+	if err != nil {
+		t.Fatalf("chatcompletions.New returned error: %v", err)
+	}
+	return p, requestBody
+}
+
+func decodeWireResponseFormat(t *testing.T, body []byte) wireResponseFormat {
+	t.Helper()
+	var request struct {
+		ResponseFormat wireResponseFormat `json:"response_format"`
+	}
+	if err := json.Unmarshal(body, &request); err != nil {
+		t.Fatalf("wire request did not decode: %v\n%s", err, body)
+	}
+	return request.ResponseFormat
 }
 
 type parsePerson struct {

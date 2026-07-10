@@ -15,7 +15,6 @@ import (
 
 	sdk "github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/responses"
-	"github.com/openai/openai-go/v3/shared"
 	llm "github.com/pkieltyka/go-llm"
 	"github.com/pkieltyka/go-llm/internal/testutil"
 )
@@ -188,21 +187,66 @@ func TestOpenAIProviderOptionsGolden(t *testing.T) {
 		ProviderOptions: Options{
 			Store:                &store,
 			PreviousResponseID:   "resp_prev",
-			Include:              []responses.ResponseIncludable{responses.ResponseIncludableMessageOutputTextLogprobs},
+			Include:              []Include{IncludeMessageOutputTextLogprobs},
 			Background:           &background,
-			Verbosity:            responses.ResponseTextConfigVerbosityLow,
-			Metadata:             shared.Metadata{"purpose": "test"},
-			ServiceTier:          responses.ResponseNewParamsServiceTierDefault,
+			HostedTools:          []json.RawMessage{json.RawMessage(`{"type":"web_search","search_context_size":"low"}`)},
+			Verbosity:            VerbosityLow,
+			Metadata:             Metadata{"purpose": "test"},
+			ServiceTier:          ServiceTierDefault,
 			SafetyIdentifier:     "user_hash",
-			PromptCacheRetention: responses.ResponseNewParamsPromptCacheRetention24h,
+			PromptCacheRetention: PromptCacheRetention24h,
 		},
 	}, false)
 	if err != nil {
 		t.Fatalf("buildParams returned error: %v", err)
 	}
 	got := testutil.MustCompactJSON(t, params)
-	want := `{"background":true,"previous_response_id":"resp_prev","store":true,"safety_identifier":"user_hash","include":["message.output_text.logprobs"],"metadata":{"purpose":"test"},"prompt_cache_retention":"24h","service_tier":"default","input":[{"content":[{"text":"hello","type":"input_text"}],"role":"user"}],"model":"gpt-test","text":{"verbosity":"low"}}`
+	want := `{"background":true,"previous_response_id":"resp_prev","store":true,"safety_identifier":"user_hash","include":["message.output_text.logprobs"],"metadata":{"purpose":"test"},"prompt_cache_retention":"24h","service_tier":"default","input":[{"content":[{"text":"hello","type":"input_text"}],"role":"user"}],"model":"gpt-test","text":{"verbosity":"low"},"tools":[{"type":"web_search","search_context_size":"low"}]}`
 	testutil.AssertJSONEqual(t, got, want)
+}
+
+func TestOpenAIConversationObjectWireGolden(t *testing.T) {
+	params, err := (&Provider{}).adapter().BuildParams(&llm.Request{
+		Model:    "gpt-test",
+		Messages: []llm.Message{llm.UserText("hello")},
+		ProviderOptions: Options{
+			ConversationID: "ignored-string-form",
+			Conversation:   &Conversation{ID: "conv_object"},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildParams returned error: %v", err)
+	}
+	testutil.AssertJSONEqual(t, testutil.MustCompactJSON(t, params), `{
+		"conversation":{"id":"conv_object"},
+		"include":[],
+		"input":[{"content":[{"text":"hello","type":"input_text"}],"role":"user"}],
+		"model":"gpt-test",
+		"store":false
+	}`)
+}
+
+func TestOpenAIHostedToolsRejectInvalidRawJSON(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  json.RawMessage
+	}{
+		{name: "invalid", raw: json.RawMessage(`{`)},
+		{name: "array", raw: json.RawMessage(`[]`)},
+		{name: "null", raw: json.RawMessage(`null`)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := (&Provider{}).adapter().BuildParams(&llm.Request{
+				Model:           "gpt-test",
+				Messages:        []llm.Message{llm.UserText("hello")},
+				ProviderOptions: Options{HostedTools: []json.RawMessage{tt.raw}},
+			}, false)
+			if !errors.Is(err, llm.ErrBadRequest) {
+				t.Fatalf("BuildParams error = %v, want ErrBadRequest", err)
+			}
+		})
+	}
 }
 
 func TestOpenAIEncryptedReasoningIncludeRequiresStatelessRequest(t *testing.T) {
@@ -216,6 +260,7 @@ func TestOpenAIEncryptedReasoningIncludeRequiresStatelessRequest(t *testing.T) {
 		{name: "store true", options: Options{Store: &store}, want: false},
 		{name: "previous response", options: Options{PreviousResponseID: "resp_prev"}, want: false},
 		{name: "conversation id", options: Options{ConversationID: "conv_1"}, want: false},
+		{name: "conversation object", options: Options{Conversation: &Conversation{ID: "conv_1"}}, want: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -223,7 +268,7 @@ func TestOpenAIEncryptedReasoningIncludeRequiresStatelessRequest(t *testing.T) {
 				Model:    "gpt-test",
 				Messages: []llm.Message{llm.UserText("hello")},
 			}
-			if tt.options.Store != nil || tt.options.PreviousResponseID != "" || tt.options.ConversationID != "" {
+			if tt.options.Store != nil || tt.options.PreviousResponseID != "" || tt.options.ConversationID != "" || tt.options.Conversation != nil {
 				req.ProviderOptions = tt.options
 			}
 			params, err := (&Provider{}).adapter().BuildParams(req, false)
@@ -812,20 +857,36 @@ func TestOpenAINewNeutralizesAmbientSDKEnv(t *testing.T) {
 	t.Setenv("OPENAI_ORG_ID", "env-org")
 	t.Setenv("OPENAI_PROJECT_ID", "env-project")
 	t.Setenv("OPENAI_ADMIN_KEY", "env-admin")
-	t.Setenv(customHeadersEnv, "X-Env-Leak: yes\nAuthorization: Bearer custom-secret")
+	t.Setenv(customHeadersEnv, "X-Ambient-Safe: retained\nAuthorization: Bearer custom-secret")
 
-	var sawURL string
-	var sawHeaders http.Header
+	var sawURLs []string
+	var sawHeaders []http.Header
 	client := &http.Client{Transport: testutil.RoundTripFunc(func(req *http.Request) (*http.Response, error) {
-		sawURL = req.URL.String()
-		sawHeaders = req.Header.Clone()
+		sawURLs = append(sawURLs, req.URL.String())
+		sawHeaders = append(sawHeaders, req.Header.Clone())
+		var body []byte
+		if req.Body != nil {
+			body, _ = io.ReadAll(req.Body)
+		}
+		contentType := "application/json"
+		responseBody := ""
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/models"):
+			responseBody = `{"object":"list","data":[{"id":"gpt-test","created":0,"object":"model","owned_by":"openai"}]}`
+		case bytes.Contains(body, []byte(`"stream":true`)):
+			contentType = "text/event-stream"
+			responseBody = "event: response.output_text.delta\n" +
+				`data: {"type":"response.output_text.delta","sequence_number":1,"item_id":"msg_1","output_index":0,"content_index":0,"delta":"pong","logprobs":[]}` + "\n\n" +
+				"event: response.completed\n" +
+				`data: {"type":"response.completed","sequence_number":2,"response":{"id":"resp_1","model":"gpt-test","status":"completed","output":[{"id":"msg_1","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"pong","annotations":[]}]}],"usage":{"input_tokens":1,"input_tokens_details":{"cached_tokens":0},"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":2}}}` + "\n\n"
+		default:
+			responseBody = `{"id":"resp_1","model":"gpt-test","status":"completed","output":[{"id":"msg_1","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"pong","annotations":[]}]}],"usage":{"input_tokens":1,"input_tokens_details":{"cached_tokens":0},"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":2}}`
+		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
-			Header:     http.Header{"Content-Type": []string{"application/json"}},
-			Body: io.NopCloser(strings.NewReader(
-				`{"id":"resp_1","model":"gpt-test","status":"completed","output":[{"id":"msg_1","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"pong","annotations":[]}]}]}`,
-			)),
-			Request: req,
+			Header:     http.Header{"Content-Type": []string{contentType}},
+			Body:       io.NopCloser(strings.NewReader(responseBody)),
+			Request:    req,
 		}, nil
 	})}
 
@@ -843,15 +904,40 @@ func TestOpenAINewNeutralizesAmbientSDKEnv(t *testing.T) {
 	if resp.Text() != "pong" {
 		t.Fatalf("response text = %q", resp.Text())
 	}
-	if sawURL != defaultOpenAIBaseURL+"responses" {
-		t.Fatalf("request URL = %q, want production Responses URL", sawURL)
+	streamed, err := llm.Collect(p.ChatStream(context.Background(), &llm.Request{
+		Model:    "gpt-test",
+		Messages: []llm.Message{llm.UserText("ping")},
+	}))
+	if err != nil {
+		t.Fatalf("ChatStream returned error: %v", err)
 	}
-	if got := sawHeaders.Get("Authorization"); got != "Bearer explicit-secret" {
-		t.Fatalf("Authorization = %q", got)
+	if streamed.Text() != "pong" {
+		t.Fatalf("stream response text = %q", streamed.Text())
 	}
-	for _, key := range []string{organizationHeader, projectHeader, "X-Env-Leak"} {
-		if got := sawHeaders.Get(key); got != "" {
-			t.Fatalf("%s header leaked from SDK env: %q", key, got)
+	models, err := p.Models(context.Background())
+	if err != nil {
+		t.Fatalf("Models returned error: %v", err)
+	}
+	if len(models) != 1 || models[0].ID != "gpt-test" {
+		t.Fatalf("models = %+v", models)
+	}
+	if len(sawHeaders) != 3 {
+		t.Fatalf("requests = %d, want 3", len(sawHeaders))
+	}
+	for i, header := range sawHeaders {
+		if !strings.HasPrefix(sawURLs[i], defaultOpenAIBaseURL) {
+			t.Fatalf("request %d URL = %q, want production base URL", i, sawURLs[i])
+		}
+		if got := header.Get("Authorization"); got != "Bearer explicit-secret" {
+			t.Fatalf("request %d Authorization = %q", i, got)
+		}
+		for _, key := range []string{organizationHeader, projectHeader} {
+			if got := header.Get(key); got != "" {
+				t.Fatalf("request %d %s header leaked from SDK env: %q", i, key, got)
+			}
+		}
+		if got := header.Get("X-Ambient-Safe"); got != "retained" {
+			t.Fatalf("request %d X-Ambient-Safe = %q", i, got)
 		}
 	}
 }
@@ -917,6 +1003,256 @@ func TestOpenAINewRequiresAPIKey(t *testing.T) {
 	_, err := New()
 	if !errors.Is(err, llm.ErrAuth) {
 		t.Fatalf("New error = %v, want ErrAuth", err)
+	}
+}
+
+func TestOpenAIStreamProviderContractEOF(t *testing.T) {
+	tests := []struct {
+		name        string
+		body        string
+		wantPartial bool
+	}{
+		{name: "empty EOF"},
+		{
+			name:        "truncated EOF",
+			body:        "data: {\"type\":\"response.output_text.delta\",\"output_index\":4,\"content_index\":0,\"delta\":\"partial\"}\n\n",
+			wantPartial: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := newOpenAIStreamFixtureProvider(t, func(req *http.Request) (*http.Response, error) {
+				return openAIStreamResponse(req, tt.body), nil
+			})
+			resp, err := llm.Collect(p.ChatStream(context.Background(), streamFixtureRequest()))
+			assertOpenAIProviderServerError(t, err)
+			if tt.wantPartial {
+				if resp == nil || resp.Text() != "partial" || resp.Model != "requested-model" {
+					t.Fatalf("partial response = %#v, want text partial and request model", resp)
+				}
+			} else if resp != nil {
+				t.Fatalf("empty stream response = %#v, want nil", resp)
+			}
+		})
+	}
+}
+
+func TestOpenAIStreamProviderBuffersPreStartAndFallsBackToRequestModel(t *testing.T) {
+	body := "data: {\"type\":\"response.output_text.delta\",\"output_index\":4,\"content_index\":0,\"delta\":\"hello\"}\n\n" +
+		"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n"
+	p := newOpenAIStreamFixtureProvider(t, func(req *http.Request) (*http.Response, error) {
+		return openAIStreamResponse(req, body), nil
+	})
+
+	var events []llm.Event
+	for event, err := range p.ChatStream(context.Background(), streamFixtureRequest()) {
+		if err != nil {
+			t.Fatalf("ChatStream returned error: %v", err)
+		}
+		events = append(events, event)
+	}
+	if len(events) != 3 {
+		t.Fatalf("events = %#v, want start, text, end", events)
+	}
+	start, ok := events[0].(llm.MessageStart)
+	if !ok || start.Model != "requested-model" {
+		t.Fatalf("first event = %#v, want MessageStart with request model", events[0])
+	}
+	if delta, ok := events[1].(llm.TextDelta); !ok || delta.Index != 4 || delta.Text != "hello" {
+		t.Fatalf("second event = %#v, want stable provider TextDelta index 4", events[1])
+	}
+	if _, ok := events[2].(llm.MessageEnd); !ok {
+		t.Fatalf("last event = %T, want MessageEnd", events[2])
+	}
+}
+
+func TestOpenAIStreamProviderFlushesPreStartContentBeforeResponseFailed(t *testing.T) {
+	body := "data: {\"type\":\"response.output_text.delta\",\"output_index\":4,\"content_index\":0,\"delta\":\"partial\"}\n\n" +
+		"data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_failed\",\"model\":\"failure-model\",\"status\":\"failed\",\"output\":[],\"error\":{\"code\":\"server_error\",\"message\":\"remote failure\"}}}\n\n"
+	p := newOpenAIStreamFixtureProvider(t, func(req *http.Request) (*http.Response, error) {
+		return openAIStreamResponse(req, body), nil
+	})
+
+	resp, err := llm.Collect(p.ChatStream(context.Background(), streamFixtureRequest()))
+	assertOpenAIProviderServerError(t, err)
+	if resp == nil || resp.ID != "" || resp.Model != "requested-model" || resp.Text() != "partial" {
+		t.Fatalf("partial failed response = %#v, want streamed content and original fallback identity", resp)
+	}
+}
+
+func TestOpenAIStreamProviderPreservesReasoningBeforeErrors(t *testing.T) {
+	tests := []struct {
+		name           string
+		body           string
+		wantModel      string
+		transportError bool
+	}{
+		{
+			name: "semantic error",
+			body: "data: {\"type\":\"response.reasoning_text.delta\",\"output_index\":0,\"delta\":\"private thought\"}\n\n" +
+				"data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_failed\",\"model\":\"failure-model\",\"status\":\"failed\",\"output\":[],\"error\":{\"code\":\"server_error\",\"message\":\"remote failure\"}}}\n\n",
+			wantModel: "requested-model",
+		},
+		{
+			name: "transport error",
+			body: "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"response-model\",\"status\":\"in_progress\",\"output\":[]}}\n\n" +
+				"data: {\"type\":\"response.reasoning_text.delta\",\"output_index\":0,\"delta\":\"private thought\"}\n\n",
+			wantModel:      "response-model",
+			transportError: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := newOpenAIStreamFixtureProvider(t, func(req *http.Request) (*http.Response, error) {
+				resp := openAIStreamResponse(req, tt.body)
+				if tt.transportError {
+					resp.Body = &errorAfterReadCloser{
+						Reader: strings.NewReader(tt.body),
+						err:    errors.New("remote body read failed"),
+					}
+				}
+				return resp, nil
+			})
+			resp, err := llm.Collect(p.ChatStream(context.Background(), streamFixtureRequest()))
+			assertOpenAIProviderServerError(t, err)
+			if resp == nil || resp.Model != tt.wantModel || resp.Reasoning() != "private thought" {
+				t.Fatalf("partial reasoning response = %#v, want model %q and preserved reasoning", resp, tt.wantModel)
+			}
+		})
+	}
+}
+
+func TestOpenAIStreamProviderPreservesInterleavedContentBeforeTransportError(t *testing.T) {
+	body := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"response-model\",\"status\":\"in_progress\",\"output\":[]}}\n\n" +
+		"data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"fc_partial\",\"type\":\"function_call\",\"call_id\":\"call_partial\",\"name\":\"lookup\",\"arguments\":\"\",\"status\":\"in_progress\"}}\n\n" +
+		"data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"delta\":\"{\\\"q\\\":\"}\n\n" +
+		"data: {\"type\":\"response.output_text.delta\",\"output_index\":1,\"content_index\":0,\"delta\":\"deferred text\"}\n\n" +
+		"data: {\"type\":\"response.reasoning_text.delta\",\"output_index\":2,\"delta\":\"deferred reasoning\"}\n\n"
+	p := newOpenAIStreamFixtureProvider(t, func(req *http.Request) (*http.Response, error) {
+		resp := openAIStreamResponse(req, body)
+		resp.Body = &errorAfterReadCloser{
+			Reader: strings.NewReader(body),
+			err:    errors.New("remote body read failed"),
+		}
+		return resp, nil
+	})
+
+	resp, err := llm.Collect(p.ChatStream(context.Background(), streamFixtureRequest()))
+	assertOpenAIProviderServerError(t, err)
+	if resp == nil || resp.Text() != "deferred text" || resp.Reasoning() != "deferred reasoning" {
+		t.Fatalf("partial response = %#v, want all deferred wire content", resp)
+	}
+	if calls := resp.ToolCalls(); len(calls) != 1 || string(calls[0].Args) != `{"q":` {
+		t.Fatalf("partial tool calls = %#v, want visible incomplete arguments", calls)
+	}
+}
+
+func TestOpenAIStreamProviderErrorOnlyFirstEventReturnsNilResponse(t *testing.T) {
+	p := newOpenAIStreamFixtureProvider(t, func(req *http.Request) (*http.Response, error) {
+		return openAIStreamResponse(req, "data: {\"type\":\"error\",\"code\":\"server_error\",\"message\":\"failed\"}\n\n"), nil
+	})
+	resp, err := llm.Collect(p.ChatStream(context.Background(), streamFixtureRequest()))
+	assertOpenAIProviderServerError(t, err)
+	if resp != nil {
+		t.Fatalf("response = %#v, want nil before identity or content", resp)
+	}
+}
+
+func TestOpenAIStreamProviderEarlyBreakDoesNotSynthesizeError(t *testing.T) {
+	body := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-test\",\"status\":\"in_progress\",\"output\":[]}}\n\n" +
+		"data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"content_index\":0,\"delta\":\"unread\"}\n\n"
+	p := newOpenAIStreamFixtureProvider(t, func(req *http.Request) (*http.Response, error) {
+		return openAIStreamResponse(req, body), nil
+	})
+
+	count := 0
+	for event, err := range p.ChatStream(context.Background(), streamFixtureRequest()) {
+		if err != nil {
+			t.Fatalf("early-break event returned error: %v", err)
+		}
+		if _, ok := event.(llm.MessageStart); !ok {
+			t.Fatalf("first event = %T, want MessageStart", event)
+		}
+		count++
+		break
+	}
+	if count != 1 {
+		t.Fatalf("events before break = %d, want 1", count)
+	}
+}
+
+func TestOpenAIStreamProviderNormalizesDecodeAndTransportErrors(t *testing.T) {
+	t.Run("decode", func(t *testing.T) {
+		p := newOpenAIStreamFixtureProvider(t, func(req *http.Request) (*http.Response, error) {
+			return openAIStreamResponse(req, "data: {not-json}\n\n"), nil
+		})
+		_, err := llm.Collect(p.ChatStream(context.Background(), streamFixtureRequest()))
+		assertOpenAIProviderServerError(t, err)
+	})
+
+	t.Run("transport", func(t *testing.T) {
+		p := newOpenAIStreamFixtureProvider(t, func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("remote transport failed")
+		})
+		_, err := llm.Collect(p.ChatStream(context.Background(), streamFixtureRequest()))
+		assertOpenAIProviderServerError(t, err)
+	})
+}
+
+func newOpenAIStreamFixtureProvider(t *testing.T, roundTrip testutil.RoundTripFunc) *Provider {
+	t.Helper()
+	p, err := New(
+		WithAPIKey("test-key"),
+		WithHTTPClient(&http.Client{Transport: roundTrip}),
+		WithMaxRetries(0),
+	)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	return p
+}
+
+func openAIStreamResponse(req *http.Request, body string) *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Request:    req,
+	}
+}
+
+type errorAfterReadCloser struct {
+	io.Reader
+	err      error
+	returned bool
+}
+
+func (r *errorAfterReadCloser) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	if err == io.EOF && !r.returned {
+		r.returned = true
+		return 0, r.err
+	}
+	return n, err
+}
+
+func (*errorAfterReadCloser) Close() error { return nil }
+
+func streamFixtureRequest() *llm.Request {
+	return &llm.Request{
+		Model:    "requested-model",
+		Messages: []llm.Message{llm.UserText("hello")},
+	}
+}
+
+func assertOpenAIProviderServerError(t *testing.T, err error) {
+	t.Helper()
+	if !errors.Is(err, llm.ErrServer) {
+		t.Fatalf("error = %v, want ErrServer", err)
+	}
+	var providerErr *llm.ProviderError
+	if !errors.As(err, &providerErr) || providerErr.Provider != providerName {
+		t.Fatalf("error = %#v, want %s ProviderError", err, providerName)
 	}
 }
 

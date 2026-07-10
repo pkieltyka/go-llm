@@ -106,27 +106,58 @@ func (p *Provider) ChatStream(ctx context.Context, req *llm.Request) iter.Seq2[l
 		defer stream.Close()
 
 		state := newStreamState(p)
-		for stream.Next() {
-			events, err := state.mapEvent(stream.Current())
+		remote := providerutil.StreamContract(providerName, func(remoteYield func(llm.Event, error) bool) {
+			settleBlocks := func() bool {
+				for _, event := range state.settleBlocksOnError() {
+					if !remoteYield(event, nil) {
+						return false
+					}
+				}
+				return true
+			}
+			for stream.Next() {
+				events, err := state.mapEvent(stream.Current())
+				if err != nil {
+					if !settleBlocks() {
+						return
+					}
+					remoteYield(nil, mapError(err))
+					return
+				}
+				for _, event := range events {
+					if !remoteYield(event, nil) {
+						return
+					}
+				}
+			}
+			if err := stream.Err(); err != nil {
+				if !settleBlocks() {
+					return
+				}
+				remoteYield(nil, mapError(err))
+				return
+			}
+			if err := ctx.Err(); err != nil {
+				if !settleBlocks() {
+					return
+				}
+				remoteYield(nil, err)
+				return
+			}
+			settleBlocks()
+		})
+		for event, err := range remote {
 			if err != nil {
-				err = mapError(err)
 				p.logFailure(ctx, req, start, err)
 				yield(nil, err)
 				return
 			}
-			for _, event := range events {
-				if end, ok := event.(llm.MessageEnd); ok {
-					p.logStreamEnd(ctx, req, end, state.model, start)
-				}
-				if !yield(event, nil) {
-					return
-				}
+			if end, ok := providerutil.DerefEvent(event).(llm.MessageEnd); ok {
+				p.logStreamEnd(ctx, req, end, state.model, start)
 			}
-		}
-		if err := stream.Err(); err != nil {
-			err = mapError(err)
-			p.logFailure(ctx, req, start, err)
-			yield(nil, err)
+			if !yield(event, nil) {
+				return
+			}
 		}
 	})
 }

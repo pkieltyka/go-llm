@@ -4,6 +4,9 @@ status: complete
 
 # Phase 4: Anthropic Provider
 
+> Historical, non-normative execution record. It intentionally preserves
+> phase-time names and decisions; current behavior is in the main specs.
+
 ## Overview
 
 This phase adds the first real provider package and the core primitives it

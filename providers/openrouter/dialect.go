@@ -246,7 +246,7 @@ func (dialect) Models(ctx context.Context, p *chatcompletions.Provider) ([]llm.M
 			CanonicalSlug string `json:"canonical_slug"`
 		}
 		if err := json.Unmarshal(rawRow, &row); err != nil {
-			return nil, err
+			return nil, providerutil.NormalizeRemoteError(providerName, err)
 		}
 		info := llm.ModelInfo{
 			ID:              row.ID,

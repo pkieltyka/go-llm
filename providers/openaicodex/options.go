@@ -29,31 +29,37 @@ const (
 type Option func(*config)
 
 type config struct {
-	oauthCred   llm.AuthCredential
-	onRefresh   func(llm.AuthCredential)
-	baseURL     string
-	httpClient  *http.Client
-	maxRetries  *int
-	timeout     time.Duration
-	priceTable  llm.PriceTable
-	logger      *slog.Logger
-	wireCapture func(llm.WireCapture)
-	tokenURL    string
-	originator  string
+	oauthCred     llm.AuthCredential
+	persistence   llm.OAuthPersistenceFunc
+	baseURL       string
+	httpClient    *http.Client
+	maxRetries    *int
+	timeout       time.Duration
+	priceTable    llm.PriceTable
+	logger        *slog.Logger
+	wireCapture   func(llm.WireCapture)
+	tokenURL      string
+	originator    string
+	customHeaders http.Header
 }
 
 func defaultConfig() config {
 	return config{
-		httpClient: llm.DefaultHTTPClient(),
-		originator: defaultOriginator,
+		httpClient:    llm.DefaultHTTPClient(),
+		originator:    defaultOriginator,
+		customHeaders: providerutil.AmbientCustomHeaders(),
 	}
 }
 
-// WithOAuth sets the ChatGPT subscription OAuth credential.
-func WithOAuth(cred llm.AuthCredential, onRefresh func(llm.AuthCredential)) Option {
+// WithOAuth sets the ChatGPT subscription OAuth credential. A credential with
+// a refresh token requires non-nil persist; access-only credentials may pass
+// nil. persist must honor its context and return only after durable storage.
+// An explicit no-op opts into in-memory-only rotation and risks a stale stored
+// refresh token after restart.
+func WithOAuth(cred llm.AuthCredential, persist llm.OAuthPersistenceFunc) Option {
 	return func(c *config) {
 		c.oauthCred = cred
-		c.onRefresh = onRefresh
+		c.persistence = persist
 	}
 }
 
@@ -62,7 +68,7 @@ func WithBaseURL(url string) Option {
 	return func(c *config) { c.baseURL = url }
 }
 
-// WithHTTPClient replaces the shared default HTTP client.
+// WithHTTPClient replaces the provider's default HTTP client.
 func WithHTTPClient(client *http.Client) Option {
 	return func(c *config) { c.httpClient = client }
 }
@@ -121,6 +127,9 @@ func (c config) validate() error {
 	if c.oauthCred.Access == "" && c.oauthCred.Refresh == "" {
 		return fmt.Errorf("%w: missing OpenAI Codex OAuth credential", llm.ErrAuth)
 	}
+	if err := provideroauth.ValidatePersistence(c.oauthCred, c.persistence); err != nil {
+		return err
+	}
 	if c.httpClient == nil {
 		return fmt.Errorf("%w: nil HTTP client", llm.ErrBadRequest)
 	}
@@ -135,15 +144,17 @@ func (c config) sdkOptions(source *provideroauth.Source) []sdkoption.RequestOpti
 		sdkoption.WithHTTPClient(c.observedHTTPClient()),
 		sdkoption.WithBaseURL(codexBaseURL(c.baseURL)),
 		sdkoption.WithAdminAPIKey(""),
-		sdkoption.WithAPIKey("oauth"),
 		sdkoption.WithHeaderDel(organizationHeader),
 		sdkoption.WithHeaderDel(projectHeader),
+	}
+	opts = append(opts, providerutil.AmbientCustomHeaderDeleteOptions()...)
+	opts = append(opts,
+		sdkoption.WithAPIKey("oauth"),
 		sdkoption.WithHeader("User-Agent", defaultCodexUserAgent),
 		sdkoption.WithMiddleware(func(req *http.Request, next sdkoption.MiddlewareNext) (*http.Response, error) {
 			return provideroauth.DoWithAuthRetry(req, provideroauth.MiddlewareNext(next), source, c.applyOAuthHeaders)
 		}),
-	}
-	opts = append(opts, providerutil.AmbientCustomHeaderDeleteOptions()...)
+	)
 	if c.maxRetries != nil {
 		opts = append(opts, sdkoption.WithMaxRetries(*c.maxRetries))
 	}
@@ -176,6 +187,13 @@ func (c config) directTransport(source *provideroauth.Source) codexTransport {
 }
 
 func (c config) applyCodexHeaders(req *http.Request) {
+	for name, values := range c.customHeaders {
+		for _, value := range values {
+			req.Header.Add(name, value)
+		}
+	}
+	req.Header.Del(organizationHeader)
+	req.Header.Del(projectHeader)
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("OpenAI-Beta", "responses=experimental")

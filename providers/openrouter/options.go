@@ -41,6 +41,7 @@ type Option func(*config)
 
 type config struct {
 	apiKey      string
+	apiKeySet   bool
 	apiKeyFunc  func(context.Context) (string, error)
 	baseURL     string
 	httpClient  *http.Client
@@ -55,15 +56,23 @@ type config struct {
 
 func defaultConfig() config {
 	return config{
-		apiKey:     os.Getenv(apiKeyEnv),
 		httpClient: llm.DefaultHTTPClient(),
 	}
+}
+
+func (c *config) resolveAPIKey() {
+	if c.apiKeySet || c.apiKeyFunc != nil {
+		return
+	}
+	c.apiKey = os.Getenv(apiKeyEnv)
+	c.apiKeySet = true
 }
 
 // WithAPIKey sets a static OpenRouter API key. Empty values disable env fallback.
 func WithAPIKey(key string) Option {
 	return func(c *config) {
 		c.apiKey = key
+		c.apiKeySet = true
 		c.apiKeyFunc = nil
 	}
 }
@@ -78,7 +87,7 @@ func WithBaseURL(url string) Option {
 	return func(c *config) { c.baseURL = url }
 }
 
-// WithHTTPClient replaces the shared default HTTP client.
+// WithHTTPClient replaces the provider's default HTTP client.
 func WithHTTPClient(client *http.Client) Option {
 	return func(c *config) { c.httpClient = client }
 }

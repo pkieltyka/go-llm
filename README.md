@@ -17,9 +17,10 @@ where they exist and pulled in only by the provider package you import.
   everywhere, per-provider escape hatches down to the raw SDK client.
 - **Providers**: Anthropic (API key *or* Claude Pro/Max OAuth), OpenAI
   (Responses API), OpenAI Codex (ChatGPT Plus/Pro subscription OAuth),
-  OpenRouter, and self-hosted vLLM — each live-tested against the real API —
-  plus `chatcompletions.New(baseURL)` for any other OpenAI-compatible server
-  (Ollama, llama.cpp, Groq, Together, ...).
+  OpenRouter, and self-hosted vLLM. First-party presets run the shared offline
+  conformance suite, and credentialed presets have capability-driven live
+  scenarios. `chatcompletions.New(baseURL)` covers any other
+  OpenAI-compatible server (Ollama, llama.cpp, Groq, Together, ...).
 - **Subscription auth**: consume and auto-refresh OAuth credentials minted by
   existing CLIs (pi, claude, codex). `llm.LoadAuthFile` reads the same
   credential format pi uses; renewed tokens are handed back to your code to
@@ -51,8 +52,9 @@ where they exist and pulled in only by the provider package you import.
   `AddToolResults` + `Continue`, cumulative usage), `History`,
   `PromptTemplate`, `llm.Ptr` for optional scalar fields, middleware via
   `llm.Wrap`, and observability built in but silent by default (`slog`
-  logging, `UsageTracker`, wire capture — `WithWireCapture` — with always-on
-  secret redaction).
+  logging, `UsageTracker`, wire capture via `WithWireCapture`). Sensitive
+  headers are always redacted; captured URLs and bodies remain
+  application-sensitive data.
 - **Testing**: `llmtest` — like `net/http/httptest`, but for code that
   consumes go-llm.
 - **CLI**: `llm-cli`, a curl-like frontend built entirely on the public API.
@@ -63,8 +65,9 @@ where they exist and pulled in only by the provider package you import.
 go get github.com/pkieltyka/go-llm
 ```
 
-Requires Go 1.26+. Provider SDK dependencies are pulled only when importing
-provider packages.
+Go 1.26 is the minimum version for users of the module. Releases are verified with
+Go 1.26.5 or newer. Provider SDK dependencies are pulled only when importing provider
+packages.
 
 ## Quick start
 
@@ -153,15 +156,36 @@ if err != nil {
 	panic(err)
 }
 
-codex, err := openaicodex.New(openaicodex.WithOAuth(auth["openai-codex"], func(updated llm.AuthCredential) {
-	// Persist rotated refresh credentials in your application.
+codex, err := openaicodex.New(openaicodex.WithOAuth(auth["openai-codex"], func(ctx context.Context, updated llm.AuthCredential) error {
+	return persistCredential(ctx, updated)
 }))
 ```
 
-The same `WithOAuth(cred, onRefresh)` option exists on `providers/anthropic`
-for Claude Pro/Max subscriptions. Provider-specific request extensions live
-in each provider's `Options` type, passed through `Request.ProviderOptions`;
-the raw SDK client is always reachable via each provider's `Client()`.
+The same `WithOAuth(cred, persist)` option exists on `providers/anthropic`
+for Claude Pro/Max subscriptions. Persistence callbacks must honor their
+context and return only after the rotated credential is durably stored; an
+error prevents the provider from publishing it. A credential containing a
+refresh token requires a non-nil callback; access-only credentials may pass
+`nil`. To deliberately keep rotations only in memory, pass an explicit
+context-aware no-op:
+
+```go
+discardRotation := func(ctx context.Context, _ llm.AuthCredential) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return nil
+}
+```
+
+This can leave the stored refresh token stale after restart and should be a
+conscious application decision. Provider-specific request extensions live in
+each provider's `Options` type, passed through `Request.ProviderOptions`; the
+raw SDK client is always reachable via each provider's `Client()`. Ordinary
+`openai.Options` fields use go-llm and standard-library types; only advanced
+escape hatches such as `Provider.Client`, `chatcompletions.Dialect`,
+`chatcompletions.Config`, and `Provider.BuildParams` are vendor-coupled and
+stability-exempt before v1.
 
 ## Self-hosted (vLLM, Ollama, any OpenAI-compatible server)
 
@@ -182,8 +206,13 @@ if err != nil {
 	panic(err)
 }
 
+model, err := p.ResolveModel(ctx, "qwen") // resolves deployment prefixes/suffixes
+if err != nil {
+	panic(err)
+}
+
 resp, err := p.Chat(ctx, &llm.Request{
-	Model:    "Qwen/Qwen3.6-27B-FP8",
+	Model:    model.ID,
 	Effort:   llm.EffortNone, // thinking-by-default models answer tersely
 	Messages: []llm.Message{llm.UserText("hello")},
 	ProviderOptions: vllm.Options{
@@ -252,6 +281,7 @@ go install github.com/pkieltyka/go-llm/cmd/llm-cli@latest
 llm-cli -p openai -m gpt-5.5 "write a short haiku about Go"
 echo "long input" | llm-cli -p anthropic -m claude-opus-4-8 -s "summarize stdin"
 llm-cli -p openrouter -m openai/gpt-5.5 --usage --json "return a JSON status"
+llm-cli -p openai-codex --auth-file ~/.pi/agent/auth.json -m gpt-5.4 "review this diff"
 
 llm-cli models -p openrouter          # list models (table or --json)
 
@@ -261,6 +291,11 @@ llm-cli -p anthropic -m claude-opus-4-8 --load chat.json --save chat.json "Conti
 
 The last pair saves a conversation with one provider and continues it with
 another — the handoff described above, from the shell.
+
+For OpenAI Codex, authentication precedence is `--auth-file`, then
+`OPENAI_CODEX_ACCESS_TOKEN`, then compatibility `--api-key`. Prefer the first
+two forms: command-line API-key values are visible in process arguments and
+often shell history. Auth files are loaded only when explicitly requested.
 
 ## Testing your code
 

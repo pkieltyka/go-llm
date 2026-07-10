@@ -23,7 +23,7 @@ func parseChatFlags(args []string, stderr io.Writer) (chatConfig, error) {
 	fs := flag.NewFlagSet("llm-cli", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() { chatUsage(fs) }
-	bindCommonFlags(fs, &cfg.provider, &cfg.apiKey, &cfg.baseURL, &cfg.timeout, &cfg.version)
+	bindCommonFlags(fs, &cfg.provider, &cfg.apiKey, &cfg.authFile, &cfg.baseURL, &cfg.timeout, &cfg.version)
 	fs.StringVar(&cfg.model, "m", "", "model ID (verbatim provider model name)")
 	fs.StringVar(&cfg.model, "model", "", "model ID (verbatim provider model name)")
 	fs.StringVar(&cfg.system, "s", "", "system prompt")
@@ -61,7 +61,7 @@ func parseModelsFlags(args []string, stderr io.Writer) (modelsConfig, error) {
 	fs := flag.NewFlagSet("llm-cli models", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() { modelsUsage(fs) }
-	bindCommonFlags(fs, &cfg.provider, &cfg.apiKey, &cfg.baseURL, &cfg.timeout, &cfg.version)
+	bindCommonFlags(fs, &cfg.provider, &cfg.apiKey, &cfg.authFile, &cfg.baseURL, &cfg.timeout, &cfg.version)
 	fs.BoolVar(&cfg.jsonOutput, "json", false, "emit JSON instead of a table")
 	fs.BoolVar(&cfg.debug, "debug", false, "emit wire debug logs to stderr")
 	if err := fs.Parse(args); err != nil {
@@ -89,6 +89,11 @@ positional argument, piped stdin, or both. The response streams to stdout
 by default; --schema (like --json and --no-stream) forces the
 non-streaming path.
 
+OpenAI Codex auth precedence is --auth-file, then
+OPENAI_CODEX_ACCESS_TOKEN, then the compatibility --api-key flag.
+The --api-key value is exposed through shell history and process argv;
+prefer --auth-file or OPENAI_CODEX_ACCESS_TOKEN on shared systems.
+
 Flags:
 `)
 	fs.PrintDefaults()
@@ -107,6 +112,10 @@ func modelsUsage(fs *flag.FlagSet) {
 
 List the models a provider exposes as a table (--json for machine output).
 
+OpenAI Codex auth precedence is --auth-file, then
+OPENAI_CODEX_ACCESS_TOKEN, then the compatibility --api-key flag.
+The --api-key value is exposed through shell history and process argv.
+
 Flags:
 `)
 	fs.PrintDefaults()
@@ -116,10 +125,11 @@ Example:
 `)
 }
 
-func bindCommonFlags(fs *flag.FlagSet, provider, apiKey, baseURL *string, timeout *time.Duration, version *bool) {
+func bindCommonFlags(fs *flag.FlagSet, provider, apiKey, authFile, baseURL *string, timeout *time.Duration, version *bool) {
 	fs.StringVar(provider, "p", "", "provider: anthropic|openai|openai-codex|openrouter")
 	fs.StringVar(provider, "provider", "", "provider: anthropic|openai|openai-codex|openrouter")
-	fs.StringVar(apiKey, "api-key", "", "provider API key (for openai-codex: the OAuth access token)")
+	fs.StringVar(authFile, "auth-file", "", "explicit credential file (openai-codex; highest precedence)")
+	fs.StringVar(apiKey, "api-key", "", "provider API key (openai-codex compatibility: OAuth access token exposed via argv)")
 	fs.StringVar(baseURL, "base-url", "", "provider base URL")
 	fs.DurationVar(timeout, "timeout", 0, "provider call timeout")
 	fs.BoolVar(version, "version", false, "print version")

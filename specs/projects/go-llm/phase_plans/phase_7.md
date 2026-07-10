@@ -4,6 +4,9 @@ status: complete
 
 # Phase 7: OpenAI-Compatible Adapter and OpenRouter
 
+> Historical, non-normative execution record. ZAI references describe future
+> extensibility considered at the time, not a shipped provider.
+
 ## Overview
 
 This phase adds the shared chat-completions-shaped adapter that OpenRouter and

@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -20,6 +21,15 @@ type AuthCredential struct {
 	Model     string
 	BaseURL   string
 }
+
+// OAuthPersistenceFunc durably persists a renewed OAuth credential before it
+// becomes visible to provider requests. Implementations MUST honor ctx and
+// return only after persistence is durable; returning an error prevents the
+// provider from publishing the renewed credential. Refreshable credentials
+// require a non-nil callback. A context-aware no-op explicitly opts into
+// in-memory-only rotation, which can leave stored refresh tokens stale after a
+// restart.
+type OAuthPersistenceFunc func(context.Context, AuthCredential) error
 
 // LoadAuthFile parses a pi-compatible credential file from path.
 func LoadAuthFile(path string) (AuthFile, error) {
@@ -81,25 +91,28 @@ func (c *AuthCredential) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &in); err != nil {
 		return err
 	}
-	c.Type = in.Type
-	c.Key = in.Key
-	if c.Key == "" {
-		c.Key = in.APIKey
+	next := AuthCredential{
+		Type:      in.Type,
+		Key:       in.Key,
+		Access:    in.Access,
+		Refresh:   in.Refresh,
+		AccountID: in.AccountID,
+		Model:     in.Model,
+		BaseURL:   in.BaseURL,
 	}
-	c.Access = in.Access
-	c.Refresh = in.Refresh
-	c.AccountID = in.AccountID
-	c.Model = in.Model
-	c.BaseURL = in.BaseURL
-	if c.BaseURL == "" {
-		c.BaseURL = in.BaseURL2
+	if next.Key == "" {
+		next.Key = in.APIKey
+	}
+	if next.BaseURL == "" {
+		next.BaseURL = in.BaseURL2
 	}
 	if in.Expires != "" {
 		expires, err := in.Expires.Int64()
 		if err != nil {
 			return fmt.Errorf("expires must be an integer millisecond epoch: %w", err)
 		}
-		c.Expires = expires
+		next.Expires = expires
 	}
+	*c = next
 	return nil
 }

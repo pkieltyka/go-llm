@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"net"
 	"net/http"
 	"strings"
 
@@ -26,15 +25,7 @@ func (a Adapter) MapError(err error) error {
 
 	var apiErr *sdk.Error
 	if !errors.As(err, &apiErr) {
-		var netErr net.Error
-		if errors.As(err, &netErr) && netErr.Timeout() {
-			return &llm.ProviderError{
-				Provider: a.ProviderName,
-				Message:  err.Error(),
-				Kind:     llm.ErrTimeout,
-			}
-		}
-		return err
+		return providerutil.NormalizeRemoteError(a.ProviderName, err)
 	}
 
 	raw := []byte(apiErr.RawJSON())

@@ -1,83 +1,124 @@
 # Release Checklist
 
-This checklist captures the credentialed steps for `v0.1.0` readiness. The ordinary CI checks must pass before these live checks.
+This checklist is version-neutral. Replace `$VERSION` with the intended tag.
+Release verification requires Go 1.26.5 or newer.
 
-## Local Checks
+## Offline Gates
+
+Run the same commands after any fixture or model snapshot refresh:
 
 ```sh
+go version
+go mod tidy
+go mod verify
+test -z "$(gofmt -l $(git ls-files '*.go'))"
+git diff --check
 go vet ./...
-go test ./...
-go test -race ./...
+go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2 run --default=none --enable=govet --enable=ineffassign --enable=unused ./...
+go test -count=1 ./...
+go test -race -count=1 ./...
+go test -shuffle=on -count=10 ./...
+./scripts/check-coverage_test.sh
 ./scripts/check-coverage.sh
+go test -count=1 -tags=live -run '^TestLiveRunnerManifests$' ./internal/e2e
+go test -count=1 -tags=live -run '^$' ./...
+go run golang.org/x/vuln/cmd/govulncheck@v1.5.0 ./...
+go test -count=1 ./internal/e2e -run '^TestRecordedFixturesAreRedacted$'
+gitleaks detect --source . --no-git --redact --no-banner
+gitleaks detect --source . --redact --no-banner
 ```
 
-Run the same commands after any generated fixture or model-table refresh.
+The root-only entries in `.gitleaksignore` suppress the known rule findings
+from the ignored local `gollm-test.json` by their no-git fingerprints. Git
+history findings include a commit hash in the fingerprint, so committing that
+file still fails the history scan. Keep the credential file at mode `0600`;
+update the narrow fingerprints only when its line layout changes.
 
 ## Credentials
 
-Copy `gollm-test.json.sample` to `gollm-test.json` and fill any configured providers:
+Copy `gollm-test.json.sample` to the gitignored `gollm-test.json` and fill
+only the providers available for this release check:
 
-- `anthropic`: API key credential.
-- `openai`: API key credential.
-- `openai-codex`: OAuth credential from a compatible ChatGPT/Codex login flow.
-- `openrouter`: API key credential.
-- `vllm`: keyless self-hosted entry — `base_url` (e.g. `http://host:8000/v1`)
-  plus `model`; a `base_url` alone marks the entry configured (add `key`
-  only when the server runs with `--api-key`).
+- `anthropic`: API-key credential.
+- `openai`: API-key credential.
+- `openai-codex`: OAuth credential from a compatible ChatGPT/Codex login.
+- `openrouter`: API-key credential.
+- `vllm`: keyless self-hosted entry with `base_url`; add `key` only when the
+  server uses `--api-key`. `model` is an optional preference, not an exact ID.
 
-Missing entries should skip visibly in the live suite. Do not commit `gollm-test.json`.
+The harness loads credentials through `llm.LoadAuthFile`. Missing entries
+skip visibly. A configured credential that is malformed or rejected is a
+failure. Refreshable OAuth credentials use context-aware, error-returning
+persistence; renewal is published only after the updated file is durably
+written.
 
-## Live Matrix
+Never commit `gollm-test.json`.
+
+## Credentialed Live Gate
 
 ```sh
-go test ./internal/e2e -tags live
+go test -count=1 -tags=live -v ./internal/e2e
 ```
 
-The matrix should include:
+The capability-derived manifests cover the scenarios each configured
+provider claims. This includes stream grammar, tools and tool streaming,
+structured output, usage, error mapping, reasoning/replay where supported,
+positive prompt-cache evidence where claimed, model listing, and
+cross-provider canonical-history handoff. vLLM resolves the configured model
+preference against `/v1/models`, so a preference such as `qwen` can select a
+deployment-qualified Qwen model.
 
-- Anthropic chat, stream, tools, tool streaming, structured output, reasoning, and cache scenarios when configured.
-- OpenAI Responses chat, stream, tools, tool streaming, structured output, reasoning, and replay scenarios when configured.
-- OpenAI Codex subscription OAuth chat, stream, tools, tool streaming, and refresh scenarios when configured.
-- OpenRouter chat, stream, tools, tool streaming, cost reporting, routing metadata, and mid-stream error coverage when configured.
-- vLLM (self-hosted) chat, stream, models (max_model_len), tools + tool-result round trip, auto-parser tool streaming, parallel tools, structured output, reasoning + replay-drop semantics, usage, error mapping, and the Anthropic `/v1/messages` recipe smoke when a host is configured.
-- Cross-provider handoff (`cross_provider_handoff` in every provider's scenario list): a tool-using conversation is round-tripped through the canonical envelope and continued on the next configured provider. It skips visibly when fewer than two providers are configured.
+Missing credentials may skip; rejected configured credentials may not. Keep
+the complete verbose output as release evidence.
 
 ## Fixture Recording
 
-Refresh the offline live fixture corpus with:
+Record only when provider wire fixtures need refreshing:
 
 ```sh
-go test ./internal/e2e -tags live -record
+go test -count=1 -tags=live -v ./internal/e2e -record
+go test -count=1 ./...
+go test -count=1 ./internal/e2e -run '^TestRecordedFixturesAreRedacted$'
 ```
 
-Review recorded payloads for secrets before committing (`TestRecordedFixturesAreRedacted` must pass). The redaction guard is **shape-based**: it checks a fixed header list plus a handful of token-shape regexes, so a credential in a novel header or with a novel token shape would slip through — extend the guard's rules alongside any re-record that introduces new auth surfaces, and still eyeball the payloads. Captures must preserve provider behavior needed by adapter tests while redacting credentials: the recorded corpus drives the offline mapping replay suites (`providers/*/replay_test.go`, `providers/chatcompletions`, and `providers/internal/responsesapi`), so a re-record must be followed by a full offline test run.
+Recording is staged in the destination directory, structurally sanitizes
+headers, URLs, JSON, and SSE JSON, replaces correlatable identifiers with
+deterministic `MOCK_*` values, scans staged bytes for known and high-entropy
+secrets, and atomically replaces a fixture only after validation. Rotated
+OAuth credentials are registered with the same secret set. Incomplete or
+abandoned captures leave the existing fixture untouched unless an intentional
+partial recording is explicitly acknowledged with
+`-record-allow-incomplete`.
 
-Fixtures are recorded for Anthropic, OpenAI Codex, OpenRouter (Phase 9), and vLLM (Phase 10). The OpenAI Responses fixture is intentionally absent until an OpenAI API key is configured; before tagging a release that claims OpenAI live fixture evidence, run:
+Review every fixture diff despite these controls. A new provider auth shape
+must ship with matching redaction tests before its recordings are accepted.
 
-```sh
-go test ./internal/e2e -tags live -run TestLiveOpenAI -record
-```
+## Model Snapshot
 
-## Model And Price Snapshot
-
-Refresh the generated model table before tagging:
+Refresh only when model sources or overrides change:
 
 ```sh
 make models
+pnpm --dir scripts test
 ```
 
-Commit `models.json` with the refreshed `generated_at` stamp and any
-intentional `scripts/overrides.json` changes.
+The script validates the models.dev object-map and OpenRouter `data[]`
+sources, provider presence and minimum counts, positive limits, nonnegative
+pricing, identity loss, and material metadata loss. It merges deterministically
+without replacing known values with `undefined`, writes `models.json`
+atomically, and refuses destructive changes unless `--allow-destructive` is
+explicitly supplied after review. ZAI is not in the current snapshot provider
+set.
 
-## Coverage
+## Coverage Floors
 
-The recorded fixture corpus is wired into offline mapping tests: `internal/e2e/replay.go` replays every recorded exchange through each adapter's full mapping paths — response side asserting normalized invariants (parts, usage math, stop reasons, reasoning raw preservation, tool-call parsing, error kinds), and request side asserting invariant-level properties of the outbound body (valid JSON, recorded model echoed, tools present when the recorded scenario had tools, non-empty message/input list). The request-side checks are deliberately not byte goldens; wire-shape goldens live in the provider unit tests. The `llm.Provider` behavioral contract itself is machine-checked by `llmtest.RunConformance`, which every provider package runs against offline fixture servers.
-
-The per-package floors below are enforced by `scripts/check-coverage.sh` (run locally and in CI; self-contained `go test -cover`, no external service); a drop below any floor fails the check and blocks the tag until explained or fixed. Floors only move up: after coverage-improving work, re-measure and ratchet both tables to the new actuals.
+`scripts/check-coverage.sh` enforces these current floors. Ordinary rows
+measure one package; the owned groups instrument the implementation package
+with `-coverpkg` through its real facade/provider consumers.
 
 | Package | Floor |
 | --- | --- |
-| `.` (root llm) | 81% |
+| `.` | 81% |
 | `llmtest` | 61% |
 | `cmd/llm-cli` | 77% |
 | `providers/anthropic` | 78% |
@@ -89,15 +130,17 @@ The per-package floors below are enforced by `scripts/check-coverage.sh` (run lo
 | `providers/ollama` | 100% |
 | `providers/internal/responsesapi` | 77% |
 | `providers/internal/provideroauth` | 71% |
-| `schema` | 100% |
+| `internal/schemajson` (owned group) | 82% |
+| `providers/internal/providerutil` (owned group) | 76% |
 
-(v0.3 actuals for the promoted `providers/chatcompletions` — public as of v0.3, previously floored at 75% under `providers/internal/` — plus the new `providers/vllm` — ratcheted 76→84 with the v0.4.0 tokenize/structured-outputs increments — and data-only `providers/ollama`; other rows are v0.2 actuals, ratcheted from the v0.1.0 floors of 71/72/67/78/66/71 for the six originally floored packages.) The floors sit below a full 85% mapping gate on purpose: the remaining uncovered statements are retry/backoff plumbing, OAuth refresh flows, and logging/transport error seams that recorded 200/4xx exchanges cannot reach. Raising the gate requires targeted transport-fault tests, not more recordings.
+Ratchet a floor upward only after remeasuring and updating both this table and
+the script in the same change.
 
 ## Tagging
 
-After review approval and green checks:
+After review approval and all applicable gates pass:
 
 ```sh
-git tag v0.1.0
-git push origin v0.1.0
+git tag "$VERSION"
+git push origin "$VERSION"
 ```

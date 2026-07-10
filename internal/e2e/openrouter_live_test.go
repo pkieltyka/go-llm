@@ -49,9 +49,7 @@ func TestLiveOpenRouter(t *testing.T) {
 		t.Fatalf("LoadConfig returned error: %v", err)
 	}
 	providerCfg := cfg.Provider("openrouter", "OPENROUTER_API_KEY")
-	if providerCfg.Auth.Key == "" {
-		t.Skip("OpenRouter API key missing from gollm-test.json and OPENROUTER_API_KEY")
-	}
+	requireLiveProviderConfig(t, "openrouter", providerCfg)
 	model := providerCfg.Model
 	if model == "" {
 		model = openRouterCheapModel
@@ -75,14 +73,18 @@ func TestLiveOpenRouter(t *testing.T) {
 		toolsModel = openRouterToolsModel
 	}
 
-	var captures []llm.WireCapture
+	captures := &CaptureLog{}
+	secrets := NewSecretSet(providerCfg.Auth.Key, os.Getenv("OPENROUTER_API_KEY"))
+	var scenarioReport ScenarioReport
+	if *record {
+		path := filepath.Join(root, "internal", "e2e", "fixtures", "openrouter", "live.json")
+		ScheduleFixtureRecording(t, path, captures, secrets, &scenarioReport, *recordAllowIncomplete)
+	}
 	opts := []openrouterProvider.Option{
 		openrouterProvider.WithAPIKey(providerCfg.Auth.Key),
 		openrouterProvider.WithMaxRetries(0),
 		openrouterProvider.WithAttribution("https://github.com/pkieltyka/go-llm", "go-llm live tests"),
-		openrouterProvider.WithWireCapture(func(c llm.WireCapture) {
-			captures = append(captures, c)
-		}),
+		openrouterProvider.WithWireCapture(captures.Capture),
 	}
 	if providerCfg.BaseURL != "" {
 		opts = append(opts, openrouterProvider.WithBaseURL(providerCfg.BaseURL))
@@ -91,15 +93,6 @@ func TestLiveOpenRouter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openrouter.New returned error: %v", err)
 	}
-	if *record {
-		t.Cleanup(func() {
-			path := filepath.Join(root, "internal", "e2e", "fixtures", "openrouter", "live.json")
-			if err := WriteFixture(path, captures, providerCfg.Auth.Key, os.Getenv("OPENROUTER_API_KEY")); err != nil {
-				t.Fatalf("WriteFixture returned error: %v", err)
-			}
-		})
-	}
-
 	// The pinned qwen3.6 model is hybrid-reasoning and THINKS BY DEFAULT,
 	// starving the generic scenarios' small MaxTokens budgets before any
 	// text is emitted. Default unset Effort to none — exactly how callers
@@ -110,41 +103,47 @@ func TestLiveOpenRouter(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	RunScenarios(ctx, t, scenarioProvider, model, []Scenario{
-		{Name: "chat", Run: liveChatScenario},
-		{Name: "stream", Capability: llm.CapabilityStreaming, Run: liveStreamScenario},
-		{Name: "models", Capability: llm.CapabilityModelsListing, Run: liveModelsScenario},
-		{Name: "tools", Capability: llm.CapabilityTools, Run: func(ctx context.Context, t *testing.T, p llm.Provider, _ string) {
-			liveToolsScenario(ctx, t, p, toolsModel)
-		}},
-		{Name: "tools_stream", Capability: llm.CapabilityToolStreaming, Run: func(ctx context.Context, t *testing.T, p llm.Provider, _ string) {
-			liveToolsStreamScenario(ctx, t, p, toolsModel)
-		}},
-		{Name: "parallel_tools", Capability: llm.CapabilityParallelTools, Run: func(ctx context.Context, t *testing.T, p llm.Provider, _ string) {
-			liveParallelToolsScenario(ctx, t, p, parallelToolsModel)
-		}},
-		{Name: "parse", Capability: llm.CapabilityJSONSchema, Run: liveParseScenario},
-		{Name: "reasoning", Capability: llm.CapabilityReasoning, Run: func(ctx context.Context, t *testing.T, p llm.Provider, _ string) {
-			liveOpenRouterReasoningScenario(ctx, t, p, reasoningModel)
-		}},
-		{Name: "reasoning_replay", Capability: llm.CapabilityReasoning, Run: func(ctx context.Context, t *testing.T, p llm.Provider, _ string) {
-			liveOpenRouterReasoningReplayScenario(ctx, t, p, reasoningModel)
-		}},
-		{Name: "multimodal", Capability: llm.CapabilityImageInput, Run: liveMultimodalScenario},
-		{Name: "prompt_cache", Capability: llm.CapabilityPromptCaching, Run: func(ctx context.Context, t *testing.T, p llm.Provider, _ string) {
-			livePromptCacheScenario(ctx, t, p, cacheModel)
-		}},
-		{Name: "usage", Run: liveUsageScenario},
-		{Name: "cost_reporting", Capability: llm.CapabilityCostReporting, Run: liveOpenRouterCostScenario},
-		{Name: "error_mapping", Run: func(ctx context.Context, t *testing.T, p llm.Provider, model string) {
-			liveOpenRouterErrorMappingScenario(ctx, t, p, model, providerCfg.BaseURL)
-		}},
-		{Name: "cross_provider_handoff", Capability: llm.CapabilityTools, Run: func(ctx context.Context, t *testing.T, p llm.Provider, _ string) {
-			// The handoff source leg forces a tool call — same routing
-			// reliability pin as the tools scenarios above.
-			liveCrossProviderHandoffScenario(ctx, t, p, toolsModel)
-		}},
-	})
+	ctx = RecordingContext(ctx, captures, secrets)
+	runners := openRouterLiveScenarioRunners(reasoningModel, cacheModel, parallelToolsModel, toolsModel, providerCfg.BaseURL)
+	scenarioReport = RunCapabilityScenarios(ctx, t, "openrouter", scenarioProvider, model, runners)
+}
+
+func openRouterLiveScenarioRunners(reasoningModel, cacheModel, parallelToolsModel, toolsModel, baseURL string) map[string]ScenarioRun {
+	runners := commonLiveScenarioRunners()
+	runners["stop_sequences"] = func(ctx context.Context, t *testing.T, p llm.Provider, _ string) {
+		// Stop forwarding is routing-dependent for the cheap Qwen route, so
+		// exercise the adapter against the same reliable Anthropic-family pin
+		// used by the tool scenarios.
+		liveOpenAICompatibleStopSequencesScenario(ctx, t, p, toolsModel)
+	}
+	runners["tools"] = func(ctx context.Context, t *testing.T, p llm.Provider, _ string) {
+		liveToolsScenario(ctx, t, p, toolsModel)
+	}
+	runners["tools_stream"] = func(ctx context.Context, t *testing.T, p llm.Provider, _ string) {
+		liveToolsStreamScenario(ctx, t, p, toolsModel)
+	}
+	runners["parallel_tools"] = func(ctx context.Context, t *testing.T, p llm.Provider, _ string) {
+		liveParallelToolsScenario(ctx, t, p, parallelToolsModel)
+	}
+	runners["reasoning"] = func(ctx context.Context, t *testing.T, p llm.Provider, _ string) {
+		liveOpenRouterReasoningScenario(ctx, t, p, reasoningModel)
+	}
+	runners["reasoning_replay"] = func(ctx context.Context, t *testing.T, p llm.Provider, _ string) {
+		liveOpenRouterReasoningReplayScenario(ctx, t, p, reasoningModel)
+	}
+	runners["prompt_cache"] = func(ctx context.Context, t *testing.T, p llm.Provider, _ string) {
+		livePromptCacheScenario(ctx, t, p, cacheModel)
+	}
+	runners["cost_reporting"] = liveOpenRouterCostScenario
+	runners["error_mapping"] = func(ctx context.Context, t *testing.T, p llm.Provider, model string) {
+		liveOpenRouterErrorMappingScenario(ctx, t, p, model, baseURL)
+	}
+	runners["cross_provider_handoff"] = func(ctx context.Context, t *testing.T, p llm.Provider, _ string) {
+		// The handoff source leg forces a tool call — same routing
+		// reliability pin as the tools scenarios above.
+		liveCrossProviderHandoffScenario(ctx, t, p, toolsModel)
+	}
+	return runners
 }
 
 // defaultEffortNoneMiddleware defaults unset Effort to EffortNone so
@@ -255,7 +254,7 @@ func liveOpenRouterReasoningReplayScenario(ctx context.Context, t *testing.T, p 
 
 func liveOpenRouterReasoningResponse(ctx context.Context, t *testing.T, p llm.Provider, model string) *llm.Response {
 	t.Helper()
-	resp, err := llm.Collect(p.ChatStream(ctx, &llm.Request{
+	resp, err := CollectLiveStream(p.Name(), p.ChatStream(ctx, &llm.Request{
 		Model:     model,
 		MaxTokens: 2048,
 		Effort:    llm.EffortHigh,

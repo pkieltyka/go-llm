@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"reflect"
 	"strings"
 )
 
@@ -45,12 +44,32 @@ func ValidateArgs(toolName string, inputSchema any, args json.RawMessage) error 
 	if err != nil {
 		return err
 	}
+	if err := validateSchemaShape("$", s); err != nil {
+		return err
+	}
 
 	var value any
 	if err := decodeJSON(args, &value); err != nil {
 		return fmt.Errorf("%w: invalid tool args: %v", ErrBadRequest, err)
 	}
 	return validateValue("$", s, value)
+}
+
+// ValidateSchema checks that inputSchema is inside the supported strict-mode
+// JSON Schema subset (the SHAPE only), without validating any arguments against
+// it. It fails closed on schemas outside the focused subset: a root missing
+// "type", a union/nullable type, or an array without "items". Schemas produced
+// by For are conformant by construction and always pass. Callers use this to
+// reject an unusable caller-supplied schema before spending provider calls.
+func ValidateSchema(inputSchema any) error {
+	if inputSchema == nil {
+		return fmt.Errorf("%w: schema is nil", ErrBadRequest)
+	}
+	s, err := schemaFromAny(inputSchema)
+	if err != nil {
+		return err
+	}
+	return validateSchemaShape("$", s)
 }
 
 func schemaFromAny(input any) (map[string]any, error) {
@@ -87,6 +106,68 @@ func decodeJSON(data []byte, out any) error {
 	var trailing any
 	if err := dec.Decode(&trailing); err != io.EOF {
 		return fmt.Errorf("unexpected trailing JSON")
+	}
+	return nil
+}
+
+func validateSchemaShape(path string, s map[string]any) error {
+	rawType, ok := s["type"]
+	if !ok {
+		return fmt.Errorf("%w: %s schema is missing type", ErrBadRequest, path)
+	}
+	typ, ok := rawType.(string)
+	if !ok {
+		return fmt.Errorf("%w: %s schema type must be a string", ErrBadRequest, path)
+	}
+	switch typ {
+	case "object", "array", "string", "boolean", "integer", "number":
+	default:
+		return fmt.Errorf("%w: unsupported schema type %q at %s", ErrBadRequest, typ, path)
+	}
+
+	if raw, exists := s["enum"]; exists {
+		values, ok := raw.([]any)
+		if !ok || len(values) == 0 {
+			return fmt.Errorf("%w: %s enum must be a non-empty array", ErrBadRequest, path)
+		}
+	}
+
+	if _, err := requiredFields(path, s); err != nil {
+		return err
+	}
+
+	props, err := schemaProperties(path, s)
+	if err != nil {
+		return err
+	}
+	for name, property := range props {
+		if err := validateSchemaShape(path+".properties."+name, property); err != nil {
+			return err
+		}
+	}
+
+	if raw, exists := s["items"]; exists {
+		items, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("%w: %s items must be an object", ErrBadRequest, path)
+		}
+		if err := validateSchemaShape(path+".items", items); err != nil {
+			return err
+		}
+	} else if typ == "array" {
+		return fmt.Errorf("%w: %s array schema is missing items", ErrBadRequest, path)
+	}
+
+	if raw, exists := s["additionalProperties"]; exists {
+		switch additional := raw.(type) {
+		case bool:
+		case map[string]any:
+			if err := validateSchemaShape(path+".additionalProperties", additional); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("%w: %s additionalProperties must be a boolean or object", ErrBadRequest, path)
+		}
 	}
 	return nil
 }
@@ -129,7 +210,8 @@ func validateType(path string, s map[string]any, value any) error {
 		if !ok {
 			return fmt.Errorf("%w: %s must be an integer", ErrBadRequest, path)
 		}
-		if _, err := number.Int64(); err != nil {
+		normalized, ok := canonicalJSONNumber(number.String())
+		if !ok || !normalized.isInteger() {
 			return fmt.Errorf("%w: %s must be an integer", ErrBadRequest, path)
 		}
 	case "number":
@@ -137,7 +219,7 @@ func validateType(path string, s map[string]any, value any) error {
 		if !ok {
 			return fmt.Errorf("%w: %s must be a number", ErrBadRequest, path)
 		}
-		if _, err := number.Float64(); err != nil {
+		if _, ok := canonicalJSONNumber(number.String()); !ok {
 			return fmt.Errorf("%w: %s must be a number", ErrBadRequest, path)
 		}
 	case "":
@@ -149,12 +231,16 @@ func validateType(path string, s map[string]any, value any) error {
 }
 
 func validateObject(path string, s map[string]any, value map[string]any) error {
-	props, err := schemaProperties(s)
+	props, err := schemaProperties(path, s)
 	if err != nil {
 		return err
 	}
 
-	for _, name := range requiredFields(s) {
+	required, err := requiredFields(path, s)
+	if err != nil {
+		return err
+	}
+	for _, name := range required {
 		if _, ok := value[name]; !ok {
 			return fmt.Errorf("%w: %s.%s is required", ErrBadRequest, path, name)
 		}
@@ -218,58 +304,95 @@ func validateEnum(path string, s map[string]any, value any) error {
 	return fmt.Errorf("%w: %s must be one of %s", ErrBadRequest, path, enumValues(values))
 }
 
-func schemaProperties(s map[string]any) (map[string]map[string]any, error) {
+func schemaProperties(path string, s map[string]any) (map[string]map[string]any, error) {
 	raw, ok := s["properties"]
 	if !ok {
 		return nil, nil
 	}
 	props, ok := raw.(map[string]any)
 	if !ok {
-		return nil, fmt.Errorf("%w: properties must be an object", ErrBadRequest)
+		return nil, fmt.Errorf("%w: %s properties must be an object", ErrBadRequest, path)
 	}
 	out := make(map[string]map[string]any, len(props))
 	for name, value := range props {
 		fieldSchema, ok := value.(map[string]any)
 		if !ok {
-			return nil, fmt.Errorf("%w: property %q schema must be an object", ErrBadRequest, name)
+			return nil, fmt.Errorf("%w: %s property %q schema must be an object", ErrBadRequest, path, name)
 		}
 		out[name] = fieldSchema
 	}
 	return out, nil
 }
 
-func requiredFields(s map[string]any) []string {
-	raw, ok := s["required"].([]any)
+func requiredFields(path string, s map[string]any) ([]string, error) {
+	rawValue, exists := s["required"]
+	if !exists {
+		return nil, nil
+	}
+	raw, ok := rawValue.([]any)
 	if !ok {
-		return nil
+		return nil, fmt.Errorf("%w: %s required must be an array", ErrBadRequest, path)
 	}
 	out := make([]string, 0, len(raw))
+	seen := make(map[string]struct{}, len(raw))
 	for _, value := range raw {
-		if name, ok := value.(string); ok {
-			out = append(out, name)
+		name, ok := value.(string)
+		if !ok {
+			return nil, fmt.Errorf("%w: %s required members must be strings", ErrBadRequest, path)
 		}
+		if _, duplicate := seen[name]; duplicate {
+			return nil, fmt.Errorf("%w: %s required member %q is duplicated", ErrBadRequest, path, name)
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
 	}
-	return out
+	return out, nil
 }
 
 func jsonValuesEqual(a, b any) bool {
-	a = normalizeJSONNumber(a)
-	b = normalizeJSONNumber(b)
-	return reflect.DeepEqual(a, b)
-}
-
-func normalizeJSONNumber(v any) any {
-	number, ok := v.(json.Number)
-	if !ok {
-		return v
+	switch a := a.(type) {
+	case nil:
+		return b == nil
+	case bool:
+		value, ok := b.(bool)
+		return ok && a == value
+	case string:
+		value, ok := b.(string)
+		return ok && a == value
+	case json.Number:
+		value, ok := b.(json.Number)
+		if !ok {
+			return false
+		}
+		left, leftOK := canonicalJSONNumber(a.String())
+		right, rightOK := canonicalJSONNumber(value.String())
+		return leftOK && rightOK && left.equal(right)
+	case []any:
+		value, ok := b.([]any)
+		if !ok || len(a) != len(value) {
+			return false
+		}
+		for i := range a {
+			if !jsonValuesEqual(a[i], value[i]) {
+				return false
+			}
+		}
+		return true
+	case map[string]any:
+		value, ok := b.(map[string]any)
+		if !ok || len(a) != len(value) {
+			return false
+		}
+		for key, member := range a {
+			other, exists := value[key]
+			if !exists || !jsonValuesEqual(member, other) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
 	}
-	if i, err := number.Int64(); err == nil {
-		return i
-	}
-	if f, err := number.Float64(); err == nil {
-		return f
-	}
-	return number.String()
 }
 
 func enumValues(values []any) string {

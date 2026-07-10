@@ -12,6 +12,7 @@ import (
 	"time"
 
 	llm "github.com/pkieltyka/go-llm"
+	"github.com/pkieltyka/go-llm/internal/testutil"
 	"github.com/pkieltyka/go-llm/providers/chatcompletions"
 )
 
@@ -91,6 +92,36 @@ func TestGenericNew(t *testing.T) {
 	}
 }
 
+func TestGenericNewKeepsHarmlessAmbientHeadersWithoutAmbientAuth(t *testing.T) {
+	t.Setenv("OPENAI_CUSTOM_HEADERS", "Authorization: Bearer ambient-secret\nX-Ambient-Safe: retained")
+	server, headers := newGenericServer(t)
+	p, err := chatcompletions.New(server.URL,
+		chatcompletions.WithHTTPClient(server.Client()),
+		chatcompletions.WithMaxRetries(0),
+	)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	req := &llm.Request{Model: "m", Messages: []llm.Message{llm.UserText("hi")}}
+	if _, err := p.Chat(context.Background(), req); err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+	if _, err := llm.Collect(p.ChatStream(context.Background(), req)); err != nil {
+		t.Fatalf("ChatStream returned error: %v", err)
+	}
+	if _, err := p.Models(context.Background()); err != nil {
+		t.Fatalf("Models returned error: %v", err)
+	}
+	for i, header := range *headers {
+		if got := header.Get("Authorization"); got != "" {
+			t.Fatalf("request %d Authorization = %q, want absent", i, got)
+		}
+		if got := header.Get("X-Ambient-Safe"); got != "retained" {
+			t.Fatalf("request %d X-Ambient-Safe = %q", i, got)
+		}
+	}
+}
+
 func TestGenericNewOptions(t *testing.T) {
 	server, headers := newGenericServer(t)
 	var captures []llm.WireCapture
@@ -146,6 +177,46 @@ func TestGenericNewOptions(t *testing.T) {
 	})
 	if !errors.Is(err, llm.ErrUnsupported) {
 		t.Fatalf("undeclared tools error = %v, want ErrUnsupported", err)
+	}
+}
+
+func TestGenericStreamWireCaptureTreatsDoneAsComplete(t *testing.T) {
+	streamBody := "data: {\"id\":\"c1\",\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"pong\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+	client := &http.Client{Transport: testutil.RoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			ContentLength: -1,
+			Header:        http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:          io.NopCloser(strings.NewReader(streamBody)),
+		}, nil
+	})}
+	var captures []llm.WireCapture
+	p, err := chatcompletions.New("https://example.test",
+		chatcompletions.WithHTTPClient(client),
+		chatcompletions.WithMaxRetries(0),
+		chatcompletions.WithWireCapture(func(c llm.WireCapture) { captures = append(captures, c) }),
+	)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	resp, err := llm.Collect(p.ChatStream(context.Background(), &llm.Request{
+		Model:    "m",
+		Messages: []llm.Message{llm.UserText("hi")},
+	}))
+	if err != nil {
+		t.Fatalf("ChatStream returned error: %v", err)
+	}
+	if resp.Text() != "pong" {
+		t.Fatalf("stream response text = %q", resp.Text())
+	}
+	if len(captures) != 1 {
+		t.Fatalf("captures = %d, want 1", len(captures))
+	}
+	if captures[0].ResponseIncomplete || captures[0].Err != nil {
+		t.Fatalf("terminal [DONE] capture = %+v", captures[0])
+	}
+	if !strings.HasSuffix(string(captures[0].ResponseBody), "data: [DONE]\n\n") {
+		t.Fatalf("captured stream body = %q", captures[0].ResponseBody)
 	}
 }
 

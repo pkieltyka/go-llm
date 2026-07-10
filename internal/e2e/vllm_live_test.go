@@ -36,18 +36,18 @@ func TestLiveVLLM(t *testing.T) {
 		t.Fatalf("LoadConfig returned error: %v", err)
 	}
 	providerCfg := cfg.Provider("vllm", "")
-	// vLLM is host-first: a base URL is the one thing this suite requires
-	// (Configured() would also accept a key-only entry, which is useless here).
-	if providerCfg.BaseURL == "" {
-		t.Skip("vLLM base_url missing from gollm-test.json (keyless self-hosted entry)")
-	}
+	requireLiveProviderConfig(t, "vllm", providerCfg)
 
-	var captures []llm.WireCapture
+	captures := &CaptureLog{}
+	secrets := NewSecretSet(providerCfg.Auth.Key)
+	var scenarioReport ScenarioReport
+	if *record {
+		path := filepath.Join(root, "internal", "e2e", "fixtures", "vllm", "live.json")
+		ScheduleFixtureRecording(t, path, captures, secrets, &scenarioReport, *recordAllowIncomplete)
+	}
 	opts := []vllmProvider.Option{
 		vllmProvider.WithMaxRetries(0),
-		vllmProvider.WithWireCapture(func(c llm.WireCapture) {
-			captures = append(captures, c)
-		}),
+		vllmProvider.WithWireCapture(captures.Capture),
 	}
 	if providerCfg.Auth.Key != "" {
 		opts = append(opts, vllmProvider.WithAPIKey(providerCfg.Auth.Key))
@@ -56,27 +56,18 @@ func TestLiveVLLM(t *testing.T) {
 	if err != nil {
 		t.Fatalf("vllm.New returned error: %v", err)
 	}
-	if *record {
-		t.Cleanup(func() {
-			path := filepath.Join(root, "internal", "e2e", "fixtures", "vllm", "live.json")
-			if err := WriteFixture(path, captures, providerCfg.Auth.Key); err != nil {
-				t.Fatalf("WriteFixture returned error: %v", err)
-			}
-		})
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
+	ctx = RecordingContext(ctx, captures, secrets)
 
 	modelPreference := providerCfg.Model
 	if modelPreference == "" {
 		modelPreference = "qwen"
 	}
-	resolvedModel, err := p.ResolveModel(ctx, modelPreference)
+	model, err := ResolveConfiguredModel(ctx, p, modelPreference)
 	if err != nil {
 		t.Fatalf("vLLM model discovery failed for preference %q: %v", modelPreference, err)
 	}
-	model := resolvedModel.ID
 	if model != providerCfg.Model {
 		t.Logf("resolved vLLM model preference %q to served model %q", modelPreference, model)
 	}
@@ -85,30 +76,61 @@ func TestLiveVLLM(t *testing.T) {
 	// so unset Effort defaults to none through go-llm's own middleware.
 	scenarioProvider := llm.Wrap(p, defaultEffortNoneMiddleware())
 
-	RunScenarios(ctx, t, scenarioProvider, model, []Scenario{
-		{Name: "chat", Run: liveChatScenario},
-		{Name: "stream", Capability: llm.CapabilityStreaming, Run: liveStreamScenario},
-		{Name: "models", Capability: llm.CapabilityModelsListing, Run: liveVLLMModelsScenario},
-		{Name: "tools", Capability: llm.CapabilityTools, Run: liveToolsScenario},
-		{Name: "tools_stream", Capability: llm.CapabilityToolStreaming, Run: liveVLLMToolsStreamScenario},
-		{Name: "parallel_tools", Capability: llm.CapabilityParallelTools, Run: liveParallelToolsScenario},
-		{Name: "parse", Capability: llm.CapabilityJSONSchema, Run: liveParseScenario},
-		{Name: "structured_choice", Run: liveVLLMStructuredChoiceScenario},
-		{Name: "structured_regex", Run: liveVLLMStructuredRegexScenario},
-		{Name: "tokenize", Run: func(ctx context.Context, t *testing.T, _ llm.Provider, model string) {
-			// Extension methods live on the concrete provider, not the
-			// wrapped llm.Provider.
-			liveVLLMTokenizeScenario(ctx, t, p, model)
-		}},
-		{Name: "reasoning", Capability: llm.CapabilityReasoning, Run: liveVLLMReasoningScenario},
-		{Name: "reasoning_replay", Capability: llm.CapabilityReasoning, Run: liveVLLMReasoningReplayScenario},
-		{Name: "usage", Run: liveUsageScenario},
-		{Name: "error_mapping", Run: liveVLLMErrorMappingScenario},
-		{Name: "cross_provider_handoff", Capability: llm.CapabilityTools, Run: liveCrossProviderHandoffScenario},
-		{Name: "anthropic_messages", Run: func(ctx context.Context, t *testing.T, _ llm.Provider, model string) {
-			liveVLLMAnthropicMessagesScenario(ctx, t, providerCfg.BaseURL, model)
-		}},
+	runners := vllmLiveScenarioRunners(p, providerCfg.BaseURL)
+	scenarioReport = RunCapabilityScenarios(ctx, t, "vllm", scenarioProvider, model, runners)
+}
+
+func vllmLiveScenarioRunners(p *vllmProvider.Provider, baseURL string) map[string]ScenarioRun {
+	runners := commonLiveScenarioRunners()
+	runners["models"] = liveVLLMModelsScenario
+	runners["multimodal"] = liveVLLMMultimodalScenario
+	runners["stop_sequences"] = liveOpenAICompatibleStopSequencesScenario
+	runners["tools_stream"] = liveVLLMToolsStreamScenario
+	runners["reasoning"] = liveVLLMReasoningScenario
+	runners["reasoning_replay"] = liveVLLMReasoningReplayScenario
+	runners["error_mapping"] = liveVLLMErrorMappingScenario
+	runners["structured_choice"] = liveVLLMStructuredChoiceScenario
+	runners["structured_regex"] = liveVLLMStructuredRegexScenario
+	runners["tokenize"] = func(ctx context.Context, t *testing.T, _ llm.Provider, model string) {
+		// Extension methods live on the concrete provider, not the wrapped
+		// llm.Provider.
+		liveVLLMTokenizeScenario(ctx, t, p, model)
+	}
+	runners["anthropic_messages"] = func(ctx context.Context, t *testing.T, _ llm.Provider, model string) {
+		liveVLLMAnthropicMessagesScenario(ctx, t, baseURL, model)
+	}
+	return runners
+}
+
+func liveVLLMMultimodalScenario(ctx context.Context, t *testing.T, p llm.Provider, model string) {
+	t.Helper()
+	temperature := 0.0
+	resp, err := p.Chat(ctx, &llm.Request{
+		Model:       model,
+		MaxTokens:   16,
+		Temperature: &temperature,
+		Messages: []llm.Message{llm.UserParts(
+			llm.ImageData(RedPixelPNG(t), "image/png"),
+			llm.Text("What color is this square? Answer with one word."),
+		)},
 	})
+	if err != nil {
+		if vllmModelRejectsImages(err) {
+			t.Skip("configured vLLM model reports zero image capacity")
+		}
+		t.Fatalf("multimodal Chat returned error: %v", err)
+	}
+	if !strings.Contains(strings.ToLower(resp.Text()), "red") {
+		t.Fatalf("multimodal text = %q, want red", resp.Text())
+	}
+}
+
+func vllmModelRejectsImages(err error) bool {
+	if !errors.Is(err, llm.ErrBadRequest) {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "at most 0 image") && strings.Contains(message, "parameter=image")
 }
 
 // liveVLLMToolsStreamScenario streams one tool call through the server-side
@@ -120,7 +142,7 @@ func TestLiveVLLM(t *testing.T) {
 func liveVLLMToolsStreamScenario(ctx context.Context, t *testing.T, p llm.Provider, model string) {
 	t.Helper()
 	temperature := 0.0
-	resp, err := llm.Collect(p.ChatStream(ctx, &llm.Request{
+	resp, err := CollectLiveStream(p.Name(), p.ChatStream(ctx, &llm.Request{
 		Model:       model,
 		MaxTokens:   256,
 		Temperature: &temperature,
@@ -240,7 +262,7 @@ func liveVLLMReasoningReplayScenario(ctx context.Context, t *testing.T, p llm.Pr
 
 func liveVLLMReasoningResponse(ctx context.Context, t *testing.T, p llm.Provider, model string) *llm.Response {
 	t.Helper()
-	resp, err := llm.Collect(p.ChatStream(ctx, &llm.Request{
+	resp, err := CollectLiveStream(p.Name(), p.ChatStream(ctx, &llm.Request{
 		Model:     model,
 		MaxTokens: 2048,
 		Effort:    llm.EffortHigh,

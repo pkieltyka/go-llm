@@ -123,7 +123,7 @@ func WithLegacyEra() Option {
 	return func(c *config) { c.legacyEra = true }
 }
 
-// WithHTTPClient replaces the shared default HTTP client.
+// WithHTTPClient replaces the provider's default HTTP client.
 func WithHTTPClient(client *http.Client) Option {
 	return func(c *config) { c.httpClient = client }
 }

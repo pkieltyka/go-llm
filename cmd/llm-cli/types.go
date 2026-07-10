@@ -18,12 +18,13 @@ type app struct {
 type providerFactory func(context.Context, providerConfig) (llm.Provider, error)
 
 type providerConfig struct {
-	name    string
-	apiKey  string
-	baseURL string
-	timeout time.Duration
-	debug   bool
-	stderr  io.Writer
+	name     string
+	apiKey   string
+	authFile string
+	baseURL  string
+	timeout  time.Duration
+	debug    bool
+	stderr   io.Writer
 }
 
 type chatConfig struct {
@@ -47,6 +48,7 @@ type chatConfig struct {
 	loadPath    string
 	savePath    string
 	apiKey      string
+	authFile    string
 	baseURL     string
 	timeout     time.Duration
 	version     bool
@@ -58,6 +60,7 @@ type modelsConfig struct {
 	provider   string
 	jsonOutput bool
 	apiKey     string
+	authFile   string
 	baseURL    string
 	timeout    time.Duration
 	debug      bool

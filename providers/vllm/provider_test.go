@@ -325,6 +325,24 @@ func TestStreamReasoningDeltas(t *testing.T) {
 	}
 }
 
+func TestStreamUsesChoiceIndexZero(t *testing.T) {
+	p := newTestProvider(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		mustWrite(t, w, `data: {"id":"c1","model":"m","choices":[{"index":3,"delta":{"content":"wrong"},"finish_reason":"stop"},{"index":0,"delta":{"content":"right"},"finish_reason":"stop"}]}`+"\n\n")
+		mustWrite(t, w, "data: [DONE]\n\n")
+	})
+	resp, err := llm.Collect(p.ChatStream(context.Background(), &llm.Request{
+		Model:    "m",
+		Messages: []llm.Message{llm.UserText("hi")},
+	}))
+	if err != nil {
+		t.Fatalf("Collect returned error: %v", err)
+	}
+	if resp.Text() != "right" {
+		t.Fatalf("response text = %q, want right", resp.Text())
+	}
+}
+
 // TestStreamMidStreamErrorSniff covers the goose-crash case: after HTTP 200,
 // vLLM emits a choice-less SSE data event whose payload is the error JSON.
 // Both the nested (current) and flat legacy shapes must map to a normalized
@@ -419,6 +437,21 @@ func TestModelsSurfacesMaxModelLen(t *testing.T) {
 	raw, ok := models[1].Raw.(json.RawMessage)
 	if !ok || !strings.Contains(string(raw), `"parent":"Qwen/Qwen3.6-27B-FP8"`) {
 		t.Fatalf("LoRA row raw = %+v", models[1].Raw)
+	}
+}
+
+func TestModelsMalformedRowIsProviderError(t *testing.T) {
+	p := newTestProvider(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		mustWrite(t, w, `{"data":[{"id":123}]}`)
+	})
+	_, err := p.Models(context.Background())
+	if !errors.Is(err, llm.ErrServer) {
+		t.Fatalf("Models error = %v, want ErrServer", err)
+	}
+	var providerErr *llm.ProviderError
+	if !errors.As(err, &providerErr) || providerErr.Provider != providerName {
+		t.Fatalf("Models error = %T %v, want vLLM ProviderError", err, err)
 	}
 }
 
@@ -520,7 +553,9 @@ func TestResolveModelErrorsOnEmptyModelsList(t *testing.T) {
 // Authorization header on the SDK blocking path, the direct SSE path, or
 // models listing — and WithAPIKey restores the bearer header.
 func TestKeylessSendsNoAuthorization(t *testing.T) {
+	t.Setenv("OPENAI_CUSTOM_HEADERS", "Authorization: Bearer ambient-secret\nX-Ambient-Safe: retained")
 	var authHeaders []string
+	var ambientHeaders []string
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		value, present := r.Header["Authorization"]
 		if present {
@@ -528,6 +563,7 @@ func TestKeylessSendsNoAuthorization(t *testing.T) {
 		} else {
 			authHeaders = append(authHeaders, "<absent>")
 		}
+		ambientHeaders = append(ambientHeaders, r.Header.Get("X-Ambient-Safe"))
 		if r.Header.Get("Accept") == "text/event-stream" {
 			w.Header().Set("Content-Type", "text/event-stream")
 			mustWrite(t, w, `data: {"id":"c1","model":"m","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}`+"\n\n")
@@ -558,9 +594,13 @@ func TestKeylessSendsNoAuthorization(t *testing.T) {
 		if header != "<absent>" {
 			t.Fatalf("request %d sent Authorization %q, want none", i, header)
 		}
+		if ambientHeaders[i] != "retained" {
+			t.Fatalf("request %d X-Ambient-Safe = %q", i, ambientHeaders[i])
+		}
 	}
 
 	authHeaders = nil
+	ambientHeaders = nil
 	keyed := newTestProvider(t, handler, WithAPIKey("secret-key"))
 	if _, err := keyed.Chat(context.Background(), req); err != nil {
 		t.Fatalf("keyed Chat returned error: %v", err)
@@ -568,9 +608,15 @@ func TestKeylessSendsNoAuthorization(t *testing.T) {
 	if _, err := llm.Collect(keyed.ChatStream(context.Background(), req)); err != nil {
 		t.Fatalf("keyed stream returned error: %v", err)
 	}
+	if _, err := keyed.Models(context.Background()); err != nil {
+		t.Fatalf("keyed Models returned error: %v", err)
+	}
 	for i, header := range authHeaders {
 		if header != "Bearer secret-key" {
 			t.Fatalf("keyed request %d Authorization = %q", i, header)
+		}
+		if ambientHeaders[i] != "retained" {
+			t.Fatalf("keyed request %d X-Ambient-Safe = %q", i, ambientHeaders[i])
 		}
 	}
 }
@@ -708,8 +754,61 @@ func TestOptionsRejectedForOtherProvider(t *testing.T) {
 	}
 }
 
+func TestProviderOptionsIdentityCheckedOncePerAdapterPath(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(*Provider, *llm.Request) error
+	}{
+		{
+			name: "chat",
+			call: func(p *Provider, req *llm.Request) error {
+				_, err := p.Chat(context.Background(), req)
+				return err
+			},
+		},
+		{
+			name: "stream",
+			call: func(p *Provider, req *llm.Request) error {
+				_, err := llm.Collect(p.ChatStream(context.Background(), req))
+				return err
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := newTestProvider(t, func(http.ResponseWriter, *http.Request) {
+				t.Error("request must not reach the server")
+			})
+			options := &oneShotSpoofOptions{}
+			err := tt.call(p, &llm.Request{
+				Model:           "m",
+				Messages:        []llm.Message{llm.UserText("hi")},
+				ProviderOptions: options,
+			})
+			if !errors.Is(err, llm.ErrBadRequest) {
+				t.Fatalf("error = %v, want ErrBadRequest", err)
+			}
+			if options.calls != 1 {
+				t.Fatalf("ForProvider calls = %d, want 1", options.calls)
+			}
+		})
+	}
+}
+
 type fakeOptions struct{}
 
 func (fakeOptions) ForProvider() string { return "openrouter" }
+
+type oneShotSpoofOptions struct {
+	calls int
+}
+
+func (o *oneShotSpoofOptions) ForProvider() string {
+	o.calls++
+	if o.calls > 1 {
+		panic("ForProvider called more than once")
+	}
+	return providerName
+}
 
 var _ llm.Provider = (*Provider)(nil)

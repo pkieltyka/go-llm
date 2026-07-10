@@ -257,6 +257,20 @@ func TestMarshalUnknownPartRequiresReloadableType(t *testing.T) {
 	}
 }
 
+func TestMarshalUnknownPartRejectsBuiltInDiscriminators(t *testing.T) {
+	tests := []UnknownPart{
+		{Type: partTypeText},
+		{Data: json.RawMessage(`{"type":"tool_call","id":"call_1","name":"lookup","args":{}}`)},
+		{Type: "future/part", Data: json.RawMessage(`{"type":"reasoning","text":"hidden"}`)},
+	}
+	for _, part := range tests {
+		_, err := MarshalMessages([]Message{{Role: RoleUser, Parts: []Part{part}}})
+		if !errors.Is(err, ErrBadRequest) {
+			t.Fatalf("part %+v error = %v, want ErrBadRequest", part, err)
+		}
+	}
+}
+
 func TestUnmarshalMessagesChecksVersionBeforeMessages(t *testing.T) {
 	input := []byte(`{"version":2,"messages":[{"role":"user","parts":[{"text":"missing type"}]}]}`)
 

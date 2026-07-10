@@ -161,7 +161,9 @@ func (p *Provider) EnqueueError(err error) {
 	p.steps = append(p.steps, step{kind: stepError, err: err})
 }
 
-// Requests returns defensive copies of recorded requests.
+// Requests returns defensive copies of recorded requests. ProviderOptions is
+// opaque to llmtest and is therefore shallow-copied; callers must treat the
+// concrete option value as immutable after passing a request to Provider.
 func (p *Provider) Requests() []*llm.Request {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -191,6 +193,8 @@ func cloneRequest(req *llm.Request) *llm.Request {
 		return nil
 	}
 	copied := *req
+	copied.Temperature = cloneFloat64(req.Temperature)
+	copied.TopP = cloneFloat64(req.TopP)
 	copied.Messages = cloneMessages(req.Messages)
 	copied.SystemCache = cloneCache(req.SystemCache)
 	copied.StopSequences = append([]string(nil), req.StopSequences...)
@@ -200,6 +204,9 @@ func cloneRequest(req *llm.Request) *llm.Request {
 		format.Schema = cloneJSONLike(format.Schema)
 		copied.ResponseFormat = &format
 	}
+	// ProviderOptions implementations are provider-owned opaque values. There
+	// is no general deep-copy operation available, so the interface is copied
+	// as-is and must be treated as immutable by llmtest callers.
 	return &copied
 }
 
@@ -211,6 +218,7 @@ func cloneResponse(resp *llm.Response) *llm.Response {
 	copied.Parts = cloneParts(resp.Parts)
 	copied.Usage = cloneUsage(resp.Usage)
 	copied.DroppedToolCalls = append([]llm.DroppedToolCall(nil), resp.DroppedToolCalls...)
+	copied.Raw = cloneJSONLike(resp.Raw)
 	return &copied
 }
 
@@ -264,55 +272,55 @@ func clonePart(part llm.Part) llm.Part {
 		return p
 	case *llm.TextPart:
 		if p == nil {
-			return p
+			return nil
 		}
 		copied := *p
 		copied.Cache = cloneCache(p.Cache)
-		return &copied
+		return copied
 	case *llm.ImagePart:
 		if p == nil {
-			return p
+			return nil
 		}
 		copied := *p
 		copied.Data = append([]byte(nil), p.Data...)
 		copied.Cache = cloneCache(p.Cache)
-		return &copied
+		return copied
 	case *llm.FilePart:
 		if p == nil {
-			return p
+			return nil
 		}
 		copied := *p
 		copied.Data = append([]byte(nil), p.Data...)
 		copied.Cache = cloneCache(p.Cache)
-		return &copied
+		return copied
 	case *llm.ToolCallPart:
 		if p == nil {
-			return p
+			return nil
 		}
 		copied := *p
 		copied.Args = append(json.RawMessage(nil), p.Args...)
-		return &copied
+		return copied
 	case *llm.ToolResultPart:
 		if p == nil {
-			return p
+			return nil
 		}
 		copied := *p
 		copied.Content = cloneParts(p.Content)
-		return &copied
+		return copied
 	case *llm.ReasoningPart:
 		if p == nil {
-			return p
+			return nil
 		}
 		copied := *p
 		copied.Raw = append(json.RawMessage(nil), p.Raw...)
-		return &copied
+		return copied
 	case *llm.UnknownPart:
 		if p == nil {
-			return p
+			return nil
 		}
 		copied := *p
 		copied.Data = append(json.RawMessage(nil), p.Data...)
-		return &copied
+		return copied
 	default:
 		return part
 	}
@@ -324,70 +332,73 @@ func cloneEvent(event llm.Event) llm.Event {
 		return e
 	case *llm.ToolCallDelta:
 		if e == nil {
-			return e
+			return nil
 		}
-		copied := *e
-		return &copied
+		return *e
+	case llm.ToolCallIDChanged:
+		return e
+	case *llm.ToolCallIDChanged:
+		if e == nil {
+			return nil
+		}
+		return *e
 	case llm.MessageStart:
 		return e
 	case *llm.MessageStart:
 		if e == nil {
-			return e
+			return nil
 		}
-		copied := *e
-		return &copied
+		return *e
 	case llm.TextDelta:
 		return e
 	case *llm.TextDelta:
 		if e == nil {
-			return e
+			return nil
 		}
-		copied := *e
-		return &copied
+		return *e
 	case llm.ReasoningDelta:
 		e.Raw = append(json.RawMessage(nil), e.Raw...)
 		return e
 	case *llm.ReasoningDelta:
 		if e == nil {
-			return e
+			return nil
 		}
 		copied := *e
 		copied.Raw = append(json.RawMessage(nil), e.Raw...)
-		return &copied
+		return copied
 	case llm.ToolCallStart:
 		return e
 	case *llm.ToolCallStart:
 		if e == nil {
-			return e
+			return nil
 		}
-		copied := *e
-		return &copied
+		return *e
 	case llm.ToolCallEnd:
 		return e
 	case *llm.ToolCallEnd:
 		if e == nil {
-			return e
+			return nil
 		}
-		copied := *e
-		return &copied
+		return *e
 	case llm.ToolCallDropped:
 		return e
 	case *llm.ToolCallDropped:
 		if e == nil {
-			return e
+			return nil
 		}
-		copied := *e
-		return &copied
+		return *e
 	case llm.MessageEnd:
 		e.Usage = cloneUsage(e.Usage)
+		e.Raw = cloneJSONLike(e.Raw)
 		return e
 	case *llm.MessageEnd:
 		if e == nil {
-			return e
+			return nil
 		}
 		copied := *e
 		copied.Usage = cloneUsage(e.Usage)
-		return &copied
+		copied.Raw = cloneJSONLike(e.Raw)
+		return copied
 	default:
 		return event
 	}
@@ -418,7 +429,16 @@ func cloneUsage(usage llm.Usage) llm.Usage {
 		cost := *usage.CostUSD
 		usage.CostUSD = &cost
 	}
+	usage.Raw = cloneJSONLike(usage.Raw)
 	return usage
+}
+
+func cloneFloat64(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	copied := *value
+	return &copied
 }
 
 func cloneModels(models []llm.ModelInfo) []llm.ModelInfo {
@@ -428,6 +448,7 @@ func cloneModels(models []llm.ModelInfo) []llm.ModelInfo {
 	out := make([]llm.ModelInfo, len(models))
 	for i, model := range models {
 		out[i] = model
+		out[i].Raw = cloneJSONLike(model.Raw)
 		if model.Pricing != nil {
 			pricing := *model.Pricing
 			out[i].Pricing = &pricing
@@ -442,6 +463,24 @@ func cloneJSONLike(value any) any {
 		return append(json.RawMessage(nil), v...)
 	case []byte:
 		return append([]byte(nil), v...)
+	case map[string]any:
+		if v == nil {
+			return map[string]any(nil)
+		}
+		out := make(map[string]any, len(v))
+		for key, item := range v {
+			out[key] = cloneJSONLike(item)
+		}
+		return out
+	case []any:
+		if v == nil {
+			return []any(nil)
+		}
+		out := make([]any, len(v))
+		for i, item := range v {
+			out[i] = cloneJSONLike(item)
+		}
+		return out
 	default:
 		return value
 	}

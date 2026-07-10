@@ -2,9 +2,14 @@
 status: complete
 ---
 
-# Provider Capability Matrix: overlap vs provider-unique
+# Provider Capability Research: overlap vs provider-unique
 
-Reference appendix to the functional spec/architecture. Answers: *how much
+> **Research, not a normative provider contract.** This July 2026 survey
+> informed the architecture. It includes ZAI as future-work research even
+> though no ZAI provider ships. Current packages and capabilities are defined
+> by `functional_spec.md`, `architecture.md`, and code.
+
+Answers: *how much
 of each provider's chat surface normalizes into go-llm's unified interface,
 and how much is reachable only via the escape hatches
 (`ProviderOptions` / extension parts / raw `Client()`)?*
@@ -160,10 +165,8 @@ returned, and hosted tools/background mode don't exist. `openai-go` v3 has
 mature first-class Responses support in the same module that powers the
 CC-shaped adapter.
 
-**Resulting architecture:** OpenAI = direct wrap of `openai-go` Responses
+**Resulting architecture at research time:** OpenAI = direct wrap of `openai-go` Responses
 (stateless: `store: false` + `include: ["reasoning.encrypted_content"]`,
-reasoning items round-tripped via `ReasoningPart.Raw`). OpenRouter + ZAI
-stay on the shared CC-shaped `chatcompletions` adapter — chat completions is
-OpenRouter's canonical surface (its `/responses` endpoint is beta,
-stateless-only) and ZAI's only OpenAI-style surface (no Responses shape
-exists there).
+reasoning items round-tripped via `ReasoningPart.Raw`). OpenRouter stays on
+the shared CC-shaped `chatcompletions` adapter. The ZAI observations remain
+research for a possible future provider and do not describe shipped code.

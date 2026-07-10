@@ -1,0 +1,41 @@
+{
+  "anthropic": {
+    "id": "anthropic",
+    "models": {
+      "claude-fixture": {
+        "id": "claude-fixture",
+        "name": "Claude Fixture",
+        "limit": { "context": 200000, "output": 8192 },
+        "cost": { "input": 3, "output": 15, "cache_read": 0.3, "cache_write": 3.75 }
+      }
+    }
+  },
+  "openai": {
+    "id": "openai",
+    "models": {
+      "gpt-fixture": {
+        "id": "gpt-fixture",
+        "name": "GPT Fixture",
+        "limit": { "context": 128000, "output": 16384 },
+        "cost": { "input": 2, "output": 8, "cache_read": 0.5 }
+      },
+      "image-zero-limit-fixture": {
+        "id": "image-zero-limit-fixture",
+        "name": "Image Zero Limit Fixture",
+        "limit": { "context": 0, "output": "not-applicable" },
+        "cost": { "input": 5, "output": -1 }
+      }
+    }
+  },
+  "openrouter": {
+    "id": "openrouter",
+    "models": {
+      "openai/gpt-fixture": {
+        "id": "openai/gpt-fixture",
+        "name": "OpenAI: GPT Fixture",
+        "limit": { "context": 128000, "output": 8192 },
+        "cost": { "input": 2, "output": 8, "cache_read": 0.5 }
+      }
+    }
+  }
+}

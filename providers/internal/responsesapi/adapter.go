@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"mime"
+	"slices"
 	"strings"
 
 	sdk "github.com/openai/openai-go/v3"
@@ -108,6 +109,9 @@ func (a Adapter) buildParamsAfterValidation(req *llm.Request) (responses.Respons
 		if err := a.ApplyOptions(req, &params); err != nil {
 			return responses.ResponseNewParams{}, err
 		}
+	}
+	if !slices.Contains(a.Capabilities, llm.CapabilityParallelTools) {
+		params.ParallelToolCalls = sdkparam.Opt[bool]{}
 	}
 	params.Include = normalizeIncludes(params.Include, responsesRequestIsStateless(params))
 	return params, nil

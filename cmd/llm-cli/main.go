@@ -34,9 +34,9 @@ func main() {
 		case ctx.Err() != nil && errors.Is(err, context.Canceled):
 			// The run was cut short by SIGINT: say so instead of surfacing a
 			// raw "context canceled".
-			fmt.Fprintln(os.Stderr, "interrupted")
+			_ = printError(os.Stderr, errors.New("interrupted"))
 		default:
-			fmt.Fprintln(os.Stderr, err)
+			_ = printError(os.Stderr, err)
 		}
 		os.Exit(1)
 	}
@@ -52,8 +52,7 @@ func (a app) run(ctx context.Context, args []string) error {
 			return err
 		}
 		if cfg.version {
-			printVersion(a.stdout)
-			return nil
+			return printVersion(a.stdout)
 		}
 		return a.runModels(ctx, cfg)
 	}
@@ -66,8 +65,7 @@ func (a app) run(ctx context.Context, args []string) error {
 		return err
 	}
 	if cfg.version {
-		printVersion(a.stdout)
-		return nil
+		return printVersion(a.stdout)
 	}
 	if shouldReadStdin(a.stdin) {
 		text, err := readAllContext(ctx, a.stdin)
@@ -105,14 +103,24 @@ func readAllContext(ctx context.Context, r io.Reader) (string, error) {
 	}
 }
 
-func printVersion(w io.Writer) {
+func printVersion(w io.Writer) error {
 	version := "(devel)"
 	if info, ok := debug.ReadBuildInfo(); ok {
 		if info.Main.Version != "" {
 			version = info.Main.Version
 		}
 	}
-	fmt.Fprintf(w, "llm-cli %s\n", version)
+	if _, err := fmt.Fprintf(w, "llm-cli %s\n", version); err != nil {
+		return fmt.Errorf("write version: %w", err)
+	}
+	return nil
+}
+
+func printError(w io.Writer, err error) error {
+	if _, writeErr := fmt.Fprintln(w, err); writeErr != nil {
+		return fmt.Errorf("write error: %w", writeErr)
+	}
+	return nil
 }
 
 func promptFromArgs(args []string) string {

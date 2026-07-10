@@ -2,6 +2,8 @@ package anthropic
 
 import (
 	"encoding/json"
+	"fmt"
+	"sort"
 	"strings"
 
 	sdk "github.com/anthropics/anthropic-sdk-go"
@@ -16,12 +18,14 @@ type streamState struct {
 	tools    map[int]*streamToolCall
 	thinking map[int]*streamThinkingBlock
 	seenIDs  map[string]struct{}
+	terminal llm.MessageEnd
 }
 
 type streamToolCall struct {
 	id      string
 	name    string
 	args    strings.Builder
+	index   int
 	started bool
 }
 
@@ -30,6 +34,9 @@ type streamThinkingBlock struct {
 	thinking  strings.Builder
 	signature string
 	data      string
+	rawStart  json.RawMessage
+	dirty     bool
+	sawText   bool
 }
 
 func newStreamState(p *Provider) *streamState {
@@ -57,13 +64,20 @@ func (s *streamState) mapEvent(event sdk.MessageStreamEventUnion) ([]llm.Event, 
 	case "message_delta":
 		usage := s.provider.mergeStreamUsage(s.model, s.usage, event.Usage)
 		s.usage = usage
-		return []llm.Event{llm.MessageEnd{
+		s.terminal = llm.MessageEnd{
 			StopReason:    mapStopReason(string(event.Delta.StopReason)),
 			StopReasonRaw: string(event.Delta.StopReason),
 			Usage:         usage,
-		}}, nil
-	case "message_stop":
+		}
 		return nil, nil
+	case "message_stop":
+		end := s.terminal
+		end.Usage = s.usage
+		events, err := s.finalizeOpenBlocks()
+		if err != nil {
+			return nil, err
+		}
+		return append(events, end), nil
 	default:
 		return nil, nil
 	}
@@ -77,51 +91,54 @@ func (s *streamState) mapContentBlockStart(event sdk.MessageStreamEventUnion) ([
 		if block.Text == "" {
 			return nil, nil
 		}
-		return []llm.Event{llm.TextDelta{Index: index, Text: block.Text}}, nil
+		return []llm.Event{llm.TextDelta{Index: s.canonicalIndex(index), Text: block.Text}}, nil
 	case "thinking", "redacted_thinking":
-		thinking := &streamThinkingBlock{
-			typ:       block.Type,
-			signature: block.Signature,
-			data:      block.Data,
+		thinking := s.thinking[index]
+		if thinking == nil {
+			thinking = &streamThinkingBlock{}
+			s.thinking[index] = thinking
 		}
-		thinking.thinking.WriteString(block.Thinking)
-		s.thinking[index] = thinking
-		if block.Thinking == "" {
+		if thinking.typ != "" && thinking.typ != block.Type {
+			return nil, fmt.Errorf("anthropic reasoning block %d changed type from %q to %q", index, thinking.typ, block.Type)
+		}
+		thinking.typ = block.Type
+		thinking.signature = firstNonEmpty(thinking.signature, block.Signature)
+		thinking.data = firstNonEmpty(thinking.data, block.Data)
+		thinking.sawText = thinking.sawText || block.Thinking != "" || block.JSON.Thinking.Valid()
+		if raw := block.RawJSON(); raw != "" && json.Valid([]byte(raw)) {
+			thinking.rawStart = append(json.RawMessage(nil), raw...)
+		}
+		emitted := ""
+		if block.Thinking != "" && thinking.thinking.Len() == 0 {
+			thinking.thinking.WriteString(block.Thinking)
+			emitted = block.Thinking
+		}
+		if emitted == "" {
 			return nil, nil
 		}
-		return []llm.Event{llm.ReasoningDelta{Index: index, Text: block.Thinking}}, nil
+		return []llm.Event{llm.ReasoningDelta{Index: s.canonicalIndex(index), Text: emitted}}, nil
 	case "tool_use":
-		id := block.ID
-		if id == "" {
-			id = providerutil.UniqueSyntheticToolCallID(index, s.seenIDs)
+		call := s.tools[index]
+		if call == nil {
+			call = &streamToolCall{}
+			s.tools[index] = call
 		}
-		if _, exists := s.seenIDs[id]; exists {
-			id = providerutil.UniqueSyntheticToolCallID(index, s.seenIDs)
+		if block.ID != "" {
+			call.id = block.ID
 		}
-		if id != "" {
-			s.seenIDs[id] = struct{}{}
-		}
-		call := &streamToolCall{id: id, name: block.Name}
-		s.tools[index] = call
-
-		var events []llm.Event
-		if call.name != "" {
-			call.started = true
-			events = append(events, llm.ToolCallStart{Index: index, ID: call.id, Name: call.name})
+		if block.Name != "" {
+			call.name = block.Name
 		}
 		if block.Input != nil {
 			raw, err := json.Marshal(block.Input)
 			if err != nil {
 				return nil, err
 			}
-			if string(raw) != "null" && string(raw) != "{}" {
+			if call.args.Len() == 0 && string(raw) != "null" && string(raw) != "{}" {
 				call.args.Write(raw)
-				if call.started {
-					events = append(events, llm.ToolCallDelta{Index: index, ArgsFragment: string(raw)})
-				}
 			}
 		}
-		return events, nil
+		return s.startToolCall(index, call), nil
 	default:
 		return nil, nil
 	}
@@ -135,7 +152,7 @@ func (s *streamState) mapContentBlockDelta(event sdk.MessageStreamEventUnion) ([
 		if delta.Text == "" {
 			return nil, nil
 		}
-		return []llm.Event{llm.TextDelta{Index: index, Text: delta.Text}}, nil
+		return []llm.Event{llm.TextDelta{Index: s.canonicalIndex(index), Text: delta.Text}}, nil
 	case "thinking_delta":
 		if delta.Thinking == "" {
 			return nil, nil
@@ -146,7 +163,9 @@ func (s *streamState) mapContentBlockDelta(event sdk.MessageStreamEventUnion) ([
 			s.thinking[index] = thinking
 		}
 		thinking.thinking.WriteString(delta.Thinking)
-		return []llm.Event{llm.ReasoningDelta{Index: index, Text: delta.Thinking}}, nil
+		thinking.dirty = true
+		thinking.sawText = true
+		return []llm.Event{llm.ReasoningDelta{Index: s.canonicalIndex(index), Text: delta.Thinking}}, nil
 	case "signature_delta":
 		thinking := s.thinking[index]
 		if thinking == nil {
@@ -154,80 +173,244 @@ func (s *streamState) mapContentBlockDelta(event sdk.MessageStreamEventUnion) ([
 			s.thinking[index] = thinking
 		}
 		thinking.signature += delta.Signature
+		if delta.Signature != "" {
+			thinking.dirty = true
+		}
 		return nil, nil
 	case "input_json_delta":
 		call := s.tools[index]
 		if call == nil {
-			call = &streamToolCall{id: providerutil.UniqueSyntheticToolCallID(index, s.seenIDs)}
-			s.seenIDs[call.id] = struct{}{}
+			call = &streamToolCall{}
 			s.tools[index] = call
 		}
 		call.args.WriteString(delta.PartialJSON)
-		if !call.started {
-			if call.name == "" {
-				return nil, nil
-			}
-			call.started = true
-			return []llm.Event{
-				llm.ToolCallStart{Index: index, ID: call.id, Name: call.name},
-				llm.ToolCallDelta{Index: index, ArgsFragment: delta.PartialJSON},
-			}, nil
+		if call.started && delta.PartialJSON != "" {
+			return []llm.Event{llm.ToolCallDelta{Index: call.index, ArgsFragment: delta.PartialJSON}}, nil
 		}
-		return []llm.Event{llm.ToolCallDelta{Index: index, ArgsFragment: delta.PartialJSON}}, nil
+		return nil, nil
 	default:
 		return nil, nil
 	}
 }
 
 func (s *streamState) mapContentBlockStop(index int) ([]llm.Event, error) {
-	if thinking := s.thinking[index]; thinking != nil {
-		delete(s.thinking, index)
-		raw, err := thinking.raw()
+	if s.thinking[index] != nil {
+		event, err := s.finalizeReasoningBlock(index)
 		if err != nil {
 			return nil, err
 		}
-		return []llm.Event{llm.ReasoningDelta{Index: index, Raw: raw, Provider: providerName}}, nil
+		return []llm.Event{event}, nil
 	}
 
-	call := s.tools[index]
+	return s.finalizeToolCall(index), nil
+}
+
+func (s *streamState) finalizeOpenBlocks() ([]llm.Event, error) {
+	sourceSet := make(map[int]struct{}, len(s.thinking)+len(s.tools))
+	preparedReasoning := make(map[int]json.RawMessage, len(s.thinking))
+	for source, thinking := range s.thinking {
+		if s.tools[source] != nil {
+			return nil, fmt.Errorf("anthropic stream block %d has both reasoning and tool state", source)
+		}
+		raw, err := thinking.raw()
+		if err != nil {
+			return nil, fmt.Errorf("anthropic reasoning block %d: %w", source, err)
+		}
+		preparedReasoning[source] = raw
+		sourceSet[source] = struct{}{}
+	}
+	for source := range s.tools {
+		sourceSet[source] = struct{}{}
+	}
+	sources := make([]int, 0, len(sourceSet))
+	for source := range sourceSet {
+		sources = append(sources, source)
+	}
+	sort.Ints(sources)
+
+	var events []llm.Event
+	for _, source := range sources {
+		if raw, ok := preparedReasoning[source]; ok {
+			delete(s.thinking, source)
+			events = append(events, llm.ReasoningDelta{
+				Index:    s.canonicalIndex(source),
+				Raw:      raw,
+				Provider: providerName,
+			})
+		}
+		events = append(events, s.finalizeToolCall(source)...)
+	}
+	return events, nil
+}
+
+func (s *streamState) finalizeReasoningBlock(source int) (llm.ReasoningDelta, error) {
+	thinking := s.thinking[source]
+	if thinking == nil {
+		return llm.ReasoningDelta{}, fmt.Errorf("missing reasoning state")
+	}
+	raw, err := thinking.raw()
+	if err != nil {
+		return llm.ReasoningDelta{}, fmt.Errorf("anthropic reasoning block %d: %w", source, err)
+	}
+	delete(s.thinking, source)
+	return llm.ReasoningDelta{Index: s.canonicalIndex(source), Raw: raw, Provider: providerName}, nil
+}
+
+func (s *streamState) settleBlocksOnError() []llm.Event {
+	sourceSet := make(map[int]struct{}, len(s.thinking)+len(s.tools))
+	for source := range s.thinking {
+		sourceSet[source] = struct{}{}
+	}
+	for source := range s.tools {
+		sourceSet[source] = struct{}{}
+	}
+	sources := make([]int, 0, len(sourceSet))
+	for source := range sourceSet {
+		sources = append(sources, source)
+	}
+	sort.Ints(sources)
+
+	var events []llm.Event
+	for _, source := range sources {
+		if thinking := s.thinking[source]; thinking != nil {
+			if raw, err := thinking.raw(); err == nil {
+				delete(s.thinking, source)
+				events = append(events, llm.ReasoningDelta{
+					Index:    s.canonicalIndex(source),
+					Raw:      raw,
+					Provider: providerName,
+				})
+			}
+			continue
+		}
+		events = append(events, s.settleToolCallOnError(source)...)
+	}
+	return events
+}
+
+func (s *streamState) settleToolCallOnError(source int) []llm.Event {
+	call := s.tools[source]
+	if call == nil || call.started {
+		return nil
+	}
+	if call.name != "" {
+		return s.startToolCall(source, call)
+	}
+	delete(s.tools, source)
+	return []llm.Event{llm.ToolCallDropped{
+		Index:  s.canonicalIndex(source),
+		Reason: "missing tool name before stream error",
+	}}
+}
+
+func (s *streamState) finalizeToolCall(source int) []llm.Event {
+	call := s.tools[source]
 	if call == nil {
-		return nil, nil
+		return nil
 	}
-	delete(s.tools, index)
+	delete(s.tools, source)
 	if call.name == "" {
-		return []llm.Event{llm.ToolCallDropped{Index: index, Reason: "missing tool name"}}, nil
+		return []llm.Event{llm.ToolCallDropped{Index: s.canonicalIndex(source), Reason: "missing tool name"}}
 	}
+	events := s.startToolCall(source, call)
 	args := call.args.String()
-	if args == "" {
+	emptyArgs := args == ""
+	if emptyArgs {
 		args = "{}"
 	}
 	if !json.Valid([]byte(args)) {
-		return []llm.Event{llm.ToolCallDropped{Index: index, Reason: "invalid tool arguments JSON"}}, nil
+		events = append(events, llm.ToolCallDropped{Index: call.index, Reason: "invalid tool arguments JSON"})
+		return events
 	}
-	if !call.started {
-		return []llm.Event{
-			llm.ToolCallStart{Index: index, ID: call.id, Name: call.name},
-			llm.ToolCallDelta{Index: index, ArgsFragment: args},
-			llm.ToolCallEnd{Index: index},
-		}, nil
+	if emptyArgs {
+		events = append(events, llm.ToolCallDelta{Index: call.index, ArgsFragment: args})
 	}
-	return []llm.Event{llm.ToolCallEnd{Index: index}}, nil
+	events = append(events, llm.ToolCallEnd{Index: call.index})
+	return events
+}
+
+func (s *streamState) startToolCall(source int, call *streamToolCall) []llm.Event {
+	if call.started || call.name == "" {
+		return nil
+	}
+	call.index = s.canonicalIndex(source)
+	if call.id == "" {
+		call.id = providerutil.UniqueSyntheticToolCallID(call.index, s.seenIDs)
+	}
+	if _, exists := s.seenIDs[call.id]; exists {
+		call.id = providerutil.UniqueSyntheticToolCallID(call.index, s.seenIDs)
+	}
+	s.seenIDs[call.id] = struct{}{}
+	call.started = true
+
+	events := []llm.Event{llm.ToolCallStart{Index: call.index, ID: call.id, Name: call.name}}
+	if call.args.Len() > 0 {
+		events = append(events, llm.ToolCallDelta{Index: call.index, ArgsFragment: call.args.String()})
+	}
+	return events
+}
+
+func (s *streamState) canonicalIndex(source int) int {
+	return source
 }
 
 func (b *streamThinkingBlock) raw() (json.RawMessage, error) {
 	switch b.typ {
 	case "redacted_thinking":
+		if b.data == "" {
+			return nil, fmt.Errorf("redacted thinking block is missing data")
+		}
+		if !b.dirty && b.verbatimMatches() {
+			return append(json.RawMessage(nil), b.rawStart...), nil
+		}
 		return json.Marshal(struct {
 			Type string `json:"type"`
 			Data string `json:"data"`
 		}{Type: "redacted_thinking", Data: b.data})
-	default:
+	case "thinking":
+		if !b.sawText {
+			return nil, fmt.Errorf("thinking block is missing thinking data")
+		}
+		if b.signature == "" {
+			return nil, fmt.Errorf("thinking block is missing signature")
+		}
+		if !b.dirty && b.verbatimMatches() {
+			return append(json.RawMessage(nil), b.rawStart...), nil
+		}
 		return json.Marshal(struct {
 			Type      string `json:"type"`
 			Thinking  string `json:"thinking"`
 			Signature string `json:"signature"`
 		}{Type: "thinking", Thinking: b.thinking.String(), Signature: b.signature})
+	default:
+		return nil, fmt.Errorf("unsupported reasoning block type %q", b.typ)
 	}
+}
+
+func (b *streamThinkingBlock) verbatimMatches() bool {
+	if len(b.rawStart) == 0 || !json.Valid(b.rawStart) {
+		return false
+	}
+	var wire struct {
+		Type      string `json:"type"`
+		Thinking  string `json:"thinking"`
+		Signature string `json:"signature"`
+		Data      string `json:"data"`
+	}
+	if json.Unmarshal(b.rawStart, &wire) != nil || wire.Type != b.typ {
+		return false
+	}
+	if b.typ == "redacted_thinking" {
+		return wire.Data == b.data
+	}
+	return wire.Thinking == b.thinking.String() && wire.Signature == b.signature
+}
+
+func firstNonEmpty(current, next string) string {
+	if current != "" {
+		return current
+	}
+	return next
 }
 
 func (p *Provider) mergeStreamUsage(model string, current llm.Usage, delta sdk.MessageDeltaUsage) llm.Usage {

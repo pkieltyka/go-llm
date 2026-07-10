@@ -514,6 +514,22 @@ func TestOpenRouterStreamKeepAliveCollectEquivalent(t *testing.T) {
 	}
 }
 
+func TestOpenRouterStreamUsesChoiceIndexZeroForContentAndExtras(t *testing.T) {
+	p := newTestProvider(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		mustWrite(t, w, `data: {"id":"gen_1","model":"openai/gpt-test","choices":[{"index":4,"native_finish_reason":"wrong","delta":{"content":"wrong"}},{"index":0,"native_finish_reason":"end_turn","delta":{"content":"right"},"finish_reason":"stop"}]}`+"\n\n")
+		mustWrite(t, w, "data: [DONE]\n\n")
+	})
+	resp, err := llm.Collect(p.ChatStream(context.Background(), &llm.Request{Model: "openai/gpt-test", Messages: []llm.Message{llm.UserText("hello")}}))
+	if err != nil {
+		t.Fatalf("Collect returned error: %v", err)
+	}
+	extras, ok := Extras(resp)
+	if resp.Text() != "right" || !ok || extras.NativeFinishReason != "end_turn" {
+		t.Fatalf("response/extras = %+v / %+v", resp, extras)
+	}
+}
+
 func TestOpenRouterStreamToolCallDropped(t *testing.T) {
 	p := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -535,13 +551,13 @@ func TestOpenRouterStreamToolCallDropped(t *testing.T) {
 	if len(droppedEvents) != 2 {
 		t.Fatalf("dropped events = %+v, want 2", droppedEvents)
 	}
-	// Pending-call flush is index-ordered: the malformed-args call (block
-	// index 3) drops before the missing-name call (block index 4).
+	// Pending-call flush is encounter ordered. Every observed tool candidate
+	// reserves a public block index, including calls later dropped.
 	if droppedEvents[0].Reason != "invalid tool arguments JSON" || droppedEvents[1].Reason != "missing tool name" {
 		t.Fatalf("dropped reasons = %+v", droppedEvents)
 	}
-	if droppedEvents[0].Index >= droppedEvents[1].Index {
-		t.Fatalf("dropped order not deterministic: %+v", droppedEvents)
+	if droppedEvents[0].Index != 4 || droppedEvents[1].Index != 5 {
+		t.Fatalf("dropped indexes = %+v, want stable tool positions 4 and 5", droppedEvents)
 	}
 }
 
@@ -726,6 +742,98 @@ func TestOpenRouterModels(t *testing.T) {
 	raw, ok := models[0].Raw.(json.RawMessage)
 	if !ok || !bytes.Contains(raw, []byte(`"supported_parameters"`)) || !bytes.Contains(raw, []byte(`"modalities"`)) {
 		t.Fatalf("raw model payload = %T %s", models[0].Raw, raw)
+	}
+}
+
+func TestOpenRouterModelsMalformedRowIsProviderError(t *testing.T) {
+	p := newTestProvider(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		mustWrite(t, w, `{"data":[{"id":123}]}`)
+	})
+	_, err := p.Models(context.Background())
+	if !errors.Is(err, llm.ErrServer) {
+		t.Fatalf("Models error = %v, want ErrServer", err)
+	}
+	var providerErr *llm.ProviderError
+	if !errors.As(err, &providerErr) || providerErr.Provider != providerName {
+		t.Fatalf("Models error = %T %v, want OpenRouter ProviderError", err, err)
+	}
+}
+
+func TestOpenRouterAmbientAuthorizationBoundary(t *testing.T) {
+	t.Setenv(apiKeyEnv, "environment-secret")
+	t.Setenv("OPENAI_CUSTOM_HEADERS", "Authorization: Bearer ambient-secret\nX-Ambient-Safe: retained")
+	var headers []http.Header
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		headers = append(headers, r.Header.Clone())
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/models":
+			mustWrite(t, w, `{"data":[{"id":"openai/gpt-test"}]}`)
+		case r.Header.Get("Accept") == "text/event-stream":
+			w.Header().Set("Content-Type", "text/event-stream")
+			mustWrite(t, w, `data: {"id":"gen_1","model":"openai/gpt-test","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}`+"\n\n")
+			mustWrite(t, w, "data: [DONE]\n\n")
+		default:
+			mustWrite(t, w, `{"id":"gen_1","model":"openai/gpt-test","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+		}
+	}
+	client := &http.Client{Transport: testutil.RoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		recorder := &responseRecorder{header: http.Header{}, status: http.StatusOK}
+		handler(recorder, req)
+		return recorder.response(req), nil
+	})}
+	p, err := New(
+		WithBaseURL("https://openrouter.test"),
+		WithHTTPClient(client),
+		WithMaxRetries(0),
+	)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	// Authentication is resolved at construction; later environment changes
+	// cannot redirect requests to a different ambient credential.
+	t.Setenv(apiKeyEnv, "changed-environment-secret")
+	req := &llm.Request{Model: "openai/gpt-test", Messages: []llm.Message{llm.UserText("hi")}}
+	if _, err := p.Chat(context.Background(), req); err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+	if _, err := llm.Collect(p.ChatStream(context.Background(), req)); err != nil {
+		t.Fatalf("ChatStream returned error: %v", err)
+	}
+	if _, err := p.Models(context.Background()); err != nil {
+		t.Fatalf("Models returned error: %v", err)
+	}
+	if len(headers) != 3 {
+		t.Fatalf("requests = %d, want 3", len(headers))
+	}
+	for i, header := range headers {
+		if got := header.Get("Authorization"); got != "Bearer environment-secret" {
+			t.Fatalf("request %d Authorization = %q", i, got)
+		}
+		if got := header.Get("X-Ambient-Safe"); got != "retained" {
+			t.Fatalf("request %d X-Ambient-Safe = %q", i, got)
+		}
+	}
+}
+
+func TestOpenRouterExplicitEmptyAPIKeyDisablesEnvironmentFallback(t *testing.T) {
+	t.Setenv(apiKeyEnv, "environment-secret")
+	requests := 0
+	client := &http.Client{Transport: testutil.RoundTripFunc(func(*http.Request) (*http.Response, error) {
+		requests++
+		return nil, errors.New("unexpected request")
+	})}
+	_, err := New(
+		WithAPIKey(""),
+		WithBaseURL("https://proxy.example.test"),
+		WithHTTPClient(client),
+	)
+	if !errors.Is(err, llm.ErrAuth) {
+		t.Fatalf("New error = %v, want ErrAuth", err)
+	}
+	if requests != 0 {
+		t.Fatalf("requests = %d, want 0", requests)
 	}
 }
 

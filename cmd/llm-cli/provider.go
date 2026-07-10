@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"strings"
 
 	llm "github.com/pkieltyka/go-llm"
 	"github.com/pkieltyka/go-llm/providers/anthropic"
@@ -15,6 +18,9 @@ import (
 )
 
 func newProvider(_ context.Context, cfg providerConfig) (llm.Provider, error) {
+	if cfg.authFile != "" && cfg.name != "openai-codex" {
+		return nil, fmt.Errorf("%w: --auth-file is only supported for openai-codex", llm.ErrBadRequest)
+	}
 	switch cfg.name {
 	case "anthropic":
 		opts := []anthropic.Option{}
@@ -47,8 +53,11 @@ func newProvider(_ context.Context, cfg providerConfig) (llm.Provider, error) {
 		}
 		return openai.New(opts...)
 	case "openai-codex":
-		cred := llm.AuthCredential{Type: "oauth", Access: cfg.apiKey}
-		opts := []openaicodex.Option{openaicodex.WithOAuth(cred, nil)}
+		cred, persist, err := resolveCodexAuth(cfg)
+		if err != nil {
+			return nil, err
+		}
+		opts := []openaicodex.Option{openaicodex.WithOAuth(cred, persist)}
 		if cfg.baseURL != "" {
 			opts = append(opts, openaicodex.WithBaseURL(cfg.baseURL))
 		}
@@ -96,22 +105,150 @@ func debugLogger(cfg providerConfig) *slog.Logger {
 
 func providerConfigFromChat(cfg chatConfig, stderr io.Writer) providerConfig {
 	return providerConfig{
-		name:    cfg.provider,
-		apiKey:  cfg.apiKey,
-		baseURL: cfg.baseURL,
-		timeout: cfg.timeout,
-		debug:   cfg.debug,
-		stderr:  stderr,
+		name:     cfg.provider,
+		apiKey:   cfg.apiKey,
+		authFile: cfg.authFile,
+		baseURL:  cfg.baseURL,
+		timeout:  cfg.timeout,
+		debug:    cfg.debug,
+		stderr:   stderr,
 	}
 }
 
 func providerConfigFromModels(cfg modelsConfig, stderr io.Writer) providerConfig {
 	return providerConfig{
-		name:    cfg.provider,
-		apiKey:  cfg.apiKey,
-		baseURL: cfg.baseURL,
-		timeout: cfg.timeout,
-		debug:   cfg.debug,
-		stderr:  stderr,
+		name:     cfg.provider,
+		apiKey:   cfg.apiKey,
+		authFile: cfg.authFile,
+		baseURL:  cfg.baseURL,
+		timeout:  cfg.timeout,
+		debug:    cfg.debug,
+		stderr:   stderr,
 	}
+}
+
+func resolveCodexAuth(cfg providerConfig) (llm.AuthCredential, llm.OAuthPersistenceFunc, error) {
+	if cfg.authFile != "" {
+		auth, err := llm.LoadAuthFile(cfg.authFile)
+		if err != nil {
+			return llm.AuthCredential{}, nil, fmt.Errorf("load auth file: %w", err)
+		}
+		cred, ok := auth["openai-codex"]
+		if !ok {
+			return llm.AuthCredential{}, nil, fmt.Errorf("%w: auth file has no openai-codex credential", llm.ErrAuth)
+		}
+		return cred, codexAuthFilePersistence(cfg.authFile), nil
+	}
+	if access := strings.TrimSpace(os.Getenv("OPENAI_CODEX_ACCESS_TOKEN")); access != "" {
+		return llm.AuthCredential{Type: "oauth", Access: access}, nil, nil
+	}
+	return llm.AuthCredential{Type: "oauth", Access: cfg.apiKey}, nil, nil
+}
+
+func codexAuthFilePersistence(path string) llm.OAuthPersistenceFunc {
+	return func(ctx context.Context, cred llm.AuthCredential) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		var root map[string]json.RawMessage
+		if err := json.Unmarshal(data, &root); err != nil {
+			return err
+		}
+		providers := root
+		wrapped := false
+		if raw, ok := root["providers"]; ok {
+			wrapped = true
+			if err := json.Unmarshal(raw, &providers); err != nil {
+				return fmt.Errorf("parse auth providers: %w", err)
+			}
+		}
+		encoded, err := json.Marshal(authCredentialJSON(cred))
+		if err != nil {
+			return err
+		}
+		providers["openai-codex"] = encoded
+		if wrapped {
+			encoded, err = json.Marshal(providers)
+			if err != nil {
+				return err
+			}
+			root["providers"] = encoded
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		data, err = json.MarshalIndent(root, "", "  ")
+		if err != nil {
+			return err
+		}
+		data = append(data, '\n')
+		return writeAuthFileAtomic(ctx, path, data)
+	}
+}
+
+type authCredentialJSON llm.AuthCredential
+
+func (c authCredentialJSON) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Type      string `json:"type,omitempty"`
+		Key       string `json:"key,omitempty"`
+		Access    string `json:"access,omitempty"`
+		Refresh   string `json:"refresh,omitempty"`
+		Expires   int64  `json:"expires,omitempty"`
+		AccountID string `json:"accountId,omitempty"`
+		Model     string `json:"model,omitempty"`
+		BaseURL   string `json:"base_url,omitempty"`
+	}{c.Type, c.Key, c.Access, c.Refresh, c.Expires, c.AccountID, c.Model, c.BaseURL})
+}
+
+func writeAuthFileAtomic(ctx context.Context, path string, data []byte) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".llm-auth-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	mode := info.Mode().Perm() & 0o600
+	if mode == 0 {
+		mode = 0o600
+	}
+	if err := tmp.Chmod(mode); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }

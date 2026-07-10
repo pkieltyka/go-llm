@@ -224,8 +224,115 @@ func TestValidateProviderOptions(t *testing.T) {
 	}
 }
 
+func TestValidateProviderOptionsRejectsTypedNilBeforeMethodCall(t *testing.T) {
+	var pointer *nilPointerProviderOptions
+	var channel nilChanProviderOptions
+	var function nilFuncProviderOptions
+	var mapping nilMapProviderOptions
+	var slice nilSliceProviderOptions
+
+	tests := []struct {
+		name    string
+		options ProviderOptions
+	}{
+		{name: "chan", options: channel},
+		{name: "func", options: function},
+		{name: "map", options: mapping},
+		{name: "pointer", options: pointer},
+		{name: "slice", options: slice},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateProviderOptions("openai", &Request{ProviderOptions: tt.options})
+			if !errors.Is(err, ErrBadRequest) {
+				t.Fatalf("error = %v, want ErrBadRequest", err)
+			}
+		})
+	}
+}
+
+func TestValidateProviderOptionsCallsForProviderOnce(t *testing.T) {
+	options := &countingProviderOptions{provider: "anthropic"}
+	err := ValidateProviderOptions("openai", &Request{ProviderOptions: options})
+	if !errors.Is(err, ErrBadRequest) {
+		t.Fatalf("error = %v, want ErrBadRequest", err)
+	}
+	if options.calls != 1 {
+		t.Fatalf("ForProvider calls = %d, want 1", options.calls)
+	}
+}
+
+func TestValidateRequestRejectsInvalidNumericAndToolPreflight(t *testing.T) {
+	base := func() *Request {
+		return &Request{
+			Model:    "model-a",
+			Messages: []Message{UserText("hello")},
+			Tools:    []Tool{{Name: "lookup"}},
+		}
+	}
+	caps := []Capability{CapabilityTools, CapabilityToolChoiceRequired}
+
+	tests := []struct {
+		name string
+		req  *Request
+	}{
+		{name: "negative max tokens", req: func() *Request {
+			req := base()
+			req.MaxTokens = -1
+			return req
+		}()},
+		{name: "duplicate tool names", req: func() *Request {
+			req := base()
+			req.Tools = append(req.Tools, Tool{Name: "lookup"})
+			return req
+		}()},
+		{name: "forced undeclared tool", req: func() *Request {
+			req := base()
+			req.ToolChoice = ToolChoice{Mode: ToolChoiceTool, Name: "missing"}
+			return req
+		}()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := ValidateRequest(caps, tt.req); !errors.Is(err, ErrBadRequest) {
+				t.Fatalf("error = %v, want ErrBadRequest", err)
+			}
+		})
+	}
+}
+
 type testProviderOptions string
 
 func (o testProviderOptions) ForProvider() string {
 	return string(o)
+}
+
+type nilPointerProviderOptions struct{}
+
+func (*nilPointerProviderOptions) ForProvider() string { panic("ForProvider called on typed nil") }
+
+type nilChanProviderOptions chan struct{}
+
+func (nilChanProviderOptions) ForProvider() string { panic("ForProvider called on typed nil") }
+
+type nilFuncProviderOptions func()
+
+func (nilFuncProviderOptions) ForProvider() string { panic("ForProvider called on typed nil") }
+
+type nilMapProviderOptions map[string]string
+
+func (nilMapProviderOptions) ForProvider() string { panic("ForProvider called on typed nil") }
+
+type nilSliceProviderOptions []string
+
+func (nilSliceProviderOptions) ForProvider() string { panic("ForProvider called on typed nil") }
+
+type countingProviderOptions struct {
+	provider string
+	calls    int
+}
+
+func (o *countingProviderOptions) ForProvider() string {
+	o.calls++
+	return o.provider
 }

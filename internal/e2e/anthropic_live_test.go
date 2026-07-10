@@ -25,6 +25,7 @@ const (
 )
 
 var record = flag.Bool("record", false, "record redacted live provider fixtures")
+var recordAllowIncomplete = flag.Bool("record-allow-incomplete", false, "acknowledge replacement with an intentionally partial recording")
 
 func TestLiveAnthropic(t *testing.T) {
 	root, err := RepoRoot(".")
@@ -36,36 +37,29 @@ func TestLiveAnthropic(t *testing.T) {
 		t.Fatalf("LoadConfig returned error: %v", err)
 	}
 	providerCfg := cfg.Provider("anthropic", "ANTHROPIC_API_KEY")
-	if providerCfg.Auth.Type == "oauth" {
-		if providerCfg.Auth.Access == "" {
-			t.Skip("Anthropic OAuth credential missing access token in gollm-test.json")
-		}
-	} else if providerCfg.Auth.Key == "" {
-		t.Skip("Anthropic API key missing from gollm-test.json and ANTHROPIC_API_KEY")
-	}
+	requireLiveProviderConfig(t, "anthropic", providerCfg)
 	model := providerCfg.Model
 	if model == "" {
 		model = anthropicCheapModel
 	}
-	// Honor an explicit model override for the reasoning scenarios too;
-	// otherwise use the pinned reasoning-capable model.
-	reasoningModel := providerCfg.Model
-	if reasoningModel == "" {
-		reasoningModel = anthropicReasoningModel
-	}
+	reasoningModel := anthropicLiveReasoningModel(providerCfg)
 
-	var captures []llm.WireCapture
+	captures := &CaptureLog{}
+	secrets := NewSecretSet(providerCfg.Auth.Key, providerCfg.Auth.Access, providerCfg.Auth.Refresh, providerCfg.Auth.AccountID, os.Getenv("ANTHROPIC_API_KEY"))
+	var scenarioReport ScenarioReport
+	if *record {
+		path := filepath.Join(root, "internal", "e2e", "fixtures", "anthropic", "live.json")
+		ScheduleFixtureRecording(t, path, captures, secrets, &scenarioReport, *recordAllowIncomplete)
+	}
 	opts := []anthropic.Option{
 		anthropic.WithMaxRetries(0),
-		anthropic.WithWireCapture(func(c llm.WireCapture) {
-			captures = append(captures, c)
-		}),
+		anthropic.WithWireCapture(captures.Capture),
 	}
 	if providerCfg.Auth.Type == "oauth" {
 		// Persist rotated refresh tokens back to gollm-test.json — dropping
 		// them strands the stored credential after the provider refreshes.
-		onRefresh := PersistOnRefresh(filepath.Join(root, "gollm-test.json"), "anthropic", t.Logf)
-		opts = append(opts, anthropic.WithOAuth(providerCfg.Auth, onRefresh))
+		persist := AuthFilePersistence(filepath.Join(root, "gollm-test.json"), "anthropic", t.Logf, secrets)
+		opts = append(opts, anthropic.WithOAuth(providerCfg.Auth, persist))
 	} else {
 		opts = append(opts, anthropic.WithAPIKey(providerCfg.Auth.Key))
 	}
@@ -76,39 +70,37 @@ func TestLiveAnthropic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("anthropic.New returned error: %v", err)
 	}
-	if *record {
-		t.Cleanup(func() {
-			path := filepath.Join(root, "internal", "e2e", "fixtures", "anthropic", "live.json")
-			if err := WriteFixture(path, captures, providerCfg.Auth.Key, providerCfg.Auth.Access, providerCfg.Auth.Refresh, providerCfg.Auth.AccountID, os.Getenv("ANTHROPIC_API_KEY")); err != nil {
-				t.Fatalf("WriteFixture returned error: %v", err)
-			}
-		})
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
-	RunScenarios(ctx, t, p, model, []Scenario{
-		{Name: "chat", Run: liveChatScenario},
-		{Name: "stream", Capability: llm.CapabilityStreaming, Run: liveStreamScenario},
-		{Name: "models", Capability: llm.CapabilityModelsListing, Run: liveModelsScenario},
-		{Name: "tools", Capability: llm.CapabilityTools, Run: liveToolsScenario},
-		{Name: "tools_stream", Capability: llm.CapabilityToolStreaming, Run: liveToolsStreamScenario},
-		{Name: "parallel_tools", Capability: llm.CapabilityParallelTools, Run: liveParallelToolsScenario},
-		{Name: "parse", Capability: llm.CapabilityJSONSchema, Run: liveParseScenario},
-		{Name: "reasoning", Capability: llm.CapabilityReasoning, Run: func(ctx context.Context, t *testing.T, p llm.Provider, _ string) {
-			liveReasoningScenario(ctx, t, p, reasoningModel)
-		}},
-		{Name: "reasoning_replay", Capability: llm.CapabilityReasoning, Run: func(ctx context.Context, t *testing.T, p llm.Provider, _ string) {
-			liveReasoningReplayScenario(ctx, t, p, reasoningModel)
-		}},
-		{Name: "multimodal", Capability: llm.CapabilityImageInput, Run: liveMultimodalScenario},
-		{Name: "prompt_cache", Capability: llm.CapabilityPromptCaching, Run: livePromptCacheScenario},
-		{Name: "usage", Run: liveUsageScenario},
-		{Name: "error_mapping", Run: func(ctx context.Context, t *testing.T, p llm.Provider, model string) {
-			liveErrorMappingScenario(ctx, t, p, model, providerCfg.BaseURL)
-		}},
-		{Name: "cross_provider_handoff", Capability: llm.CapabilityTools, Run: liveCrossProviderHandoffScenario},
-	})
+	ctx = RecordingContext(ctx, captures, secrets)
+	runners := anthropicLiveScenarioRunners(reasoningModel, providerCfg.BaseURL)
+	scenarioReport = RunCapabilityScenarios(ctx, t, "anthropic", p, model, runners)
+}
+
+func anthropicLiveReasoningModel(cfg ProviderConfig) string {
+	// The ordinary model override may intentionally select a cheap model that
+	// accepts adaptive-thinking fields but emits no reasoning. Keep the
+	// standard Anthropic gate pinned to a reasoning model. Custom endpoints
+	// still need their configured deployment name.
+	if cfg.BaseURL != "" && cfg.Model != "" {
+		return cfg.Model
+	}
+	return anthropicReasoningModel
+}
+
+func anthropicLiveScenarioRunners(reasoningModel, baseURL string) map[string]ScenarioRun {
+	runners := commonLiveScenarioRunners()
+	runners["reasoning"] = func(ctx context.Context, t *testing.T, p llm.Provider, _ string) {
+		liveReasoningScenario(ctx, t, p, reasoningModel)
+	}
+	runners["reasoning_replay"] = func(ctx context.Context, t *testing.T, p llm.Provider, _ string) {
+		liveReasoningReplayScenario(ctx, t, p, reasoningModel)
+	}
+	runners["prompt_cache"] = livePromptCacheScenario
+	runners["error_mapping"] = func(ctx context.Context, t *testing.T, p llm.Provider, model string) {
+		liveErrorMappingScenario(ctx, t, p, model, baseURL)
+	}
+	return runners
 }
 
 func liveChatScenario(ctx context.Context, t *testing.T, p llm.Provider, model string) {
@@ -123,6 +115,9 @@ func liveChatScenario(ctx context.Context, t *testing.T, p llm.Provider, model s
 	if err != nil {
 		t.Fatalf("Chat returned error: %v", err)
 	}
+	if resp.Provider != p.Name() {
+		t.Fatalf("Chat response provider = %q, want %q", resp.Provider, p.Name())
+	}
 	if !strings.Contains(strings.ToLower(resp.Text()), "pong") {
 		t.Fatalf("Chat text = %q, want pong", resp.Text())
 	}
@@ -134,7 +129,7 @@ func liveChatScenario(ctx context.Context, t *testing.T, p llm.Provider, model s
 func liveStreamScenario(ctx context.Context, t *testing.T, p llm.Provider, model string) {
 	t.Helper()
 	temperature := 0.0
-	resp, err := llm.Collect(p.ChatStream(ctx, &llm.Request{
+	resp, err := CollectLiveStream(p.Name(), p.ChatStream(ctx, &llm.Request{
 		Model:       model,
 		MaxTokens:   8,
 		Temperature: &temperature,
@@ -160,12 +155,13 @@ func liveModelsScenario(ctx context.Context, t *testing.T, p llm.Provider, model
 	if len(models) == 0 {
 		t.Fatalf("Models returned empty list")
 	}
-	for _, info := range models {
-		if info.ID == model {
-			return
+	if resolved, ok := resolveListedModel(p.Name(), model, models); ok {
+		if resolved.ID != model {
+			t.Logf("resolved configured model %q to listed model %q (canonical %q)", model, resolved.ID, resolved.CanonicalID)
 		}
+		return
 	}
-	t.Logf("model %q was not present in listing of %d models; provider override may be an alias", model, len(models))
+	t.Fatalf("model %q was not present by ID, alias, or canonical ID in listing of %d models", model, len(models))
 }
 
 func liveToolsScenario(ctx context.Context, t *testing.T, p llm.Provider, model string) {
@@ -234,7 +230,7 @@ func liveToolsScenario(ctx context.Context, t *testing.T, p llm.Provider, model 
 func liveToolsStreamScenario(ctx context.Context, t *testing.T, p llm.Provider, model string) {
 	t.Helper()
 	temperature := 0.0
-	resp, err := llm.Collect(p.ChatStream(ctx, &llm.Request{
+	resp, err := CollectLiveStream(p.Name(), p.ChatStream(ctx, &llm.Request{
 		Model:       model,
 		MaxTokens:   64,
 		Temperature: &temperature,
@@ -387,11 +383,11 @@ func liveReasoningReplayScenario(ctx context.Context, t *testing.T, p llm.Provid
 func liveReasoningResponse(ctx context.Context, t *testing.T, p llm.Provider, model string) *llm.Response {
 	t.Helper()
 	temperature := 1.0
-	resp, err := llm.Collect(p.ChatStream(ctx, &llm.Request{
+	resp, err := CollectLiveStream(p.Name(), p.ChatStream(ctx, &llm.Request{
 		Model:       model,
-		MaxTokens:   768,
+		MaxTokens:   4096,
 		Temperature: &temperature,
-		Effort:      llm.EffortHigh,
+		Effort:      llm.EffortMax,
 		Messages:    []llm.Message{llm.UserText(anthropicReasoningPrompt)},
 	}))
 	if err != nil {
@@ -445,28 +441,19 @@ func livePromptCacheScenario(ctx context.Context, t *testing.T, p llm.Provider, 
 		Temperature: &temperature,
 		Messages:    []llm.Message{llm.UserText("Answer exactly: cached")},
 	}
-	first, err := p.Chat(ctx, req)
+	first, second, err := probePromptCache(ctx, p.Name(), defaultPromptCacheProbePolicy(), func(ctx context.Context) (*llm.Response, error) {
+		return p.Chat(ctx, req)
+	})
 	if err != nil {
-		t.Fatalf("prompt cache first Chat returned error: %v", err)
+		t.Fatalf("prompt cache evidence failed: %v (first=%+v last=%+v)", err, responseUsage(first), responseUsage(second))
 	}
-	var second *llm.Response
-	for attempt := range 3 {
-		if attempt > 0 {
-			select {
-			case <-ctx.Done():
-				t.Fatalf("prompt cache retry context done: %v", ctx.Err())
-			case <-time.After(time.Duration(attempt) * time.Second):
-			}
-		}
-		second, err = p.Chat(ctx, req)
-		if err != nil {
-			t.Fatalf("prompt cache second Chat returned error: %v", err)
-		}
-		if second.Usage.CacheReadTokens > 0 {
-			return
-		}
+}
+
+func responseUsage(response *llm.Response) llm.Usage {
+	if response == nil {
+		return llm.Usage{}
 	}
-	t.Fatalf("prompt cache second call never read cache: first=%+v second=%+v", first.Usage, second.Usage)
+	return response.Usage
 }
 
 func liveUsageScenario(ctx context.Context, t *testing.T, p llm.Provider, model string) {

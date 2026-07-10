@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"iter"
+	"math/big"
 	"strings"
 	"sync"
 	"time"
@@ -45,12 +46,9 @@ func ContextWithTimeout(ctx context.Context, timeout time.Duration) (context.Con
 	return context.WithTimeout(ctx, timeout)
 }
 
-// OptionsOf extracts a provider's typed request options from
-// req.ProviderOptions, accepting both the value and pointer form. Options
-// belonging to a different provider are ignored (ok=false, nil error) so a
-// request built for one provider can be routed to another; a value that
-// claims this provider's name but has an unexpected concrete type is an
-// ErrBadRequest.
+// OptionsOf extracts typed request options after ValidateProviderOptions has
+// established the provider identity. It accepts both value and pointer forms
+// and deliberately does not call ForProvider again.
 func OptionsOf[T llm.ProviderOptions](req *llm.Request) (T, bool, error) {
 	var zero T
 	if req == nil || req.ProviderOptions == nil {
@@ -67,10 +65,7 @@ func OptionsOf[T llm.ProviderOptions](req *llm.Request) (T, bool, error) {
 		}
 		return *options, true, nil
 	}
-	if req.ProviderOptions.ForProvider() == zero.ForProvider() {
-		return zero, false, fmt.Errorf("%w: provider options for %q are %T, want %T", llm.ErrBadRequest, zero.ForProvider(), req.ProviderOptions, zero)
-	}
-	return zero, false, nil
+	return zero, false, fmt.Errorf("%w: provider options are %T, want %T", llm.ErrBadRequest, req.ProviderOptions, zero)
 }
 
 // UniqueSyntheticToolCallID mints a deterministic synthetic tool-call ID
@@ -102,6 +97,143 @@ func SchemaAsMap(value any) (map[string]any, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+// JSONEqual reports whether two valid JSON documents represent the same
+// structured value. Object key order and insignificant number formatting are
+// ignored; numbers are compared exactly, without conversion through float64.
+func JSONEqual(left, right []byte) bool {
+	if !json.Valid(left) || !json.Valid(right) {
+		return false
+	}
+	if bytes.Equal(left, right) {
+		return true
+	}
+	decode := func(raw []byte) any {
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.UseNumber()
+		var value any
+		if err := dec.Decode(&value); err != nil {
+			return nil
+		}
+		return value
+	}
+	return jsonValueEqual(decode(left), decode(right))
+}
+
+func jsonValueEqual(left, right any) bool {
+	switch left := left.(type) {
+	case nil:
+		return right == nil
+	case bool:
+		right, ok := right.(bool)
+		return ok && left == right
+	case string:
+		right, ok := right.(string)
+		return ok && left == right
+	case json.Number:
+		right, ok := right.(json.Number)
+		if !ok {
+			return false
+		}
+		leftCanonical, leftOK := canonicalJSONNumber(left.String())
+		rightCanonical, rightOK := canonicalJSONNumber(right.String())
+		return leftOK && rightOK && leftCanonical.equal(rightCanonical)
+	case []any:
+		right, ok := right.([]any)
+		if !ok || len(left) != len(right) {
+			return false
+		}
+		for index := range left {
+			if !jsonValueEqual(left[index], right[index]) {
+				return false
+			}
+		}
+		return true
+	case map[string]any:
+		right, ok := right.(map[string]any)
+		if !ok || len(left) != len(right) {
+			return false
+		}
+		for key, leftValue := range left {
+			rightValue, ok := right[key]
+			if !ok || !jsonValueEqual(leftValue, rightValue) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+type normalizedJSONNumber struct {
+	negative    bool
+	coefficient string
+	exponent    big.Int
+}
+
+func canonicalJSONNumber(value string) (normalizedJSONNumber, bool) {
+	var normalized normalizedJSONNumber
+	if value == "" {
+		return normalized, false
+	}
+	if value[0] == '-' {
+		normalized.negative = true
+		value = value[1:]
+		if value == "" {
+			return normalizedJSONNumber{}, false
+		}
+	}
+
+	mantissa := value
+	exponentText := "0"
+	if index := strings.IndexAny(value, "eE"); index >= 0 {
+		mantissa = value[:index]
+		exponentText = value[index+1:]
+		if mantissa == "" || exponentText == "" {
+			return normalizedJSONNumber{}, false
+		}
+	}
+	if _, ok := normalized.exponent.SetString(exponentText, 10); !ok {
+		return normalizedJSONNumber{}, false
+	}
+
+	integer, fraction := mantissa, ""
+	if index := strings.IndexByte(mantissa, '.'); index >= 0 {
+		integer, fraction = mantissa[:index], mantissa[index+1:]
+		if integer == "" || fraction == "" || strings.IndexByte(fraction, '.') >= 0 {
+			return normalizedJSONNumber{}, false
+		}
+	}
+	digits := integer + fraction
+	if digits == "" {
+		return normalizedJSONNumber{}, false
+	}
+	for _, digit := range digits {
+		if digit < '0' || digit > '9' {
+			return normalizedJSONNumber{}, false
+		}
+	}
+	digits = strings.TrimLeft(digits, "0")
+	if digits == "" {
+		normalized.negative = false
+		normalized.coefficient = "0"
+		normalized.exponent.SetInt64(0)
+		return normalized, true
+	}
+
+	normalized.exponent.Sub(&normalized.exponent, big.NewInt(int64(len(fraction))))
+	trimmed := strings.TrimRight(digits, "0")
+	normalized.exponent.Add(&normalized.exponent, big.NewInt(int64(len(digits)-len(trimmed))))
+	normalized.coefficient = trimmed
+	return normalized, true
+}
+
+func (n normalizedJSONNumber) equal(other normalizedJSONNumber) bool {
+	return n.negative == other.negative &&
+		n.coefficient == other.coefficient &&
+		n.exponent.Cmp(&other.exponent) == 0
 }
 
 // ToolResultText flattens text-only tool-result content into a single

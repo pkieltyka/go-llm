@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,7 +20,7 @@ import (
 // read, so table rows exercise exactly the configured resolution path.
 func clearProviderEnv(t *testing.T) {
 	t.Helper()
-	for _, key := range []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"} {
+	for _, key := range []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENAI_CODEX_ACCESS_TOKEN", "OPENROUTER_API_KEY"} {
 		t.Setenv(key, "")
 	}
 }
@@ -45,7 +48,8 @@ func TestNewProviderSelectionAndCredentials(t *testing.T) {
 		{name: "openrouter missing key", cfg: providerConfig{name: "openrouter"}, wantErr: llm.ErrAuth},
 		// The --api-key flag doubles as the OAuth access token for the codex
 		// subscription backend (flags.go documents the overload).
-		{name: "codex api key as access token", cfg: providerConfig{name: "openai-codex", apiKey: "oauth-access-token"}, wantName: "openai-codex"},
+		{name: "codex api key compatibility access token", cfg: providerConfig{name: "openai-codex", apiKey: "oauth-access-token"}, wantName: "openai-codex"},
+		{name: "codex env access token", cfg: providerConfig{name: "openai-codex"}, env: map[string]string{"OPENAI_CODEX_ACCESS_TOKEN": "env-access-token"}, wantName: "openai-codex"},
 		{name: "codex missing credential", cfg: providerConfig{name: "openai-codex"}, wantErr: llm.ErrAuth},
 		{name: "zai deferred", cfg: providerConfig{name: "zai", apiKey: "key"}, wantErr: llm.ErrUnsupported},
 		{name: "missing provider", cfg: providerConfig{}, wantErr: llm.ErrBadRequest},
@@ -100,9 +104,7 @@ func TestNewProviderOptionWiring(t *testing.T) {
 }
 
 // TestNewProviderFromAuthFile drives the documented auth-file workflow with
-// a fake temp credential file: parse a pi-compatible auth file with
-// llm.LoadAuthFile, feed the openai-codex OAuth access token through the
-// --api-key overload, and feed an API-key credential to a key provider.
+// a fake pi-compatible OAuth credential file.
 func TestNewProviderFromAuthFile(t *testing.T) {
 	clearProviderEnv(t)
 	path := filepath.Join(t.TempDir(), "auth.json")
@@ -125,7 +127,7 @@ func TestNewProviderFromAuthFile(t *testing.T) {
 	if !ok || codexCred.Access != "fake-access-token" || codexCred.Refresh != "fake-refresh-token" || codexCred.AccountID != "acct_1" {
 		t.Fatalf("codex credential = %+v", codexCred)
 	}
-	p, err := newProvider(context.Background(), providerConfig{name: "openai-codex", apiKey: codexCred.Access})
+	p, err := newProvider(context.Background(), providerConfig{name: "openai-codex", authFile: path})
 	if err != nil {
 		t.Fatalf("newProvider(openai-codex) returned error: %v", err)
 	}
@@ -143,6 +145,116 @@ func TestNewProviderFromAuthFile(t *testing.T) {
 	}
 	if p.Name() != "openrouter" {
 		t.Fatalf("provider name = %q", p.Name())
+	}
+}
+
+func TestCodexAuthPrecedenceConfiguresRequests(t *testing.T) {
+	clearProviderEnv(t)
+	authPath := filepath.Join(t.TempDir(), "auth.json")
+	if err := os.WriteFile(authPath, []byte(`{"providers":{"openai-codex":{"type":"oauth","access":"file-token","accountId":"file-account"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name        string
+		authFile    string
+		envToken    string
+		apiKey      string
+		wantToken   string
+		wantAccount string
+	}{
+		{name: "auth file wins", authFile: authPath, envToken: "env-token", apiKey: "argv-token", wantToken: "file-token", wantAccount: "file-account"},
+		{name: "environment wins", envToken: "env-token", apiKey: "argv-token", wantToken: "env-token"},
+		{name: "api key compatibility fallback", apiKey: "argv-token", wantToken: "argv-token"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearProviderEnv(t)
+			t.Setenv("OPENAI_CODEX_ACCESS_TOKEN", tt.envToken)
+			var gotToken, gotAccount string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotToken = r.Header.Get("Authorization")
+				gotAccount = r.Header.Get("chatgpt-account-id")
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-5.4-mini\",\"status\":\"in_progress\",\"output\":[]}}\n\n")
+				_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-5.4-mini\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0,\"total_tokens\":1}}}\n\n")
+			}))
+			defer server.Close()
+
+			p, err := newProvider(context.Background(), providerConfig{
+				name:     "openai-codex",
+				authFile: tt.authFile,
+				apiKey:   tt.apiKey,
+				baseURL:  server.URL,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = llm.Collect(p.ChatStream(context.Background(), &llm.Request{
+				Model:    "gpt-5.4-mini",
+				Messages: []llm.Message{llm.UserText("test")},
+			}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if gotToken != "Bearer "+tt.wantToken {
+				t.Fatalf("Authorization = %q, want Bearer %s", gotToken, tt.wantToken)
+			}
+			if gotAccount != tt.wantAccount {
+				t.Fatalf("chatgpt-account-id = %q, want %q", gotAccount, tt.wantAccount)
+			}
+		})
+	}
+}
+
+func TestCodexAuthFileIsOnlyLoadedWhenExplicit(t *testing.T) {
+	clearProviderEnv(t)
+	t.Setenv("OPENAI_CODEX_ACCESS_TOKEN", "env-token")
+	missing := filepath.Join(t.TempDir(), "missing.json")
+	if _, err := newProvider(context.Background(), providerConfig{name: "openai-codex", authFile: missing}); err == nil || !strings.Contains(err.Error(), "load auth file") {
+		t.Fatalf("explicit missing auth file error = %v", err)
+	}
+	if _, err := newProvider(context.Background(), providerConfig{name: "openai-codex"}); err != nil {
+		t.Fatalf("environment auth unexpectedly loaded a file: %v", err)
+	}
+}
+
+func TestAuthFileRejectedForOtherProviders(t *testing.T) {
+	_, err := newProvider(context.Background(), providerConfig{name: "openai", apiKey: "key", authFile: "/tmp/auth.json"})
+	if !errors.Is(err, llm.ErrBadRequest) || !strings.Contains(err.Error(), "only supported for openai-codex") {
+		t.Fatalf("err = %v, want scoped auth-file error", err)
+	}
+}
+
+func TestCodexAuthFilePersistencePreservesOAuthFormat(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auth.json")
+	if err := os.WriteFile(path, []byte(`{"meta":{"keep":true},"providers":{"openai-codex":{"type":"oauth","access":"old","refresh":"old-refresh"},"openrouter":{"type":"api","key":"router-key"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, persist, err := resolveCodexAuth(providerConfig{authFile: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := llm.AuthCredential{Type: "oauth", Access: "new", Refresh: "new-refresh", Expires: 123, AccountID: "acct"}
+	if err := persist(context.Background(), want); err != nil {
+		t.Fatal(err)
+	}
+	auth, err := llm.LoadAuthFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := auth["openai-codex"]; got != want {
+		t.Fatalf("persisted credential = %+v, want %+v", got, want)
+	}
+	if got := auth["openrouter"].Key; got != "router-key" {
+		t.Fatalf("unrelated credential key = %q", got)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(raw, []byte(`"accountId": "acct"`)) || bytes.Contains(raw, []byte(`"AccountID"`)) {
+		t.Fatalf("auth file is not pi-compatible JSON: %s", raw)
 	}
 }
 
@@ -167,16 +279,16 @@ func TestDebugLogger(t *testing.T) {
 
 func TestProviderConfigMapping(t *testing.T) {
 	var stderr bytes.Buffer
-	chat := chatConfig{provider: "anthropic", apiKey: "k", baseURL: "https://b", timeout: 3 * time.Second, debug: true}
+	chat := chatConfig{provider: "anthropic", apiKey: "k", authFile: "/auth", baseURL: "https://b", timeout: 3 * time.Second, debug: true}
 	got := providerConfigFromChat(chat, &stderr)
-	want := providerConfig{name: "anthropic", apiKey: "k", baseURL: "https://b", timeout: 3 * time.Second, debug: true, stderr: &stderr}
+	want := providerConfig{name: "anthropic", apiKey: "k", authFile: "/auth", baseURL: "https://b", timeout: 3 * time.Second, debug: true, stderr: &stderr}
 	if got != want {
 		t.Fatalf("providerConfigFromChat = %+v, want %+v", got, want)
 	}
 
-	models := modelsConfig{provider: "openrouter", apiKey: "k2", baseURL: "https://m", timeout: time.Second, debug: false}
+	models := modelsConfig{provider: "openrouter", apiKey: "k2", authFile: "/models-auth", baseURL: "https://m", timeout: time.Second, debug: false}
 	gotModels := providerConfigFromModels(models, &stderr)
-	wantModels := providerConfig{name: "openrouter", apiKey: "k2", baseURL: "https://m", timeout: time.Second, stderr: &stderr}
+	wantModels := providerConfig{name: "openrouter", apiKey: "k2", authFile: "/models-auth", baseURL: "https://m", timeout: time.Second, stderr: &stderr}
 	if gotModels != wantModels {
 		t.Fatalf("providerConfigFromModels = %+v, want %+v", gotModels, wantModels)
 	}

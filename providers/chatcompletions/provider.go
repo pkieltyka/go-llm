@@ -95,7 +95,8 @@ func (p *Provider) ChatStream(ctx context.Context, req *llm.Request) iter.Seq2[l
 			yield(nil, err)
 			return
 		}
-		for event, err := range p.streamEvents(ctx, req, params) {
+		remote := providerutil.StreamContract(p.Name(), p.streamEvents(ctx, req, params))
+		for event, err := range remote {
 			if err != nil {
 				p.logFailure(ctx, req, start, err)
 				yield(nil, err)
@@ -201,7 +202,7 @@ func (p *Provider) DoJSONURL(ctx context.Context, method, url string, body any, 
 	if out == nil {
 		return nil
 	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	return providerutil.NormalizeRemoteError(p.Name(), json.NewDecoder(resp.Body).Decode(out))
 }
 
 func (p *Provider) logSuccess(ctx context.Context, resp *llm.Response, start time.Time) {

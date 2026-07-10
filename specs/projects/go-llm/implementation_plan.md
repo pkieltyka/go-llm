@@ -8,12 +8,14 @@ Ordered by dependency; each phase is one reviewable unit ending green
 (`go vet`, `golangci-lint`, `go test -race ./...`). Section references:
 FS = functional_spec.md, ARCH = architecture.md.
 
-> **Historical record.** Phase bullets reflect phase-time API names; several
+> **Historical, non-normative record.** Phase bullets reflect phase-time API names; several
 > were renamed or removed in the v0.2 cycle (`WithDebugCapture`→
 > `WithWireCapture`, `DebugToLogger`→`WireCaptureToLogger`, `TokenSource`
 > deleted, `ToolResultPart.Parts`→`Content`, generic `ParseOption[T]`→
-> `ParseOption` — see reviews/1-first-release-review.md and commit 09c85a2).
-> FS/ARCH are authoritative for current names.
+> `ParseOption` — see reviews/1-first-release-review.md and historical commit
+> identifier `09c85a2`, retained as provenance from before the history
+> rewrite and not expected to resolve in the current repository). FS/ARCH are
+> authoritative for current names and behavior.
 
 **Human checkpoints — credentials.** Provider phases (4–7) and the release
 phase (9) end with live e2e runs. Before
@@ -131,10 +133,11 @@ visibly and the phase still completes — never fail a phase on missing keys.
 - [x] **Phase 6: Subscription auth — Anthropic OAuth mode + `openai-codex` provider**
   - Core (`auth.go`): OAuth consumption per ARCH §3.4 — `TokenSource`
     (per-provider refresh, single-flight, goroutine-safe),
-    `WithOAuth(cred, onRefresh)` option pattern: bearer from
+    `WithOAuth(cred, persist)` option pattern: bearer from
     `AuthCredential{type: "oauth"}`, refresh before expiry + one
-    forced-refresh retry on 401, renewals → `onRefresh` (caller
-    persists; go-llm never writes credential files).
+    forced-refresh retry on 401, renewals → context-aware, error-returning
+    durable persistence callback (required when a refresh token is present;
+    go-llm never writes credential files).
   - `providers/anthropic` OAuth mode (ARCH §3.1, FS §17C): SDK auth-token
     option + `anthropic-beta: oauth-2025-04-20` header + Anthropic OAuth
     token-endpoint refresh (reference: pi `oauth/anthropic.ts`).
@@ -152,7 +155,7 @@ visibly and the phase still completes — never fail a phase on missing keys.
     deferred (`llm-cli auth login` candidate); credentials come from
     pi/claude/codex CLIs.
   - Tests: token-refresh state machine vs `httptest` (expiry, 401
-    retry-once, onRefresh persistence, single-flight under -race), codex
+    retry-once, durable persistence, single-flight under -race), codex
     request-build goldens (headers, account id), Responses fixtures
     reused from phase 5.
   - ⏸ **Checkpoint: ask the user to populate `oauth` entries** in

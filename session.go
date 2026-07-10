@@ -22,6 +22,7 @@ type Session struct {
 	history    *History
 	usage      Usage
 	lastUsage  Usage
+	usageCost  usageCostAggregation
 }
 
 // SessionOption configures a Session.
@@ -120,20 +121,13 @@ func (s *Session) Continue(ctx context.Context) (*Response, error) {
 
 // ChatStream appends a user turn and returns a stream that appends the
 // collected assistant response when the stream completes without error.
+//
+// Consume each returned stream to completion before starting another: within
+// the Session's not-goroutine-safe envelope, lazy streams interleaved (for
+// example via iter.Pull) share the same history and can misorder appended
+// turns or cross-truncate history on a failed call.
 func (s *Session) ChatStream(ctx context.Context, parts ...Part) iter.Seq2[Event, error] {
-	if s == nil || s.provider == nil {
-		return func(yield func(Event, error) bool) {
-			yield(nil, fmt.Errorf("%w: nil session provider", ErrBadRequest))
-		}
-	}
-	s.ensureHistory()
-	rollbackTo := s.history.len()
-	s.history.Add(UserParts(parts...))
-	stream := s.provider.ChatStream(ctx, s.request())
-	return s.collectingStream(stream, rollbackTo)
-}
-
-func (s *Session) collectingStream(stream iter.Seq2[Event, error], rollbackTo int) iter.Seq2[Event, error] {
+	pendingParts := cloneParts(parts)
 	var consumedMu sync.Mutex
 	consumed := false
 	return func(yield func(Event, error) bool) {
@@ -146,15 +140,25 @@ func (s *Session) collectingStream(stream iter.Seq2[Event, error], rollbackTo in
 		consumed = true
 		consumedMu.Unlock()
 
+		if s == nil || s.provider == nil {
+			yield(nil, fmt.Errorf("%w: nil session provider", ErrBadRequest))
+			return
+		}
+
+		s.ensureHistory()
+		rollbackTo := s.history.len()
 		committed := false
 		defer func() {
 			if !committed {
 				s.history.truncate(rollbackTo)
 			}
 		}()
+		s.history.Add(UserParts(pendingParts...))
+		stream := s.provider.ChatStream(ctx, s.request())
 
 		resp := &Response{}
 		blocks := map[int]Part{}
+		activeTools := map[int]struct{}{}
 		for event, err := range stream {
 			if err != nil {
 				yield(event, err)
@@ -165,7 +169,7 @@ func (s *Session) collectingStream(stream iter.Seq2[Event, error], rollbackTo in
 				yield(nil, err)
 				return
 			}
-			if err := applyCollectEvent(resp, blocks, event); err != nil {
+			if err := applyCollectEvent(resp, blocks, activeTools, event); err != nil {
 				yield(nil, err)
 				return
 			}
@@ -258,7 +262,7 @@ func (s *Session) appendResponse(resp *Response) {
 	}
 	s.history.AddResponse(resp)
 	s.lastUsage = cloneUsage(resp.Usage)
-	s.usage = sumUsage(s.usage, resp.Usage)
+	s.usage = sumUsage(s.usage, resp.Usage, &s.usageCost)
 }
 
 func randomSessionID() string {

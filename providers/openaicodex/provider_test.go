@@ -16,7 +16,12 @@ import (
 
 	llm "github.com/pkieltyka/go-llm"
 	"github.com/pkieltyka/go-llm/internal/testutil"
+	"github.com/pkieltyka/go-llm/providers/internal/providerutil"
 )
+
+func discardOAuthPersistence(ctx context.Context, _ llm.AuthCredential) error {
+	return ctx.Err()
+}
 
 func TestOpenAICodexBuildRequestGolden(t *testing.T) {
 	rawReasoning := json.RawMessage(`{"id":"rs_1","type":"reasoning","summary":[{"type":"summary_text","text":"because"}],"encrypted_content":"enc","status":"completed"}`)
@@ -179,6 +184,7 @@ func TestOpenAICodexReasoningReplayIsolation(t *testing.T) {
 }
 
 func TestOpenAICodexHeadersAndRetry(t *testing.T) {
+	t.Setenv(providerutil.CustomHeadersEnv, "Authorization: Bearer ambient-secret\nX-Ambient-Safe: retained")
 	oldAccess := fakeCodexJWT(t, "acct-old")
 	newAccess := fakeCodexJWT(t, "acct-new")
 	var authHeaders []string
@@ -187,8 +193,10 @@ func TestOpenAICodexHeadersAndRetry(t *testing.T) {
 	var accepts []string
 	var betas []string
 	var userAgents []string
+	var ambientHeaders []string
 	var refreshForm string
 	var refreshed llm.AuthCredential
+	var persistenceHadDeadline bool
 	var requestBodies []string
 	responseCalls := 0
 
@@ -199,6 +207,7 @@ func TestOpenAICodexHeadersAndRetry(t *testing.T) {
 			body, _ := io.ReadAll(r.Body)
 			requestBodies = append(requestBodies, string(body))
 			authHeaders = append(authHeaders, r.Header.Get("Authorization"))
+			ambientHeaders = append(ambientHeaders, r.Header.Get("X-Ambient-Safe"))
 			accountHeaders = append(accountHeaders, r.Header.Get(accountIDHeader))
 			originators = append(originators, r.Header.Get(originatorHeader))
 			accepts = append(accepts, r.Header.Get("Accept"))
@@ -223,8 +232,10 @@ func TestOpenAICodexHeadersAndRetry(t *testing.T) {
 	defer server.Close()
 
 	p, err := New(
-		WithOAuth(llm.AuthCredential{Type: "oauth", Access: oldAccess, Refresh: "old-refresh"}, func(cred llm.AuthCredential) {
+		WithOAuth(llm.AuthCredential{Type: "oauth", Access: oldAccess, Refresh: "old-refresh"}, func(ctx context.Context, cred llm.AuthCredential) error {
+			_, persistenceHadDeadline = ctx.Deadline()
 			refreshed = cred
+			return nil
 		}),
 		WithBaseURL(server.URL),
 		withOAuthTokenURL(server.URL+"/oauth/token"),
@@ -245,23 +256,43 @@ func TestOpenAICodexHeadersAndRetry(t *testing.T) {
 	if resp.Text() != "pong" {
 		t.Fatalf("response text = %q", resp.Text())
 	}
-	if !reflect.DeepEqual(authHeaders, []string{"Bearer " + oldAccess, "Bearer " + newAccess}) {
+	streamed, err := llm.Collect(p.ChatStream(context.Background(), &llm.Request{
+		Model:    "gpt-5.4-mini",
+		Messages: []llm.Message{llm.UserText("ping")},
+	}))
+	if err != nil {
+		t.Fatalf("ChatStream returned error: %v", err)
+	}
+	if streamed.Text() != "pong" {
+		t.Fatalf("stream response text = %q", streamed.Text())
+	}
+	models, err := p.Models(context.Background())
+	if err != nil {
+		t.Fatalf("Models returned error: %v", err)
+	}
+	if len(models) == 0 {
+		t.Fatal("Models returned no curated models")
+	}
+	if !reflect.DeepEqual(authHeaders, []string{"Bearer " + oldAccess, "Bearer " + newAccess, "Bearer " + newAccess}) {
 		t.Fatalf("Authorization headers = %+v", authHeaders)
 	}
-	if !reflect.DeepEqual(accountHeaders, []string{"acct-old", "acct-new"}) {
+	if !reflect.DeepEqual(accountHeaders, []string{"acct-old", "acct-new", "acct-new"}) {
 		t.Fatalf("account headers = %+v", accountHeaders)
 	}
-	if !reflect.DeepEqual(originators, []string{defaultOriginator, defaultOriginator}) {
+	if !reflect.DeepEqual(originators, []string{defaultOriginator, defaultOriginator, defaultOriginator}) {
 		t.Fatalf("originators = %+v", originators)
 	}
-	if !reflect.DeepEqual(accepts, []string{"text/event-stream", "text/event-stream"}) {
+	if !reflect.DeepEqual(accepts, []string{"text/event-stream", "text/event-stream", "text/event-stream"}) {
 		t.Fatalf("Accept headers = %+v", accepts)
 	}
-	if !reflect.DeepEqual(betas, []string{"responses=experimental", "responses=experimental"}) {
+	if !reflect.DeepEqual(betas, []string{"responses=experimental", "responses=experimental", "responses=experimental"}) {
 		t.Fatalf("OpenAI-Beta headers = %+v", betas)
 	}
-	if !reflect.DeepEqual(userAgents, []string{defaultCodexUserAgent, defaultCodexUserAgent}) {
+	if !reflect.DeepEqual(userAgents, []string{defaultCodexUserAgent, defaultCodexUserAgent, defaultCodexUserAgent}) {
 		t.Fatalf("User-Agent headers = %+v", userAgents)
+	}
+	if !reflect.DeepEqual(ambientHeaders, []string{"retained", "retained", "retained"}) {
+		t.Fatalf("X-Ambient-Safe headers = %+v", ambientHeaders)
 	}
 	for _, body := range requestBodies {
 		if !jsonFieldBool(t, body, "stream") {
@@ -273,6 +304,91 @@ func TestOpenAICodexHeadersAndRetry(t *testing.T) {
 	}
 	if refreshed.Access != newAccess || refreshed.Refresh != "new-refresh" || refreshed.AccountID != "acct-new" {
 		t.Fatalf("refreshed credential = %+v", refreshed)
+	}
+	if !persistenceHadDeadline {
+		t.Fatal("persistence callback did not receive generation deadline")
+	}
+}
+
+func TestOpenAICodexPersistenceContract(t *testing.T) {
+	networkCalls := 0
+	client := &http.Client{Transport: testutil.RoundTripFunc(func(*http.Request) (*http.Response, error) {
+		networkCalls++
+		return nil, errors.New("unexpected network request")
+	})}
+
+	p, err := New(
+		WithOAuth(llm.AuthCredential{Type: "oauth", Access: "access", Refresh: "refresh"}, nil),
+		WithHTTPClient(client),
+	)
+	if !errors.Is(err, llm.ErrBadRequest) {
+		t.Fatalf("refreshable New error = %v, want ErrBadRequest", err)
+	}
+	if p != nil || networkCalls != 0 {
+		t.Fatalf("refreshable New provider/network calls = %+v/%d, want nil/0", p, networkCalls)
+	}
+
+	p, err = New(
+		WithOAuth(llm.AuthCredential{Type: "oauth", Access: "access-only"}, nil),
+		WithHTTPClient(client),
+	)
+	if err != nil {
+		t.Fatalf("access-only New returned error: %v", err)
+	}
+	if p == nil || networkCalls != 0 {
+		t.Fatalf("access-only New provider/network calls = %+v/%d, want non-nil/0", p, networkCalls)
+	}
+}
+
+func TestOpenAICodexPersistenceErrorStopsRetry(t *testing.T) {
+	persistErr := errors.New("persist codex credential")
+	access := fakeCodexJWT(t, "acct-old")
+	newAccess := fakeCodexJWT(t, "acct-new")
+	responseCalls := 0
+	persistenceCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/responses":
+			responseCalls++
+			http.Error(w, `{"error":{"code":"invalid_token","message":"expired","type":"authentication_error"}}`, http.StatusUnauthorized)
+		case "/oauth/token":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"access_token":`+strconvQuote(newAccess)+`,"refresh_token":"new-refresh","expires_in":3600}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	p, err := New(
+		WithOAuth(llm.AuthCredential{Type: "oauth", Access: access, Refresh: "old-refresh"}, func(ctx context.Context, _ llm.AuthCredential) error {
+			persistenceCalls++
+			if _, ok := ctx.Deadline(); !ok {
+				t.Error("persistence context has no generation deadline")
+			}
+			return persistErr
+		}),
+		WithBaseURL(server.URL),
+		withOAuthTokenURL(server.URL+"/oauth/token"),
+		WithHTTPClient(server.Client()),
+		WithMaxRetries(0),
+	)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	resp, err := p.Chat(context.Background(), &llm.Request{
+		Model:     "gpt-5.4-mini",
+		MaxTokens: 8,
+		Messages:  []llm.Message{llm.UserText("ping")},
+	})
+	if !errors.Is(err, persistErr) {
+		t.Fatalf("Chat error = %v, want persistence error", err)
+	}
+	if resp != nil {
+		t.Fatalf("Chat response = %+v, want nil", resp)
+	}
+	if responseCalls != 1 || persistenceCalls != 1 {
+		t.Fatalf("response/persistence calls = %d/%d, want 1/1", responseCalls, persistenceCalls)
 	}
 }
 
@@ -286,7 +402,7 @@ func newCodexRetryTestProvider(t *testing.T, server *httptest.Server, delays *[]
 	t.Helper()
 	access := fakeCodexJWT(t, "acct-1")
 	base := []Option{
-		WithOAuth(llm.AuthCredential{Type: "oauth", Access: access, Refresh: "refresh"}, nil),
+		WithOAuth(llm.AuthCredential{Type: "oauth", Access: access, Refresh: "refresh"}, discardOAuthPersistence),
 		WithBaseURL(server.URL),
 		withOAuthTokenURL(server.URL + "/oauth/token"),
 		WithHTTPClient(server.Client()),
@@ -352,6 +468,172 @@ func TestOpenAICodexTransportNoRetryOn400(t *testing.T) {
 	}
 	if calls != 1 || len(delays) != 0 {
 		t.Fatalf("calls/delays = %d/%+v, want single attempt without backoff", calls, delays)
+	}
+}
+
+func TestOpenAICodexStreamProviderContractEOF(t *testing.T) {
+	tests := []struct {
+		name        string
+		body        string
+		wantPartial bool
+	}{
+		{name: "empty EOF"},
+		{
+			name:        "truncated EOF",
+			body:        "data: {\"type\":\"response.output_text.delta\",\"output_index\":4,\"content_index\":0,\"delta\":\"partial\"}\n\n",
+			wantPartial: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := newCodexStreamFixtureProvider(t, func(req *http.Request) (*http.Response, error) {
+				return codexStreamResponse(req, tt.body), nil
+			})
+			resp, err := llm.Collect(p.ChatStream(context.Background(), codexStreamFixtureRequest()))
+			assertCodexProviderServerError(t, err)
+			if tt.wantPartial {
+				if resp == nil || resp.Text() != "partial" || resp.Model != "requested-model" {
+					t.Fatalf("partial response = %#v, want text partial and request model", resp)
+				}
+			} else if resp != nil {
+				t.Fatalf("empty stream response = %#v, want nil", resp)
+			}
+		})
+	}
+}
+
+func TestOpenAICodexStreamProviderFlushesPreStartContentBeforeError(t *testing.T) {
+	body := "data: {\"type\":\"response.output_text.delta\",\"output_index\":4,\"content_index\":0,\"delta\":\"partial\"}\n\n" +
+		"data: {\"type\":\"error\",\"code\":\"server_error\",\"message\":\"remote failure\"}\n\n"
+	p := newCodexStreamFixtureProvider(t, func(req *http.Request) (*http.Response, error) {
+		return codexStreamResponse(req, body), nil
+	})
+
+	resp, err := llm.Collect(p.ChatStream(context.Background(), codexStreamFixtureRequest()))
+	assertCodexProviderServerError(t, err)
+	if resp == nil || resp.Model != "requested-model" || resp.Text() != "partial" {
+		t.Fatalf("partial errored response = %#v, want flushed content and request-model fallback", resp)
+	}
+}
+
+func TestOpenAICodexBlockingChatReturnsPartialResponseWithError(t *testing.T) {
+	body := "data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"content_index\":0,\"delta\":\"partial\"}\n\n" +
+		"data: {\"type\":\"error\",\"code\":\"server_error\",\"message\":\"remote failure\"}\n\n"
+	p := newCodexStreamFixtureProvider(t, func(req *http.Request) (*http.Response, error) {
+		return codexStreamResponse(req, body), nil
+	})
+
+	resp, err := p.Chat(context.Background(), codexStreamFixtureRequest())
+	assertCodexProviderServerError(t, err)
+	if resp == nil || resp.Model != "requested-model" || resp.Text() != "partial" {
+		t.Fatalf("blocking partial response = %#v, want collected content alongside error", resp)
+	}
+}
+
+func TestOpenAICodexStreamPreservesInterleavedContentBeforeDecodeError(t *testing.T) {
+	body := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"response-model\",\"status\":\"in_progress\",\"output\":[]}}\n\n" +
+		"data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"fc_partial\",\"type\":\"function_call\",\"call_id\":\"call_partial\",\"name\":\"lookup\",\"arguments\":\"\",\"status\":\"in_progress\"}}\n\n" +
+		"data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"delta\":\"{\\\"q\\\":\"}\n\n" +
+		"data: {\"type\":\"response.output_text.delta\",\"output_index\":1,\"content_index\":0,\"delta\":\"deferred text\"}\n\n" +
+		"data: {\"type\":\"response.reasoning_text.delta\",\"output_index\":2,\"delta\":\"deferred reasoning\"}\n\n" +
+		"data: {not-json}\n\n"
+	p := newCodexStreamFixtureProvider(t, func(req *http.Request) (*http.Response, error) {
+		return codexStreamResponse(req, body), nil
+	})
+
+	resp, err := llm.Collect(p.ChatStream(context.Background(), codexStreamFixtureRequest()))
+	assertCodexProviderServerError(t, err)
+	if resp == nil || resp.Text() != "deferred text" || resp.Reasoning() != "deferred reasoning" {
+		t.Fatalf("partial response = %#v, want all deferred wire content", resp)
+	}
+	if calls := resp.ToolCalls(); len(calls) != 1 || string(calls[0].Args) != `{"q":` {
+		t.Fatalf("partial tool calls = %#v, want visible incomplete arguments", calls)
+	}
+}
+
+func TestOpenAICodexStreamProviderEarlyBreakDoesNotSynthesizeError(t *testing.T) {
+	body := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-test\",\"status\":\"in_progress\",\"output\":[]}}\n\n" +
+		"data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"content_index\":0,\"delta\":\"unread\"}\n\n"
+	p := newCodexStreamFixtureProvider(t, func(req *http.Request) (*http.Response, error) {
+		return codexStreamResponse(req, body), nil
+	})
+
+	count := 0
+	for event, err := range p.ChatStream(context.Background(), codexStreamFixtureRequest()) {
+		if err != nil {
+			t.Fatalf("early-break event returned error: %v", err)
+		}
+		if _, ok := event.(llm.MessageStart); !ok {
+			t.Fatalf("first event = %T, want MessageStart", event)
+		}
+		count++
+		break
+	}
+	if count != 1 {
+		t.Fatalf("events before break = %d, want 1", count)
+	}
+}
+
+func TestOpenAICodexStreamProviderNormalizesDecodeAndTransportErrors(t *testing.T) {
+	t.Run("decode", func(t *testing.T) {
+		p := newCodexStreamFixtureProvider(t, func(req *http.Request) (*http.Response, error) {
+			return codexStreamResponse(req, "data: {not-json}\n\n"), nil
+		})
+		_, err := llm.Collect(p.ChatStream(context.Background(), codexStreamFixtureRequest()))
+		assertCodexProviderServerError(t, err)
+	})
+
+	t.Run("transport", func(t *testing.T) {
+		p := newCodexStreamFixtureProvider(t, func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("remote transport failed")
+		})
+		_, err := llm.Collect(p.ChatStream(context.Background(), codexStreamFixtureRequest()))
+		assertCodexProviderServerError(t, err)
+	})
+}
+
+func newCodexStreamFixtureProvider(t *testing.T, roundTrip testutil.RoundTripFunc) *Provider {
+	t.Helper()
+	p, err := New(
+		WithOAuth(llm.AuthCredential{
+			Type:    "oauth",
+			Access:  fakeCodexJWT(t, "acct-fixture"),
+			Refresh: "refresh-fixture",
+		}, discardOAuthPersistence),
+		WithBaseURL("https://codex.fixture.test"),
+		WithHTTPClient(&http.Client{Transport: roundTrip}),
+		WithMaxRetries(0),
+	)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	return p
+}
+
+func codexStreamResponse(req *http.Request, body string) *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Request:    req,
+	}
+}
+
+func codexStreamFixtureRequest() *llm.Request {
+	return &llm.Request{
+		Model:    "requested-model",
+		Messages: []llm.Message{llm.UserText("hello")},
+	}
+}
+
+func assertCodexProviderServerError(t *testing.T, err error) {
+	t.Helper()
+	if !errors.Is(err, llm.ErrServer) {
+		t.Fatalf("error = %v, want ErrServer", err)
+	}
+	var providerErr *llm.ProviderError
+	if !errors.As(err, &providerErr) || providerErr.Provider != providerName {
+		t.Fatalf("error = %#v, want %s ProviderError", err, providerName)
 	}
 }
 

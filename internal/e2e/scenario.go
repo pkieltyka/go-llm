@@ -3,6 +3,7 @@ package e2e
 import (
 	"context"
 	"encoding/base64"
+	"path/filepath"
 	"testing"
 
 	llm "github.com/pkieltyka/go-llm"
@@ -24,27 +25,82 @@ func RedPixelPNG(t *testing.T) []byte {
 
 // Scenario is a provider-neutral live e2e check.
 type Scenario struct {
-	Name       string
-	Capability llm.Capability
-	Run        func(context.Context, *testing.T, llm.Provider, string)
+	Name string
+	Run  ScenarioRun
 }
 
-// RunScenarios executes scenarios whose required capability is declared by p.
-func RunScenarios(ctx context.Context, t *testing.T, p llm.Provider, model string, scenarios []Scenario) {
+// ScenarioReport records the capability-applicable scenarios and the subset
+// that actually ran to completion. Test filtering and scenario-local skips
+// therefore remain visible to fixture recording.
+type ScenarioReport struct {
+	Expected  []string
+	Completed []string
+}
+
+type recordingSecretsContextKey struct{}
+
+func RecordingContext(ctx context.Context, captures *CaptureLog, secrets *SecretSet) context.Context {
+	ctx = llm.WithWireCaptureObserver(ctx, captures)
+	return context.WithValue(ctx, recordingSecretsContextKey{}, secrets)
+}
+
+func ScheduleFixtureRecording(t *testing.T, path string, captures *CaptureLog, secrets *SecretSet, report *ScenarioReport, allowIncomplete bool) {
 	t.Helper()
-	caps := map[llm.Capability]struct{}{}
-	for _, cap := range p.Capabilities() {
-		caps[cap] = struct{}{}
+	t.Cleanup(func() {
+		if t.Failed() || t.Skipped() {
+			t.Logf("WARNING: fixture recording for %s was not written because the live test failed or skipped", filepath.ToSlash(path))
+			return
+		}
+		snapshot := captures.Snapshot()
+		result, err := WriteFixtureChecked(path, snapshot.Captures, FixtureWriteOptions{
+			Secrets:                   secrets.Values(),
+			ExpectedScenarios:         report.Expected,
+			CompletedScenarios:        report.Completed,
+			OutstandingResponseBodies: snapshot.OutstandingResponseBodies,
+			AllowIncomplete:           allowIncomplete,
+			Warnf:                     t.Logf,
+		})
+		if err != nil {
+			t.Errorf("write fixture %s: %v", filepath.ToSlash(path), err)
+			return
+		}
+		if result.Replaced {
+			t.Logf("recorded fixture %s", filepath.ToSlash(path))
+		}
+	})
+}
+
+// RunCapabilityScenarios derives the provider's live suite from its advertised
+// capabilities and the explicit provider profile.
+func RunCapabilityScenarios(ctx context.Context, t *testing.T, providerID string, p llm.Provider, model string, runners map[string]ScenarioRun) ScenarioReport {
+	t.Helper()
+	scenarios, exemptions, err := liveScenarios(providerID, p, runners)
+	if err != nil {
+		t.Fatalf("build %s live scenarios: %v", providerID, err)
 	}
+	for _, exemption := range exemptions {
+		t.Logf("live capability exemption: provider=%s capability=%s reason=%s", exemption.Provider, exemption.Capability, exemption.Reason)
+	}
+	return RunScenarios(ctx, t, p, model, scenarios)
+}
+
+// RunScenarios executes the already capability-derived scenario list.
+func RunScenarios(ctx context.Context, t *testing.T, p llm.Provider, model string, scenarios []Scenario) ScenarioReport {
+	t.Helper()
+	report := ScenarioReport{}
 	for _, scenario := range scenarios {
 		scenario := scenario
+		report.Expected = append(report.Expected, scenario.Name)
+		completed := false
 		t.Run(scenario.Name, func(t *testing.T) {
-			if scenario.Capability != "" {
-				if _, ok := caps[scenario.Capability]; !ok {
-					t.Skipf("provider %s lacks capability %s", p.Name(), scenario.Capability)
-				}
-			}
+			defer func() {
+				completed = !t.Failed() && !t.Skipped()
+			}()
 			scenario.Run(ctx, t, p, model)
 		})
+		if completed {
+			report.Completed = append(report.Completed, scenario.Name)
+		}
 	}
+	return report
 }

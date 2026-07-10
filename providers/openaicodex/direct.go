@@ -178,58 +178,77 @@ func (p *Provider) codexEvents(ctx context.Context, params responses.ResponseNew
 			yield(nil, err)
 			return
 		}
-		resp, err := p.transport.postStream(ctx, body)
-		if err != nil {
-			yield(nil, p.adapter().MapError(err))
-			return
-		}
-		if resp == nil {
-			yield(nil, &llm.ProviderError{Provider: providerName, Message: "nil HTTP response", Kind: llm.ErrServer})
-			return
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-			yield(nil, p.adapter().MapHTTPResponseError(resp))
-			return
-		}
-
-		decoder := ssestream.NewDecoder(resp)
-		if decoder == nil {
-			yield(nil, &llm.ProviderError{Provider: providerName, Message: "nil SSE decoder", Kind: llm.ErrServer})
-			return
-		}
-		defer decoder.Close()
-
-		state := p.adapter().NewStreamState()
-		for decoder.Next() {
-			evt := decoder.Event()
-			data := bytes.TrimSpace(evt.Data)
-			if bytes.Equal(data, []byte("[DONE]")) {
-				continue
-			}
-			var streamEvent responses.ResponseStreamEventUnion
-			if err := json.Unmarshal(data, &streamEvent); err != nil {
-				yield(nil, fmt.Errorf("%w: malformed openai-codex stream event", llm.ErrServer))
-				return
-			}
-			if streamEvent.Type == "" && evt.Type != "" {
-				streamEvent.Type = evt.Type
-			}
-			events, err := state.MapEvent(streamEvent)
+		remote := providerutil.StreamContract(providerName, func(remoteYield func(llm.Event, error) bool) {
+			resp, err := p.transport.postStream(ctx, body)
 			if err != nil {
-				yield(nil, err)
+				remoteYield(nil, p.adapter().MapError(err))
 				return
 			}
-			for _, event := range events {
-				event = normalizeCodexStreamEvent(event, requestModel)
-				if !yield(event, nil) {
+			if resp == nil {
+				remoteYield(nil, &llm.ProviderError{Provider: providerName, Message: "nil HTTP response", Kind: llm.ErrServer})
+				return
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+				remoteYield(nil, p.adapter().MapHTTPResponseError(resp))
+				return
+			}
+
+			decoder := ssestream.NewDecoder(resp)
+			if decoder == nil {
+				remoteYield(nil, &llm.ProviderError{Provider: providerName, Message: "nil SSE decoder", Kind: llm.ErrServer})
+				return
+			}
+			defer decoder.Close()
+
+			state := p.adapter().NewStreamState(requestModel)
+			for decoder.Next() {
+				evt := decoder.Event()
+				data := bytes.TrimSpace(evt.Data)
+				if bytes.Equal(data, []byte("[DONE]")) {
+					continue
+				}
+				var streamEvent responses.ResponseStreamEventUnion
+				if err := json.Unmarshal(data, &streamEvent); err != nil {
+					for _, event := range state.Finish() {
+						event = normalizeCodexStreamEvent(event, requestModel)
+						if !remoteYield(event, nil) {
+							return
+						}
+					}
+					remoteYield(nil, fmt.Errorf("malformed openai-codex stream event: %w", err))
+					return
+				}
+				if streamEvent.Type == "" && evt.Type != "" {
+					streamEvent.Type = evt.Type
+				}
+				events, err := state.MapEvent(streamEvent)
+				for _, event := range events {
+					event = normalizeCodexStreamEvent(event, requestModel)
+					if !remoteYield(event, nil) {
+						return
+					}
+				}
+				if err != nil {
+					remoteYield(nil, err)
 					return
 				}
 			}
-		}
-		if err := decoder.Err(); err != nil {
-			yield(nil, p.adapter().MapError(err))
-		}
+			for _, event := range state.Finish() {
+				event = normalizeCodexStreamEvent(event, requestModel)
+				if !remoteYield(event, nil) {
+					return
+				}
+			}
+			if err := decoder.Err(); err != nil {
+				remoteYield(nil, p.adapter().MapError(err))
+				return
+			}
+			if err := ctx.Err(); err != nil {
+				remoteYield(nil, err)
+			}
+		})
+		remote(yield)
 	}
 }
 

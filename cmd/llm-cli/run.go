@@ -38,11 +38,17 @@ func (a app) runChat(ctx context.Context, cfg chatConfig) error {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintln(a.stdout, string(data))
+			if _, err := fmt.Fprintln(a.stdout, string(data)); err != nil {
+				return fmt.Errorf("write response: %w", err)
+			}
 		} else if validatedJSON != nil {
-			fmt.Fprintln(a.stdout, string(validatedJSON))
+			if _, err := fmt.Fprintln(a.stdout, string(validatedJSON)); err != nil {
+				return fmt.Errorf("write response: %w", err)
+			}
 		} else {
-			fmt.Fprint(a.stdout, resp.Text())
+			if _, err := fmt.Fprint(a.stdout, resp.Text()); err != nil {
+				return fmt.Errorf("write response: %w", err)
+			}
 		}
 	} else {
 		resp, err = a.runStreaming(ctx, provider, bundle.request, cfg)
@@ -57,7 +63,9 @@ func (a app) runChat(ctx context.Context, cfg chatConfig) error {
 		}
 	}
 	if cfg.usage {
-		printUsage(a.stderr, resp.Usage)
+		if err := printUsage(a.stderr, resp.Usage); err != nil {
+			return err
+		}
 	}
 	if cfg.savePath != "" {
 		data, err := llm.MarshalMessages(historyMessages(bundle, resp))
@@ -90,29 +98,21 @@ func validateStructuredOutput(format *llm.ResponseFormat, text string) ([]byte, 
 }
 
 func (a app) runStreaming(ctx context.Context, provider llm.Provider, req *llm.Request, cfg chatConfig) (*llm.Response, error) {
-	var events []llm.Event
-	for event, err := range provider.ChatStream(ctx, req) {
-		if err != nil {
-			// The caller returns immediately on error, so a partial response
-			// collected from the buffered events would never be used.
-			return nil, err
-		}
-		events = append(events, event)
-		switch e := event.(type) {
-		case llm.TextDelta:
-			fmt.Fprint(a.stdout, e.Text)
-		case llm.ReasoningDelta:
-			if cfg.reasoning && e.Text != "" {
-				fmt.Fprint(a.stderr, e.Text)
-			}
-		}
-	}
-	return llm.Collect(eventsSeq(events))
+	events := streamOutput(provider.ChatStream(ctx, req), a.stdout, a.stderr, cfg.reasoning)
+	return llm.Collect(events)
 }
 
-func eventsSeq(events []llm.Event) iter.Seq2[llm.Event, error] {
+func streamOutput(events iter.Seq2[llm.Event, error], stdout, stderr io.Writer, reasoning bool) iter.Seq2[llm.Event, error] {
 	return func(yield func(llm.Event, error) bool) {
-		for _, event := range events {
+		for event, err := range events {
+			if err != nil {
+				yield(event, err)
+				return
+			}
+			if err := printStreamEvent(stdout, stderr, reasoning, event); err != nil {
+				yield(nil, err)
+				return
+			}
 			if !yield(event, nil) {
 				return
 			}
@@ -120,18 +120,39 @@ func eventsSeq(events []llm.Event) iter.Seq2[llm.Event, error] {
 	}
 }
 
+func printStreamEvent(stdout, stderr io.Writer, reasoning bool, event llm.Event) error {
+	switch e := event.(type) {
+	case llm.TextDelta:
+		if _, err := fmt.Fprint(stdout, e.Text); err != nil {
+			return fmt.Errorf("write response event: %w", err)
+		}
+	case llm.ReasoningDelta:
+		if reasoning && e.Text != "" {
+			if _, err := fmt.Fprint(stderr, e.Text); err != nil {
+				return fmt.Errorf("write reasoning event: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
 func printToolCalls(w io.Writer, calls []llm.ToolCallPart) error {
 	data, err := json.MarshalIndent(calls, "", "  ")
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, string(data))
+	if _, err := fmt.Fprintln(w); err != nil {
+		return fmt.Errorf("write tool calls: %w", err)
+	}
+	if _, err := fmt.Fprintln(w, string(data)); err != nil {
+		return fmt.Errorf("write tool calls: %w", err)
+	}
 	return nil
 }
 
-func printUsage(w io.Writer, u llm.Usage) {
-	fmt.Fprintf(w, "usage input=%d output=%d total=%d cache_read=%d cache_write=%d reasoning=%d",
+func printUsage(w io.Writer, u llm.Usage) error {
+	var line bytes.Buffer
+	fmt.Fprintf(&line, "usage input=%d output=%d total=%d cache_read=%d cache_write=%d reasoning=%d",
 		u.InputTokens,
 		u.OutputTokens,
 		u.TotalTokens,
@@ -140,7 +161,10 @@ func printUsage(w io.Writer, u llm.Usage) {
 		u.ReasoningTokens,
 	)
 	if u.CostUSD != nil {
-		fmt.Fprintf(w, " cost_usd=%.8f", *u.CostUSD)
+		fmt.Fprintf(&line, " cost_usd=%.8f", *u.CostUSD)
 	}
-	fmt.Fprintln(w)
+	if _, err := fmt.Fprintln(w, line.String()); err != nil {
+		return fmt.Errorf("write usage: %w", err)
+	}
+	return nil
 }

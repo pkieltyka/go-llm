@@ -50,8 +50,7 @@ func (p *Provider) adapter() responsesapi.Adapter {
 			if err != nil {
 				return err
 			}
-			applyOptions(options, params)
-			return nil
+			return applyOptions(options, params)
 		},
 	}
 }
@@ -136,28 +135,45 @@ func (p *Provider) ChatStream(ctx context.Context, req *llm.Request) iter.Seq2[l
 		stream := p.client.Responses.NewStreaming(ctx, params)
 		defer stream.Close()
 
-		state := p.adapter().NewStreamState()
-		for stream.Next() {
-			events, err := state.MapEvent(stream.Current())
+		state := p.adapter().NewStreamState(string(params.Model))
+		remote := providerutil.StreamContract(providerName, func(remoteYield func(llm.Event, error) bool) {
+			for stream.Next() {
+				events, err := state.MapEvent(stream.Current())
+				for _, event := range events {
+					if !remoteYield(event, nil) {
+						return
+					}
+				}
+				if err != nil {
+					remoteYield(nil, err)
+					return
+				}
+			}
+			for _, event := range state.Finish() {
+				if !remoteYield(event, nil) {
+					return
+				}
+			}
+			if err := stream.Err(); err != nil {
+				remoteYield(nil, p.adapter().MapError(err))
+				return
+			}
+			if err := ctx.Err(); err != nil {
+				remoteYield(nil, err)
+			}
+		})
+		for event, err := range remote {
 			if err != nil {
-				err = mapError(err)
 				p.logFailure(ctx, req, start, err)
 				yield(nil, err)
 				return
 			}
-			for _, event := range events {
-				if end, ok := event.(llm.MessageEnd); ok {
-					p.logStreamEnd(ctx, req, end, state.Model(), start)
-				}
-				if !yield(event, nil) {
-					return
-				}
+			if end, ok := providerutil.DerefEvent(event).(llm.MessageEnd); ok {
+				p.logStreamEnd(ctx, req, end, state.Model(), start)
 			}
-		}
-		if err := stream.Err(); err != nil {
-			err = mapError(err)
-			p.logFailure(ctx, req, start, err)
-			yield(nil, err)
+			if !yield(event, nil) {
+				return
+			}
 		}
 	})
 }

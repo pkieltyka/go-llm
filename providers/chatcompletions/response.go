@@ -2,7 +2,7 @@ package chatcompletions
 
 import (
 	"encoding/json"
-	"fmt"
+	"sort"
 	"strings"
 
 	sdk "github.com/openai/openai-go/v3"
@@ -13,22 +13,26 @@ import (
 // mapResponse converts a chat completion response into the normalized shape.
 func (p *Provider) mapResponse(resp *sdk.ChatCompletion) (*llm.Response, error) {
 	if resp == nil {
-		return nil, fmt.Errorf("%w: nil %s response", llm.ErrServer, p.Name())
+		return nil, &llm.ProviderError{
+			Provider: p.Name(),
+			Message:  "chat completion returned a nil response",
+			Kind:     llm.ErrServer,
+		}
 	}
 	var raw rawChatCompletion
 	if err := json.Unmarshal([]byte(resp.RawJSON()), &raw); err != nil {
-		return nil, err
+		return nil, providerutil.NormalizeRemoteError(p.Name(), err)
 	}
-	if len(raw.Choices) == 0 {
+	choice, ok := choiceAtIndexZero(raw.Choices)
+	if !ok {
 		return nil, &llm.ProviderError{
 			Provider: p.Name(),
 			Code:     "empty_choices",
-			Message:  "chat completion returned no choices",
+			Message:  "chat completion returned no choice at index 0",
 			Kind:     llm.ErrServer,
 			RawBody:  []byte(resp.RawJSON()),
 		}
 	}
-	choice := raw.Choices[0]
 	if choice.Error != nil {
 		return nil, p.mapChunkError(choice.Error, []byte(resp.RawJSON()))
 	}
@@ -49,6 +53,24 @@ func (p *Provider) mapResponse(resp *sdk.ChatCompletion) (*llm.Response, error) 
 		Raw:              p.dialect.ExtractExtras(raw.Raw, choice),
 	}, nil
 }
+
+func choiceAtIndexZero(choices []rawChoice) (rawChoice, bool) {
+	for _, choice := range choices {
+		if choice.Index == 0 {
+			return choice, true
+		}
+	}
+	return rawChoice{}, false
+}
+
+const (
+	reasoningBlockIndex = iota
+	contentBlockIndex
+	refusalBlockIndex
+	toolBlockBase
+)
+
+func toolBlockIndex(position int) int { return toolBlockBase + position }
 
 // normalizeToolUseStop implements Compat.NormalizeToolUseStop: only an
 // end-turn mapping is upgraded (truncation and error finishes are
@@ -100,8 +122,24 @@ func defaultParts(provider string, message rawMessage) ([]llm.Part, []llm.Droppe
 	// blocking path DeepEqual-symmetric with Collect over the stream path.
 	var dropped []llm.DroppedToolCall
 	seenIDs := map[string]struct{}{}
-	for i, call := range message.ToolCalls {
-		part, drop := mapToolCall(i, call, seenIDs)
+	type candidate struct {
+		position int
+		call     rawToolCall
+	}
+	candidates := make([]candidate, 0, len(message.ToolCalls))
+	for position, call := range message.ToolCalls {
+		wirePosition := position
+		if call.Index != nil && *call.Index >= 0 {
+			wirePosition = *call.Index
+		}
+		candidates = append(candidates, candidate{position: wirePosition, call: call})
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].position < candidates[j].position
+	})
+	for _, candidate := range candidates {
+		index := toolBlockIndex(candidate.position)
+		part, drop := mapToolCall(index, candidate.call, seenIDs)
 		if drop != nil {
 			dropped = append(dropped, *drop)
 			continue
@@ -115,14 +153,7 @@ func mapToolCall(index int, call rawToolCall, seenIDs map[string]struct{}) (llm.
 	if call.Function.Name == "" {
 		return llm.ToolCallPart{}, &llm.DroppedToolCall{Index: index, Reason: "missing tool name"}
 	}
-	id := call.ID
-	if id == "" {
-		id = providerutil.UniqueSyntheticToolCallID(index, seenIDs)
-	}
-	if _, exists := seenIDs[id]; exists {
-		id = providerutil.UniqueSyntheticToolCallID(index, seenIDs)
-	}
-	seenIDs[id] = struct{}{}
+	id := reserveToolCallID(index, call.ID, seenIDs)
 	args := strings.TrimSpace(call.Function.Arguments)
 	if args == "" {
 		args = "{}"
@@ -131,4 +162,16 @@ func mapToolCall(index int, call rawToolCall, seenIDs map[string]struct{}) (llm.
 		return llm.ToolCallPart{}, &llm.DroppedToolCall{Index: index, Reason: "invalid tool arguments JSON"}
 	}
 	return llm.ToolCallPart{ID: id, Name: call.Function.Name, Args: json.RawMessage(args)}, nil
+}
+
+func reserveToolCallID(index int, candidate string, seenIDs map[string]struct{}) string {
+	id := candidate
+	if id == "" {
+		id = providerutil.UniqueSyntheticToolCallID(index, seenIDs)
+	}
+	if _, exists := seenIDs[id]; exists {
+		id = providerutil.UniqueSyntheticToolCallID(index, seenIDs)
+	}
+	seenIDs[id] = struct{}{}
+	return id
 }

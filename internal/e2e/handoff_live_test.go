@@ -5,6 +5,7 @@ package e2e
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -17,6 +18,11 @@ import (
 	"github.com/pkieltyka/go-llm/providers/vllm"
 )
 
+func recordingSecrets(ctx context.Context) *SecretSet {
+	secrets, _ := ctx.Value(recordingSecretsContextKey{}).(*SecretSet)
+	return secrets
+}
+
 // liveCrossProviderHandoffScenario implements ARCH §9's cross-provider
 // handoff check: a tool-using conversation started on the scenario's provider
 // is round-tripped through the canonical persistence envelope
@@ -26,7 +32,11 @@ import (
 // (no 400) and produces a sane completion.
 func liveCrossProviderHandoffScenario(ctx context.Context, t *testing.T, source llm.Provider, model string) {
 	t.Helper()
-	target, targetModel := handoffContinuationProvider(t, source.Name())
+	secrets := recordingSecrets(ctx)
+	if secrets == nil {
+		t.Fatal("cross-provider handoff requires a recording secret set in context")
+	}
+	target, targetModel := handoffContinuationProvider(ctx, t, source.Name(), secrets)
 	t.Logf("handoff: %s(%s) -> %s(%s)", source.Name(), model, target.Name(), targetModel)
 
 	tools := []llm.Tool{{
@@ -100,7 +110,7 @@ func liveCrossProviderHandoffScenario(ctx context.Context, t *testing.T, source 
 // handoffContinuationProvider builds the first configured provider other than
 // sourceName, in a fixed priority order. It skips the scenario visibly when
 // fewer than two providers are configured.
-func handoffContinuationProvider(t *testing.T, sourceName string) (llm.Provider, string) {
+func handoffContinuationProvider(ctx context.Context, t *testing.T, sourceName string, secrets *SecretSet) (llm.Provider, string) {
 	t.Helper()
 	root, err := RepoRoot(".")
 	if err != nil {
@@ -114,7 +124,7 @@ func handoffContinuationProvider(t *testing.T, sourceName string) (llm.Provider,
 		if name == sourceName {
 			continue
 		}
-		provider, model, ok := handoffProvider(t, root, cfg, name)
+		provider, model, ok := handoffProvider(ctx, t, root, cfg, name, secrets)
 		if !ok {
 			continue
 		}
@@ -124,16 +134,22 @@ func handoffContinuationProvider(t *testing.T, sourceName string) (llm.Provider,
 	return nil, ""
 }
 
-func handoffProvider(t *testing.T, root string, cfg Config, name string) (llm.Provider, string, bool) {
+func handoffProvider(ctx context.Context, t *testing.T, root string, cfg Config, name string, secrets *SecretSet) (llm.Provider, string, bool) {
 	t.Helper()
 	switch name {
 	case "anthropic":
 		providerCfg := cfg.Provider("anthropic", "ANTHROPIC_API_KEY")
+		if err := ValidateLiveProviderConfig(name, providerCfg); err != nil {
+			if errors.Is(err, errLiveCredentialsMissing) {
+				return nil, "", false
+			}
+			t.Fatalf("invalid anthropic handoff configuration: %v", err)
+		}
 		opts := []anthropic.Option{anthropic.WithMaxRetries(0)}
 		switch {
 		case providerCfg.Auth.Type == "oauth" && providerCfg.Auth.Access != "":
-			onRefresh := PersistOnRefresh(filepath.Join(root, "gollm-test.json"), "anthropic", t.Logf)
-			opts = append(opts, anthropic.WithOAuth(providerCfg.Auth, onRefresh))
+			persist := AuthFilePersistence(filepath.Join(root, "gollm-test.json"), "anthropic", t.Logf, secrets)
+			opts = append(opts, anthropic.WithOAuth(providerCfg.Auth, persist))
 		case providerCfg.Auth.Key != "":
 			opts = append(opts, anthropic.WithAPIKey(providerCfg.Auth.Key))
 		default:
@@ -149,8 +165,11 @@ func handoffProvider(t *testing.T, root string, cfg Config, name string) (llm.Pr
 		return p, orDefault(providerCfg.Model, anthropicCheapModel), true
 	case "openrouter":
 		providerCfg := cfg.Provider("openrouter", "OPENROUTER_API_KEY")
-		if providerCfg.Auth.Key == "" {
-			return nil, "", false
+		if err := ValidateLiveProviderConfig(name, providerCfg); err != nil {
+			if errors.Is(err, errLiveCredentialsMissing) {
+				return nil, "", false
+			}
+			t.Fatalf("invalid openrouter handoff configuration: %v", err)
 		}
 		opts := []openrouter.Option{
 			openrouter.WithAPIKey(providerCfg.Auth.Key),
@@ -167,8 +186,11 @@ func handoffProvider(t *testing.T, root string, cfg Config, name string) (llm.Pr
 		return p, orDefault(providerCfg.Model, openRouterCheapModel), true
 	case "openai":
 		providerCfg := cfg.Provider("openai", "OPENAI_API_KEY")
-		if providerCfg.Auth.Key == "" {
-			return nil, "", false
+		if err := ValidateLiveProviderConfig(name, providerCfg); err != nil {
+			if errors.Is(err, errLiveCredentialsMissing) {
+				return nil, "", false
+			}
+			t.Fatalf("invalid openai handoff configuration: %v", err)
 		}
 		opts := []openai.Option{
 			openai.WithAPIKey(providerCfg.Auth.Key),
@@ -184,12 +206,15 @@ func handoffProvider(t *testing.T, root string, cfg Config, name string) (llm.Pr
 		return p, orDefault(providerCfg.Model, openAICheapModel), true
 	case "openai-codex":
 		providerCfg := cfg.Provider("openai-codex", "")
-		if providerCfg.Auth.Type != "oauth" || providerCfg.Auth.Access == "" {
-			return nil, "", false
+		if err := ValidateLiveProviderConfig(name, providerCfg); err != nil {
+			if errors.Is(err, errLiveCredentialsMissing) {
+				return nil, "", false
+			}
+			t.Fatalf("invalid openai-codex handoff configuration: %v", err)
 		}
-		onRefresh := PersistOnRefresh(filepath.Join(root, "gollm-test.json"), "openai-codex", t.Logf)
+		persist := AuthFilePersistence(filepath.Join(root, "gollm-test.json"), "openai-codex", t.Logf, secrets)
 		opts := []openaicodex.Option{
-			openaicodex.WithOAuth(providerCfg.Auth, onRefresh),
+			openaicodex.WithOAuth(providerCfg.Auth, persist),
 			openaicodex.WithMaxRetries(0),
 		}
 		if providerCfg.BaseURL != "" {
@@ -202,10 +227,11 @@ func handoffProvider(t *testing.T, root string, cfg Config, name string) (llm.Pr
 		return p, orDefault(providerCfg.Model, openAICodexCheapModel), true
 	case "vllm":
 		providerCfg := cfg.Provider("vllm", "")
-		// Keyless self-hosted entries are configured by base_url presence;
-		// there is no universal default model, so one must be configured.
-		if providerCfg.BaseURL == "" || providerCfg.Model == "" {
-			return nil, "", false
+		if err := ValidateLiveProviderConfig(name, providerCfg); err != nil {
+			if errors.Is(err, errLiveCredentialsMissing) {
+				return nil, "", false
+			}
+			t.Fatalf("invalid vllm handoff configuration: %v", err)
 		}
 		opts := []vllm.Option{vllm.WithMaxRetries(0)}
 		if providerCfg.Auth.Key != "" {
@@ -215,7 +241,15 @@ func handoffProvider(t *testing.T, root string, cfg Config, name string) (llm.Pr
 		if err != nil {
 			t.Fatalf("vllm.New returned error: %v", err)
 		}
-		return p, providerCfg.Model, true
+		preference := providerCfg.Model
+		if preference == "" {
+			preference = "qwen"
+		}
+		model, err := ResolveConfiguredModel(ctx, p, preference)
+		if err != nil {
+			t.Fatalf("resolve vllm handoff model %q: %v", preference, err)
+		}
+		return p, model, true
 	default:
 		return nil, "", false
 	}

@@ -27,12 +27,6 @@
       "model": "",
       "base_url": ""
     },
-    "zai": {
-      "type": "api_key",
-      "key": "",
-      "model": "",
-      "base_url": ""
-    },
     "vllm": {
       "model": "",
       "base_url": ""

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net"
 	"strings"
 
 	sdk "github.com/anthropics/anthropic-sdk-go"
@@ -22,15 +21,7 @@ func mapError(err error) error {
 
 	var apiErr *sdk.Error
 	if !errors.As(err, &apiErr) {
-		var netErr net.Error
-		if errors.As(err, &netErr) && netErr.Timeout() {
-			return &llm.ProviderError{
-				Provider: providerName,
-				Message:  err.Error(),
-				Kind:     llm.ErrTimeout,
-			}
-		}
-		return err
+		return providerutil.NormalizeRemoteError(providerName, err)
 	}
 
 	raw := []byte(apiErr.RawJSON())
@@ -93,7 +84,9 @@ func errorKind(status int, code, message string) error {
 
 func isContextOverflowMessage(message string) bool {
 	lower := strings.ToLower(message)
-	return strings.Contains(lower, "context") ||
-		strings.Contains(lower, "prompt is too long") ||
-		(strings.Contains(lower, "tokens >") && strings.Contains(lower, "maximum"))
+	return strings.Contains(lower, "context window") ||
+		strings.Contains(lower, "context length") ||
+		strings.Contains(lower, "context limit") ||
+		strings.Contains(lower, "maximum context") ||
+		strings.Contains(lower, "prompt is too long")
 }

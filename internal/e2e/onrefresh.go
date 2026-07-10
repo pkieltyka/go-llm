@@ -1,41 +1,65 @@
 package e2e
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
+	"runtime"
 
 	llm "github.com/pkieltyka/go-llm"
 )
 
-// persistMu serializes credential-file rewrites: OAuth refreshes can fire
-// from concurrent requests and read-modify-write must not interleave.
-var persistMu sync.Mutex
+// persistGate serializes credential-file rewrites while allowing a generation
+// deadline to cancel a callback waiting for another rewrite.
+var persistGate = make(chan struct{}, 1)
 
-// PersistOnRefresh returns an onRefresh callback that writes a rotated OAuth
+// AuthFilePersistence returns a callback that writes a rotated OAuth
 // credential for provider back into the credential file at path, preserving
 // every other provider entry and any unknown fields. Live suites MUST wire
 // this into WithOAuth: providers rotate refresh tokens on every refresh, and
 // discarding the rotated token strands the stored credential.
 //
-// Failures are reported through logf (when non-nil) rather than aborting the
-// calling request.
-func PersistOnRefresh(path, provider string, logf func(format string, args ...any)) func(llm.AuthCredential) {
-	return func(cred llm.AuthCredential) {
-		if err := persistRefreshedCredential(path, provider, cred); err != nil && logf != nil {
+// The returned callback honors its generation context and returns only after
+// the rewrite is durably committed. Failures are logged when logf is non-nil
+// and returned to the provider so the credential is not published in memory.
+func AuthFilePersistence(path, provider string, logf func(format string, args ...any), secrets *SecretSet) llm.OAuthPersistenceFunc {
+	if secrets == nil {
+		panic("e2e: AuthFilePersistence requires a recording secret set")
+	}
+	return func(ctx context.Context, cred llm.AuthCredential) error {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		secrets.AddCredential(cred)
+		err := persistRefreshedCredential(ctx, path, provider, cred)
+		if err != nil && logf != nil {
 			logf("persist refreshed %s credential to %s: %v", provider, path, err)
 		}
+		return err
 	}
 }
 
 // persistRefreshedCredential rewrites only the given provider entry inside
 // the credential file, keeping all other entries and unknown fields intact,
 // then replaces the file atomically (temp file + rename, mode 0600).
-func persistRefreshedCredential(path, provider string, cred llm.AuthCredential) error {
-	persistMu.Lock()
-	defer persistMu.Unlock()
+func persistRefreshedCredential(ctx context.Context, path, provider string, cred llm.AuthCredential) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case persistGate <- struct{}{}:
+		defer func() { <-persistGate }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -96,6 +120,9 @@ func persistRefreshedCredential(path, provider string, cred llm.AuthCredential) 
 		return err
 	}
 	out = append(out, '\n')
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".credentials-*.tmp")
 	if err != nil {
@@ -111,10 +138,32 @@ func persistRefreshedCredential(path, provider string, cred llm.AuthCredential) 
 		_ = tmp.Close()
 		return err
 	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmpPath, path)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	return syncDirectory(filepath.Dir(path))
+}
+
+func syncDirectory(path string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }
 
 func setStringField(entry map[string]json.RawMessage, key, value string) {

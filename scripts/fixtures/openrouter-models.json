@@ -1,0 +1,25 @@
+{
+  "data": [
+    {
+      "id": "openai/gpt-fixture",
+      "canonical_slug": "openai/gpt-fixture-20260709",
+      "name": "OpenAI: GPT Fixture",
+      "pricing": { "completion": "0.000009", "input_cache_write": "0.0000025" },
+      "top_provider": { "max_completion_tokens": 32768 }
+    },
+    {
+      "id": "openrouter/auto-fixture",
+      "name": "Auto Router Fixture",
+      "context_length": 0,
+      "pricing": { "prompt": "-1", "completion": "-1" },
+      "top_provider": { "max_completion_tokens": 0 }
+    },
+    {
+      "id": "openrouter/dynamic-fixture",
+      "name": "Dynamic Router Fixture",
+      "context_length": 131072,
+      "pricing": { "prompt": "-1", "completion": "0.000004" },
+      "top_provider": { "max_completion_tokens": 8192 }
+    }
+  ]
+}

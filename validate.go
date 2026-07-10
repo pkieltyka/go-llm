@@ -1,6 +1,9 @@
 package llm
 
-import "fmt"
+import (
+	"fmt"
+	"reflect"
+)
 
 // ValidateRequest checks required request fields and capability-gated options.
 func ValidateRequest(caps []Capability, req *Request) error {
@@ -12,6 +15,9 @@ func ValidateRequest(caps []Capability, req *Request) error {
 	}
 	if len(req.Messages) == 0 {
 		return fmt.Errorf("%w: messages are required", ErrBadRequest)
+	}
+	if req.MaxTokens < 0 {
+		return fmt.Errorf("%w: max tokens cannot be negative", ErrBadRequest)
 	}
 
 	capSet := makeCapabilitySet(caps)
@@ -54,10 +60,30 @@ func ValidateProviderOptions(provider string, req *Request) error {
 	if req == nil || req.ProviderOptions == nil {
 		return nil
 	}
-	if req.ProviderOptions.ForProvider() != provider {
-		return fmt.Errorf("%w: provider options for %q used with %q", ErrBadRequest, req.ProviderOptions.ForProvider(), provider)
+	if isNilProviderOptions(req.ProviderOptions) {
+		return fmt.Errorf("%w: nil provider options", ErrBadRequest)
+	}
+	optionsProvider := req.ProviderOptions.ForProvider()
+	if optionsProvider != provider {
+		return fmt.Errorf("%w: provider options for %q used with %q", ErrBadRequest, optionsProvider, provider)
 	}
 	return nil
+}
+
+func isNilProviderOptions(options ProviderOptions) bool {
+	// reflect.ValueOf already unwraps the interface to its concrete dynamic
+	// value, so Kind() is never reflect.Interface here. Reject typed-nil
+	// pointers and other nilable kinds so a nil options value fails closed.
+	value := reflect.ValueOf(options)
+	if !value.IsValid() {
+		return true
+	}
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 type capabilitySet map[Capability]struct{}
@@ -76,13 +102,32 @@ func makeCapabilitySet(caps []Capability) capabilitySet {
 }
 
 func validateTools(caps capabilitySet, req *Request) error {
-	if len(req.Tools) > 0 && !caps.has(CapabilityTools) {
-		return unsupported(CapabilityTools)
-	}
+	toolNames := make(map[string]struct{}, len(req.Tools))
 	for _, tool := range req.Tools {
 		if tool.Name == "" {
 			return fmt.Errorf("%w: tool name is required", ErrBadRequest)
 		}
+		if _, exists := toolNames[tool.Name]; exists {
+			return fmt.Errorf("%w: duplicate tool name %q", ErrBadRequest, tool.Name)
+		}
+		toolNames[tool.Name] = struct{}{}
+	}
+	if req.ToolChoice.Mode == ToolChoiceTool {
+		if req.ToolChoice.Name == "" {
+			return fmt.Errorf("%w: tool choice name is required", ErrBadRequest)
+		}
+		if _, exists := toolNames[req.ToolChoice.Name]; !exists {
+			return fmt.Errorf("%w: tool choice names undeclared tool %q", ErrBadRequest, req.ToolChoice.Name)
+		}
+	}
+	if len(req.Tools) == 0 && req.ToolChoice.Mode != "" && req.ToolChoice.Mode != ToolChoiceAuto && req.ToolChoice.Mode != ToolChoiceNone {
+		return fmt.Errorf("%w: tool choice requires tools", ErrBadRequest)
+	}
+
+	if len(req.Tools) > 0 && !caps.has(CapabilityTools) {
+		return unsupported(CapabilityTools)
+	}
+	for _, tool := range req.Tools {
 		if tool.Strict && !caps.has(CapabilityStrictTools) {
 			return unsupported(CapabilityStrictTools)
 		}
@@ -96,17 +141,11 @@ func validateTools(caps capabilitySet, req *Request) error {
 			return unsupported(CapabilityToolChoiceRequired)
 		}
 	case ToolChoiceTool:
-		if req.ToolChoice.Name == "" {
-			return fmt.Errorf("%w: tool choice name is required", ErrBadRequest)
-		}
 		if !caps.has(CapabilityToolChoiceRequired) {
 			return unsupported(CapabilityToolChoiceRequired)
 		}
 	default:
 		return fmt.Errorf("%w: unknown tool choice mode %q", ErrBadRequest, req.ToolChoice.Mode)
-	}
-	if len(req.Tools) == 0 && req.ToolChoice.Mode != ToolChoiceNone {
-		return fmt.Errorf("%w: tool choice requires tools", ErrBadRequest)
 	}
 	return nil
 }

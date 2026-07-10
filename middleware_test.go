@@ -3,6 +3,7 @@ package llm_test
 import (
 	"context"
 	"errors"
+	"iter"
 	"strings"
 	"testing"
 
@@ -95,6 +96,58 @@ func TestWrapOrderingAndDelegation(t *testing.T) {
 	}
 	if strings.Join(order, ",") != "a before,b before,b after,a after" {
 		t.Fatalf("middleware order = %v", order)
+	}
+}
+
+func TestWrapComposesFactoriesAndBindOnce(t *testing.T) {
+	p := llmtest.New(llmtest.WithName("fake"))
+	p.EnqueueResponse(&llm.Response{Parts: []llm.Part{llm.Text("one")}})
+	p.EnqueueResponse(&llm.Response{Parts: []llm.Part{llm.Text("two")}})
+	p.EnqueueStream(llm.MessageStart{}, llm.MessageEnd{})
+	p.EnqueueStream(llm.MessageStart{}, llm.MessageEnd{})
+
+	var binds, chatFactories, streamFactories int
+	var chatCalls, streamCalls int
+	middleware := llm.Middleware{Bind: func(llm.Provider) llm.Middleware {
+		binds++
+		return llm.Middleware{
+			Chat: func(next llm.ChatFunc) llm.ChatFunc {
+				chatFactories++
+				return func(ctx context.Context, req *llm.Request) (*llm.Response, error) {
+					chatCalls++
+					return next(ctx, req)
+				}
+			},
+			Stream: func(next llm.StreamFunc) llm.StreamFunc {
+				streamFactories++
+				return func(ctx context.Context, req *llm.Request) iter.Seq2[llm.Event, error] {
+					streamCalls++
+					return next(ctx, req)
+				}
+			},
+		}
+	}}
+
+	wrapped := llm.Wrap(p, middleware)
+	if binds != 1 || chatFactories != 1 || streamFactories != 1 {
+		t.Fatalf("construction counts = bind:%d chat:%d stream:%d, want 1 each", binds, chatFactories, streamFactories)
+	}
+	req := &llm.Request{Model: "model-a", Messages: []llm.Message{llm.UserText("hi")}}
+	for i := 0; i < 2; i++ {
+		if _, err := wrapped.Chat(context.Background(), req); err != nil {
+			t.Fatalf("Chat %d returned error: %v", i, err)
+		}
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := llm.Collect(wrapped.ChatStream(context.Background(), req)); err != nil {
+			t.Fatalf("ChatStream %d returned error: %v", i, err)
+		}
+	}
+	if binds != 1 || chatFactories != 1 || streamFactories != 1 {
+		t.Fatalf("factories rebuilt after calls: bind:%d chat:%d stream:%d", binds, chatFactories, streamFactories)
+	}
+	if chatCalls != 2 || streamCalls != 2 {
+		t.Fatalf("handler calls = chat:%d stream:%d, want 2 each", chatCalls, streamCalls)
 	}
 }
 
