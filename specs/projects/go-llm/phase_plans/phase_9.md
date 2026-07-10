@@ -4,6 +4,9 @@ status: complete
 
 # Phase 9: Docs, examples, release readiness
 
+> Historical, non-normative execution record. Use `docs/release.md` for the
+> current version-neutral release checklist.
+
 ## Overview
 
 Prepare the repository for the first public pre-1.0 release. This phase adds user-facing documentation, runnable examples, a license, and a release checklist that records the live verification steps that require local provider credentials.

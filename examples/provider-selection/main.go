@@ -87,7 +87,10 @@ func fromAuthFile(path string) (llm.Provider, string, error) {
 			// refresh token stale after restart.
 			fmt.Fprintln(os.Stderr, "warning: OAuth rotations are not persisted by this demo")
 			persist = func(ctx context.Context, _ llm.AuthCredential) error {
-				return ctx.Err()
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				return nil
 			}
 		}
 		p, err := openaicodex.New(openaicodex.WithOAuth(cred, persist))

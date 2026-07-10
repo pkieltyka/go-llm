@@ -4,6 +4,9 @@ status: complete
 
 # Phase 2: Serialization + Schema
 
+> Historical, non-normative execution record. `functional_spec.md` and
+> `architecture.md` define the current contract.
+
 ## Overview
 
 This phase adds persistence-safe canonical JSON for the core `llm` vocabulary

@@ -4,6 +4,9 @@ status: complete
 
 # Phase 1: Repo Scaffolding + Core Vocabulary
 
+> Historical, non-normative execution record. `functional_spec.md` and
+> `architecture.md` define the current contract.
+
 ## Overview
 
 This phase creates the Go module and repository automation, then implements

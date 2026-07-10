@@ -4,6 +4,9 @@ status: complete
 
 # Phase 10 (v0.3): public `chatcompletions.New` + vLLM provider
 
+> Historical, non-normative execution and live-probe record. Current vLLM
+> behavior is specified in the main specs and package documentation.
+
 ## Overview
 
 Promote the internal chat-completions engine to the public

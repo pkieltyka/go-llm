@@ -8,12 +8,14 @@ Ordered by dependency; each phase is one reviewable unit ending green
 (`go vet`, `golangci-lint`, `go test -race ./...`). Section references:
 FS = functional_spec.md, ARCH = architecture.md.
 
-> **Historical record.** Phase bullets reflect phase-time API names; several
+> **Historical, non-normative record.** Phase bullets reflect phase-time API names; several
 > were renamed or removed in the v0.2 cycle (`WithDebugCapture`→
 > `WithWireCapture`, `DebugToLogger`→`WireCaptureToLogger`, `TokenSource`
 > deleted, `ToolResultPart.Parts`→`Content`, generic `ParseOption[T]`→
-> `ParseOption` — see reviews/1-first-release-review.md and commit 09c85a2).
-> FS/ARCH are authoritative for current names.
+> `ParseOption` — see reviews/1-first-release-review.md and historical commit
+> identifier `09c85a2`, retained as provenance from before the history
+> rewrite and not expected to resolve in the current repository). FS/ARCH are
+> authoritative for current names and behavior.
 
 **Human checkpoints — credentials.** Provider phases (4–7) and the release
 phase (9) end with live e2e runs. Before

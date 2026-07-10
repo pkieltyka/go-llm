@@ -4,7 +4,13 @@ status: complete
 
 # Review 1: First Release Review (v0.1.1)
 
-Conducted 2026-07-04 against HEAD `d0ce423` (v0.1.1 + README rewrite).
+> **Historical, non-normative review.** Findings describe the repository at
+> review time, not the current API. The HEAD identifier below is provenance
+> from before the history rewrite and is not expected to resolve in the
+> current repository. Use `functional_spec.md` and `architecture.md` for the
+> current contract.
+
+Conducted 2026-07-04 against historical HEAD identifier `d0ce423` (v0.1.1 + README rewrite).
 Method: four independent clean-context reviewers — API surface & DX, code
 structure & simplicity, test suite, features-vs-field — with local
 comparisons against **gollem** (fugue-labs) and **zero** (Gitlawb),

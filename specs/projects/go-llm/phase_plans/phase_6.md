@@ -4,6 +4,9 @@ status: complete
 
 # Phase 6: Subscription Auth and OpenAI Codex
 
+> Historical, non-normative execution record. It preserves phase-time OAuth
+> wording; the current fail-closed persistence contract is in the main specs.
+
 ## Overview
 
 This phase adds explicit credential-file loading, shared OAuth token handling,

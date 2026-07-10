@@ -29,6 +29,21 @@ func TestAnthropicPromptCacheProbeRequiresObservedRead(t *testing.T) {
 	}
 }
 
+func TestPromptCacheProbeAcceptsWarmupCacheHit(t *testing.T) {
+	warmup := &llm.Response{Usage: llm.Usage{InputTokens: 10, CacheReadTokens: 90}}
+	calls := 0
+	first, hit, err := probePromptCache(context.Background(), "openai-codex", noDelayPromptCachePolicy(3, nil), func(context.Context) (*llm.Response, error) {
+		calls++
+		return warmup, nil
+	})
+	if err != nil {
+		t.Fatalf("probePromptCache returned error: %v", err)
+	}
+	if first != warmup || hit != warmup || calls != 1 {
+		t.Fatalf("first=%+v hit=%+v calls=%d", first, hit, calls)
+	}
+}
+
 func TestCodexPromptCacheProbeUsesBoundedDeterministicRetries(t *testing.T) {
 	reads := []int64{0, 0, 0, 7} // warm-up followed by three probes.
 	calls := 0

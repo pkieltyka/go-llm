@@ -10,9 +10,6 @@ import (
 
 	sdk "github.com/openai/openai-go/v3"
 	sdkoption "github.com/openai/openai-go/v3/option"
-	sdkparam "github.com/openai/openai-go/v3/packages/param"
-	"github.com/openai/openai-go/v3/responses"
-	"github.com/openai/openai-go/v3/shared"
 	llm "github.com/pkieltyka/go-llm"
 	"github.com/pkieltyka/go-llm/providers/internal/providerutil"
 )
@@ -25,25 +22,6 @@ const (
 	organizationHeader   = "OpenAI-Organization"
 	projectHeader        = "OpenAI-Project"
 )
-
-// Options carries OpenAI Responses-specific request extensions.
-type Options struct {
-	Store                *bool
-	PreviousResponseID   string
-	ConversationID       string
-	Conversation         responses.ResponseNewParamsConversationUnion
-	Include              []responses.ResponseIncludable
-	Background           *bool
-	HostedTools          []responses.ToolUnionParam
-	Verbosity            responses.ResponseTextConfigVerbosity
-	Metadata             shared.Metadata
-	ServiceTier          responses.ResponseNewParamsServiceTier
-	SafetyIdentifier     string
-	PromptCacheRetention responses.ResponseNewParamsPromptCacheRetention
-}
-
-// ForProvider identifies these options as OpenAI-specific.
-func (Options) ForProvider() string { return providerName }
 
 // Option configures an OpenAI provider.
 type Option func(*config)
@@ -91,7 +69,7 @@ func WithBaseURL(url string) Option {
 	return func(c *config) { c.baseURL = url }
 }
 
-// WithHTTPClient replaces the shared default HTTP client.
+// WithHTTPClient replaces the provider's default HTTP client.
 func WithHTTPClient(client *http.Client) Option {
 	return func(c *config) { c.httpClient = client }
 }
@@ -129,77 +107,6 @@ func WithOrganization(organization string) Option {
 // WithProject sets the OpenAI project header explicitly.
 func WithProject(project string) Option {
 	return func(c *config) { c.project = project }
-}
-
-func requestOptions(req *llm.Request) (*Options, error) {
-	options, ok, err := providerutil.OptionsOf[Options](req)
-	if err != nil {
-		return nil, err
-	}
-	if !ok {
-		return nil, nil
-	}
-	return &options, nil
-}
-
-func applyOptions(options *Options, params *responses.ResponseNewParams) {
-	if options == nil {
-		return
-	}
-	if options.Store != nil {
-		params.Store = sdk.Bool(*options.Store)
-	}
-	if options.PreviousResponseID != "" {
-		params.PreviousResponseID = sdk.String(options.PreviousResponseID)
-	}
-	if !sdkparam.IsOmitted(options.Conversation) {
-		params.Conversation = options.Conversation
-	} else if options.ConversationID != "" {
-		params.Conversation.OfString = sdkparam.NewOpt(options.ConversationID)
-	}
-	if len(options.Include) > 0 {
-		params.Include = mergeIncludes(params.Include, options.Include)
-	}
-	if options.Background != nil {
-		params.Background = sdk.Bool(*options.Background)
-	}
-	if len(options.HostedTools) > 0 {
-		params.Tools = append(params.Tools, options.HostedTools...)
-	}
-	if options.Verbosity != "" {
-		params.Text.Verbosity = options.Verbosity
-	}
-	if len(options.Metadata) > 0 {
-		params.Metadata = options.Metadata
-	}
-	if options.ServiceTier != "" {
-		params.ServiceTier = options.ServiceTier
-	}
-	if options.SafetyIdentifier != "" {
-		params.SafetyIdentifier = sdk.String(options.SafetyIdentifier)
-	}
-	if options.PromptCacheRetention != "" {
-		params.PromptCacheRetention = options.PromptCacheRetention
-	}
-}
-
-func mergeIncludes(base, extra []responses.ResponseIncludable) []responses.ResponseIncludable {
-	out := append([]responses.ResponseIncludable(nil), base...)
-	seen := make(map[responses.ResponseIncludable]struct{}, len(out)+len(extra))
-	for _, include := range out {
-		seen[include] = struct{}{}
-	}
-	for _, include := range extra {
-		if include == "" {
-			continue
-		}
-		if _, ok := seen[include]; ok {
-			continue
-		}
-		seen[include] = struct{}{}
-		out = append(out, include)
-	}
-	return out
 }
 
 func (c config) validate() error {
@@ -282,7 +189,9 @@ func New(opts ...Option) (*Provider, error) {
 	}, nil
 }
 
-// Client exposes the underlying OpenAI SDK client.
+// Client exposes the underlying OpenAI SDK client as an advanced escape hatch.
+// Its vendor-typed signature is not part of the stable ordinary provider API;
+// callers using it accept source changes from openai-go upgrades.
 func (p *Provider) Client() *sdk.Client {
 	if p == nil {
 		return nil

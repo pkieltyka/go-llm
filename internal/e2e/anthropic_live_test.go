@@ -42,12 +42,7 @@ func TestLiveAnthropic(t *testing.T) {
 	if model == "" {
 		model = anthropicCheapModel
 	}
-	// Honor an explicit model override for the reasoning scenarios too;
-	// otherwise use the pinned reasoning-capable model.
-	reasoningModel := providerCfg.Model
-	if reasoningModel == "" {
-		reasoningModel = anthropicReasoningModel
-	}
+	reasoningModel := anthropicLiveReasoningModel(providerCfg)
 
 	captures := &CaptureLog{}
 	secrets := NewSecretSet(providerCfg.Auth.Key, providerCfg.Auth.Access, providerCfg.Auth.Refresh, providerCfg.Auth.AccountID, os.Getenv("ANTHROPIC_API_KEY"))
@@ -80,6 +75,17 @@ func TestLiveAnthropic(t *testing.T) {
 	ctx = RecordingContext(ctx, captures, secrets)
 	runners := anthropicLiveScenarioRunners(reasoningModel, providerCfg.BaseURL)
 	scenarioReport = RunCapabilityScenarios(ctx, t, "anthropic", p, model, runners)
+}
+
+func anthropicLiveReasoningModel(cfg ProviderConfig) string {
+	// The ordinary model override may intentionally select a cheap model that
+	// accepts adaptive-thinking fields but emits no reasoning. Keep the
+	// standard Anthropic gate pinned to a reasoning model. Custom endpoints
+	// still need their configured deployment name.
+	if cfg.BaseURL != "" && cfg.Model != "" {
+		return cfg.Model
+	}
+	return anthropicReasoningModel
 }
 
 func anthropicLiveScenarioRunners(reasoningModel, baseURL string) map[string]ScenarioRun {
@@ -379,9 +385,9 @@ func liveReasoningResponse(ctx context.Context, t *testing.T, p llm.Provider, mo
 	temperature := 1.0
 	resp, err := CollectLiveStream(p.Name(), p.ChatStream(ctx, &llm.Request{
 		Model:       model,
-		MaxTokens:   768,
+		MaxTokens:   4096,
 		Temperature: &temperature,
-		Effort:      llm.EffortHigh,
+		Effort:      llm.EffortMax,
 		Messages:    []llm.Message{llm.UserText(anthropicReasoningPrompt)},
 	}))
 	if err != nil {

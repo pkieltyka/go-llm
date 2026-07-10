@@ -4,7 +4,17 @@ status: complete
 
 # Review 2: Sol Max Whole-Repository Review
 
-Conducted 2026-07-09 against HEAD 2508d35b70558a16f76efee60dfbabd7a14735ae.
+> **Review baseline, non-normative.** Findings describe the source at the
+> recorded baseline and are intentionally retained while remediation is
+> implemented. Current behavior is defined by `functional_spec.md` and
+> `architecture.md`; remediation status is tracked in
+> `specs/plans/1-implement-sol-review.md`. Phases 1-6 are complete and Phase 7
+> is in progress. All HEAD and commit identifiers below are historical
+> provenance from before the history rewrite and are not expected to resolve
+> in the current repository.
+
+Conducted 2026-07-09 against historical HEAD identifier
+`2508d35b70558a16f76efee60dfbabd7a14735ae`.
 
 Scope: every document under specs/, all production Go packages, tests,
 examples, internal/e2e, release scripts, CI, generated model data, and

@@ -103,7 +103,10 @@ type Compat struct {
 	DefaultHeaders http.Header
 }
 
-// Config contains provider construction settings for NewWithDialect.
+// Config contains provider construction settings for NewWithDialect. It is
+// part of the advanced, stability-exempt Dialect surface and may change when
+// the underlying OpenAI SDK changes. Ordinary callers should use New and
+// declarative Compat options instead.
 type Config struct {
 	Dialect    Dialect
 	APIKey     string

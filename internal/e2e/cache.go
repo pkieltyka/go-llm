@@ -27,8 +27,9 @@ func defaultPromptCacheProbePolicy() promptCacheProbePolicy {
 }
 
 // probePromptCache performs one warm-up call followed by a bounded number of
-// evidence probes. Advertising prompt-caching is considered verified only
-// when a response reports a positive cache-read token count.
+// evidence probes. Advertising prompt-caching is considered verified when
+// any response reports a positive cache-read token count; a prior run may
+// make the nominal warm-up call a cache hit already.
 func probePromptCache(ctx context.Context, providerID string, policy promptCacheProbePolicy, call func(context.Context) (*llm.Response, error)) (*llm.Response, *llm.Response, error) {
 	if policy.Attempts <= 0 || policy.Backoff == nil || policy.Wait == nil || call == nil {
 		return nil, nil, fmt.Errorf("invalid %s prompt-cache probe configuration", providerID)
@@ -42,6 +43,9 @@ func probePromptCache(ctx context.Context, providerID string, policy promptCache
 	}
 	if warmup == nil {
 		return nil, nil, fmt.Errorf("%s prompt-cache warm-up returned a nil response", providerID)
+	}
+	if warmup.Usage.CacheReadTokens > 0 {
+		return warmup, warmup, nil
 	}
 
 	var last *llm.Response

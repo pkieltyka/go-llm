@@ -102,7 +102,7 @@ func WithBaseURL(url string) Option {
 	return func(c *config) { c.baseURL = url }
 }
 
-// WithHTTPClient replaces the shared default HTTP client.
+// WithHTTPClient replaces the provider's default HTTP client.
 func WithHTTPClient(client *http.Client) Option {
 	return func(c *config) { c.httpClient = client }
 }
@@ -204,7 +204,7 @@ func (c config) sdkOptions(source *provideroauth.Source) []sdkoption.RequestOpti
 // required in OAuth mode (FS §17C / ARCH §3.1): subscription tokens are only
 // served to Claude-Code-identified traffic, so alongside bearer auth the
 // request must carry the claude-code + oauth betas, a claude-cli user-agent,
-// and x-app: cli — mirroring pi's api/anthropic-messages.ts OAuth client.
+// and x-app: cli — matching the reference Claude-compatible OAuth clients.
 // These headers are set ONLY on the OAuth path; api-key requests are
 // untouched.
 func applyAnthropicOAuthHeaders(req *http.Request, cred llm.AuthCredential) {

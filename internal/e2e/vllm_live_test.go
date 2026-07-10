@@ -83,6 +83,8 @@ func TestLiveVLLM(t *testing.T) {
 func vllmLiveScenarioRunners(p *vllmProvider.Provider, baseURL string) map[string]ScenarioRun {
 	runners := commonLiveScenarioRunners()
 	runners["models"] = liveVLLMModelsScenario
+	runners["multimodal"] = liveVLLMMultimodalScenario
+	runners["stop_sequences"] = liveOpenAICompatibleStopSequencesScenario
 	runners["tools_stream"] = liveVLLMToolsStreamScenario
 	runners["reasoning"] = liveVLLMReasoningScenario
 	runners["reasoning_replay"] = liveVLLMReasoningReplayScenario
@@ -98,6 +100,37 @@ func vllmLiveScenarioRunners(p *vllmProvider.Provider, baseURL string) map[strin
 		liveVLLMAnthropicMessagesScenario(ctx, t, baseURL, model)
 	}
 	return runners
+}
+
+func liveVLLMMultimodalScenario(ctx context.Context, t *testing.T, p llm.Provider, model string) {
+	t.Helper()
+	temperature := 0.0
+	resp, err := p.Chat(ctx, &llm.Request{
+		Model:       model,
+		MaxTokens:   16,
+		Temperature: &temperature,
+		Messages: []llm.Message{llm.UserParts(
+			llm.ImageData(RedPixelPNG(t), "image/png"),
+			llm.Text("What color is this square? Answer with one word."),
+		)},
+	})
+	if err != nil {
+		if vllmModelRejectsImages(err) {
+			t.Skip("configured vLLM model reports zero image capacity")
+		}
+		t.Fatalf("multimodal Chat returned error: %v", err)
+	}
+	if !strings.Contains(strings.ToLower(resp.Text()), "red") {
+		t.Fatalf("multimodal text = %q, want red", resp.Text())
+	}
+}
+
+func vllmModelRejectsImages(err error) bool {
+	if !errors.Is(err, llm.ErrBadRequest) {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "at most 0 image") && strings.Contains(message, "parameter=image")
 }
 
 // liveVLLMToolsStreamScenario streams one tool call through the server-side

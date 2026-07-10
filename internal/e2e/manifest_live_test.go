@@ -3,6 +3,9 @@
 package e2e
 
 import (
+	"context"
+	"errors"
+	"iter"
 	"strings"
 	"testing"
 
@@ -78,4 +81,64 @@ func TestLiveRunnerManifests(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAnthropicLiveReasoningModelSelection(t *testing.T) {
+	if got := anthropicLiveReasoningModel(ProviderConfig{Model: anthropicCheapModel}); got != anthropicReasoningModel {
+		t.Fatalf("standard endpoint reasoning model = %q, want %q", got, anthropicReasoningModel)
+	}
+	if got := anthropicLiveReasoningModel(ProviderConfig{Model: "private-reasoning", BaseURL: "https://example.invalid"}); got != "private-reasoning" {
+		t.Fatalf("custom endpoint reasoning model = %q, want private-reasoning", got)
+	}
+}
+
+func TestVLLMModelRejectsImagesClassification(t *testing.T) {
+	unsupported := errors.Join(llm.ErrBadRequest, errors.New("At most 0 image(s) may be provided (parameter=image)"))
+	if !vllmModelRejectsImages(unsupported) {
+		t.Fatal("explicit zero-image rejection was not classified")
+	}
+	if vllmModelRejectsImages(errors.Join(llm.ErrBadRequest, errors.New("invalid image"))) {
+		t.Fatal("generic bad image was classified as zero image capacity")
+	}
+	if vllmModelRejectsImages(errors.New("At most 0 image(s) may be provided (parameter=image)")) {
+		t.Fatal("non-bad-request error was classified as zero image capacity")
+	}
+}
+
+func TestOpenRouterStopSequenceRunnerPinsCompatibleModel(t *testing.T) {
+	provider := &stopSequenceProvider{}
+	runners := openRouterLiveScenarioRunners("reasoning-model", "cache-model", "parallel-model", "tools-model", "")
+	runners["stop_sequences"](context.Background(), t, provider, "cheap-model")
+
+	if provider.request == nil {
+		t.Fatal("stop-sequence runner did not make a request")
+	}
+	if provider.request.Model != "tools-model" {
+		t.Fatalf("stop-sequence model = %q, want tools-model", provider.request.Model)
+	}
+	if len(provider.request.StopSequences) != 1 || provider.request.StopSequences[0] != "STOP" {
+		t.Fatalf("stop sequences = %q, want [STOP]", provider.request.StopSequences)
+	}
+}
+
+type stopSequenceProvider struct {
+	request *llm.Request
+}
+
+func (p *stopSequenceProvider) Name() string { return "openrouter" }
+
+func (p *stopSequenceProvider) Capabilities() []llm.Capability { return nil }
+
+func (p *stopSequenceProvider) Models(context.Context) ([]llm.ModelInfo, error) { return nil, nil }
+
+func (p *stopSequenceProvider) Chat(_ context.Context, req *llm.Request) (*llm.Response, error) {
+	p.request = req
+	return &llm.Response{
+		Parts:      []llm.Part{llm.TextPart{Text: "alpha"}},
+		StopReason: llm.StopReasonEndTurn,
+	}, nil
+}
+
+func (p *stopSequenceProvider) ChatStream(context.Context, *llm.Request) iter.Seq2[llm.Event, error] {
+	return nil
 }

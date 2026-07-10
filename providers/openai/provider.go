@@ -50,8 +50,7 @@ func (p *Provider) adapter() responsesapi.Adapter {
 			if err != nil {
 				return err
 			}
-			applyOptions(options, params)
-			return nil
+			return applyOptions(options, params)
 		},
 	}
 }

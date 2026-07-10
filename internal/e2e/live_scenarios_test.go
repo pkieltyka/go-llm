@@ -62,6 +62,16 @@ func liveJSONModeScenario(ctx context.Context, t *testing.T, p llm.Provider, mod
 }
 
 func liveStopSequencesScenario(ctx context.Context, t *testing.T, p llm.Provider, model string) {
+	liveStopSequencesScenarioWithReasons(ctx, t, p, model, llm.StopReasonStopSequence)
+}
+
+func liveOpenAICompatibleStopSequencesScenario(ctx context.Context, t *testing.T, p llm.Provider, model string) {
+	// Chat Completions uses finish_reason "stop" for both a natural stop and
+	// a matched stop sequence, so these adapters cannot distinguish the two.
+	liveStopSequencesScenarioWithReasons(ctx, t, p, model, llm.StopReasonStopSequence, llm.StopReasonEndTurn)
+}
+
+func liveStopSequencesScenarioWithReasons(ctx context.Context, t *testing.T, p llm.Provider, model string, allowed ...llm.StopReason) {
 	t.Helper()
 	temperature := 0.0
 	resp, err := p.Chat(ctx, &llm.Request{
@@ -78,9 +88,12 @@ func liveStopSequencesScenario(ctx context.Context, t *testing.T, p llm.Provider
 	if text == "" || strings.Contains(text, "STOP") || strings.Contains(strings.ToLower(text), "omega") {
 		t.Fatalf("stop-sequence response = %q", resp.Text())
 	}
-	if resp.StopReason != llm.StopReasonStopSequence {
-		t.Fatalf("stop-sequence reason = %q, want %q", resp.StopReason, llm.StopReasonStopSequence)
+	for _, reason := range allowed {
+		if resp.StopReason == reason {
+			return
+		}
 	}
+	t.Fatalf("stop-sequence reason = %q, want one of %q", resp.StopReason, allowed)
 }
 
 func liveSessionAffinityScenario(ctx context.Context, t *testing.T, p llm.Provider, model string) {

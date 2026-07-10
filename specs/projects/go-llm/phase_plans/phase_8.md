@@ -4,6 +4,9 @@ status: complete
 
 # Phase 8: cmd/llm-cli
 
+> Historical, non-normative execution record. `functional_spec.md` and
+> `architecture.md` define the current CLI contract.
+
 ## Overview
 
 Build the `cmd/llm-cli` command-line frontend described in FS §19 and ARCH §7C. The CLI is a thin public-API consumer: it uses stdlib `flag`, constructs providers through public provider packages, builds `llm.Request` values from flags/stdin/files, streams by default, supports canonical JSON/history persistence, and exposes a `models` subcommand.

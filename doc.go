@@ -1,7 +1,7 @@
 // Package llm provides one clean, provider-neutral Go interface to chat
-// LLMs — Anthropic, OpenAI, ChatGPT/Claude subscription plans, OpenRouter —
-// with normalized streaming, tool calling, structured output, reasoning,
-// usage, cost, and errors.
+// LLMs — Anthropic, OpenAI, ChatGPT/Claude subscription plans, OpenRouter,
+// and self-hosted OpenAI-compatible servers — with normalized streaming,
+// tool calling, structured output, reasoning, usage, cost, and errors.
 //
 // go-llm is a low-level provider client library: it does one layer well and
 // stops there. No agent loops, no prompt frameworks. This core package has
@@ -14,11 +14,13 @@
 // Capabilities, Models, blocking Chat, and streaming ChatStream. Shipped
 // providers live under providers/: anthropic (API key or Claude Pro/Max
 // OAuth), openai (Responses API), openaicodex (ChatGPT Plus/Pro
-// subscription OAuth), and openrouter. Each exposes its concrete type so a
-// type assertion reaches the raw SDK client, and each accepts typed
-// extension options through Request.ProviderOptions. Subscription (OAuth)
-// credentials minted by existing CLIs are consumed and auto-refreshed;
-// LoadAuthFile reads the pi-compatible credential file format.
+// subscription OAuth), openrouter, vllm, ollama, and the generic
+// chatcompletions engine. Concrete providers expose advanced escape hatches,
+// and typed extension options travel through Request.ProviderOptions.
+// Subscription credentials minted by existing CLIs are consumed and
+// auto-refreshed; LoadAuthFile reads the pi-compatible credential format.
+// Refreshable credentials require a context-aware persistence callback, and
+// renewed credentials publish only after durable persistence succeeds.
 //
 // # Requests, messages, and streaming
 //
@@ -31,7 +33,8 @@
 // ChatStream returns an iter.Seq2[Event, error] of unified events. Collect
 // drains any stream into a *Response — and on an in-stream error it returns
 // the partial Response accumulated so far alongside the error, so aborted
-// turns can be persisted. StreamText filters a stream to plain text deltas.
+// turns can be persisted. Content indexes are stable provider/wire positions
+// and may contain gaps. StreamText filters a stream to plain text deltas.
 //
 // # Tools
 //
@@ -39,8 +42,9 @@
 // Go types by the schema subpackage). Malformed model tool calls never fail
 // the turn and are never silently swallowed: adapters rescue what is
 // rescuable and drop the rest visibly (ToolCallDropped events and
-// Response.DroppedToolCalls), with the opt-in RetryDroppedToolCalls
-// middleware for bounded automatic correction.
+// Response.DroppedToolCalls). ToolCallIDChanged corrects an active
+// provisional call's identity without dropping it. RetryDroppedToolCalls is
+// the opt-in middleware for bounded automatic correction.
 //
 // # Structured output
 //

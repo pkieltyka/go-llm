@@ -110,6 +110,12 @@ func TestLiveOpenRouter(t *testing.T) {
 
 func openRouterLiveScenarioRunners(reasoningModel, cacheModel, parallelToolsModel, toolsModel, baseURL string) map[string]ScenarioRun {
 	runners := commonLiveScenarioRunners()
+	runners["stop_sequences"] = func(ctx context.Context, t *testing.T, p llm.Provider, _ string) {
+		// Stop forwarding is routing-dependent for the cheap Qwen route, so
+		// exercise the adapter against the same reliable Anthropic-family pin
+		// used by the tool scenarios.
+		liveOpenAICompatibleStopSequencesScenario(ctx, t, p, toolsModel)
+	}
 	runners["tools"] = func(ctx context.Context, t *testing.T, p llm.Provider, _ string) {
 		liveToolsScenario(ctx, t, p, toolsModel)
 	}

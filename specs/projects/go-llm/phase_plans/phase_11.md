@@ -4,6 +4,9 @@ status: complete
 
 # Phase 11 (post-v0.3.1): vLLM `/tokenize` extensions + native `structured_outputs` modes
 
+> Historical, non-normative execution and live-probe record. Current vLLM
+> behavior is specified in the main specs and package documentation.
+
 ## Overview
 
 Deliver the two vLLM increments queued at the end of phase 10 (plan Future

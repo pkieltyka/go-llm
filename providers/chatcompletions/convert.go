@@ -15,7 +15,9 @@ import (
 	"github.com/pkieltyka/go-llm/providers/internal/providerutil"
 )
 
-// BuildParams converts a go-llm request to chat-completions parameters.
+// BuildParams converts a go-llm request to chat-completions parameters. It is
+// an advanced, vendor-coupled escape hatch and is exempt from pre-v1 API
+// stability; ordinary callers should use Chat or ChatStream.
 func (p *Provider) BuildParams(req *llm.Request, stream bool) (sdk.ChatCompletionNewParams, error) {
 	if stream {
 		if err := llm.ValidateStreamRequest(p.Capabilities(), req); err != nil {

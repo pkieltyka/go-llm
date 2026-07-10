@@ -4,6 +4,9 @@ status: complete
 
 # Phase 3: Core Utilities
 
+> Historical, non-normative execution record. `functional_spec.md` and
+> `architecture.md` define the current contract.
+
 ## Overview
 
 This phase fills in the provider-independent utility layer around the core

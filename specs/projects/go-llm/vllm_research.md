@@ -4,6 +4,10 @@ status: complete
 
 # vLLM Server API Surface — Research Report (as of 2026-07)
 
+> **Research, not a normative provider contract.** This point-in-time upstream
+> survey explains design choices and may age as vLLM changes. Current shipped
+> behavior is defined by the main specs and `providers/vllm` package docs.
+
 Target: first-class vLLM support in go-llm via the shared chat-completions adapter + per-provider dialect hooks / declarative Compat config.
 
 **Version landscape.** vLLM's release cadence accelerated sharply in 2026. Latest release at time of writing: **v0.24.0 (2026-06-26)** ([releases](https://github.com/vllm-project/vllm/releases)). Key API-surface milestones referenced throughout:

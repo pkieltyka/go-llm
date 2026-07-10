@@ -29,14 +29,15 @@ go-llm/
 │   ├── package.json                              # tsx runner; dev-time only, go.mod untouched
 │   └── pnpm-lock.yaml                            # reproducible dev-tool dependency graph
 ├── validate.go                                   # capability/request validation
-├── httpclient.go                                 # DefaultHTTPClient() — tuned shared transport (FS §17)
+├── httpclient.go                                 # fresh clients over one private tuned transport (FS §17)
 ├── auth.go                                       # LoadAuthFile — pi-compatible credential parsing (FS §17)
 ├── serialize.go                                  # canonical JSON for Message/Part/Response
 ├── middleware.go                                 # Middleware + Wrap decorator
-├── observe.go                                    # UsageTracker, WireCapture, WireCaptureToLogger, wiretap transport
+├── usage.go, wiretap.go, retrylog.go             # usage tracking, wire capture, retry logging
 ├── prompt.go                                     # PromptTemplate (minimal text/template wrapper)
 ├── parse.go                                      # Parse[T] structured-output helper
-├── schema/                                       # schema-from-struct + arg validation (stdlib-only)
+├── schema/                                       # public schema facade (stdlib-only API)
+├── internal/schemajson/                          # schema generation + validation engine
 ├── llmtest/                                      # scriptable fake Provider
 ├── cmd/llm-cli/                                  # curl-like CLI frontend (stdlib flag; public API only)
 ├── internal/e2e/                                 # live e2e scenario harness (build tag: live)
@@ -47,8 +48,7 @@ go-llm/
 │   ├── openrouter/                               # chatcompletions + OpenRouter dialect
 │   ├── vllm/                                     # chatcompletions + vLLM dialect (self-hosted, key-optional — §3.3)
 │   ├── ollama/                                   # data-only preset over chatcompletions.New (community-verified)
-│   ├── zai/                                      # chatcompletions + ZAI dialect (DEFERRED to v1.x — FS §3)
-│   └── chatcompletions/                          # PUBLIC shared chat-completions engine (promoted v0.3 — §3.3)
+│   └── chatcompletions/                          # public shared chat-completions engine (§3.3)
 └── go.mod
 ```
 
@@ -56,8 +56,7 @@ Dependency rules:
 
 - Root `llm` package: **stdlib only**. It defines the entire public vocabulary.
 - Provider packages import `llm` + their SDK. Nothing in `llm` imports providers.
-- `providers/chatcompletions` is **public as of v0.3** (promoted from
-  `providers/internal/`): `New(baseURL, opts...)` + the declarative `Compat`
+- `providers/chatcompletions` is public: `New(baseURL, opts...)` + the declarative `Compat`
   struct are the supported surface for arbitrary OpenAI-compatible servers;
   the full `Dialect` interface (`NewWithDialect`) is documented as an
   advanced, stability-exempt surface for preset packages.
@@ -66,11 +65,11 @@ Dependencies (pinned at implementation time):
 
 | Dependency | Where | Purpose |
 |---|---|---|
-| `github.com/anthropics/anthropic-sdk-go` (v1.55.x verified 2026-07) | `providers/anthropic` | Official Anthropic SDK — Messages API confirmed as the current recommended client surface |
-| `github.com/openai/openai-go/v3` (v3.41.x verified 2026-07) | `providers/openai` (Responses surface, direct) + `providers/{openrouter,vllm,ollama,zai}` via `providers/chatcompletions` (Chat Completions surface) | Official OpenAI SDK — one dependency serves both surfaces |
-| `github.com/google/go-cmp` | tests only | Diffs in table tests |
+| `github.com/anthropics/anthropic-sdk-go` | `providers/anthropic` | Official Anthropic SDK for the Messages API |
+| `github.com/openai/openai-go/v3` | `providers/openai` (Responses) + `providers/chatcompletions` and its presets | Official OpenAI SDK; ordinary OpenAI options do not expose its types |
 
-Go version: 1.26.
+The minimum Go version for users of the module is 1.26. Releases are verified
+with Go 1.26.5 or newer.
 
 ## 2. Core Types (package `llm`)
 
@@ -116,7 +115,7 @@ Ergonomic constructors: `llm.UserText(s)`, `llm.AssistantText(s)`,
 `llm.ToolResultParts(id, parts...)` (exactly two tool-result constructors;
 `Name`/`IsError` are plain struct fields callers set).
 
-Provider-specific parts (ZAI video/file URL) are defined in the provider
+Provider-specific parts are defined in the provider
 package as types implementing `llm.Part` — the sealed interface has an
 exported escape: `type ExtensionPart interface { Part; ExtensionProvider() string }`.
 Adapters skip extension parts from other providers with `ErrUnsupported`.
@@ -311,7 +310,7 @@ var ErrAuth, ErrPermission, ErrNotFound, ErrBadRequest, ErrRateLimited,
 type ProviderError struct {
     Provider   string
     HTTPStatus int
-    Code       string            // stringly: OpenAI type, OpenRouter number, ZAI business code
+    Code       string            // stringly: OpenAI type or OpenRouter number
     Message    string
     RetryAfter time.Duration     // 0 = not provided
     Metadata   map[string]any    // e.g. OpenRouter moderation metadata
@@ -328,7 +327,7 @@ Both layers in one type: `errors.Is` matches the sentinel via `Unwrap`;
 (`context.Canceled`, `DeadlineExceeded`) pass through unwrapped.
 
 `ErrUnsupported` is produced by pre-flight validation (§6) and always wrapped
-with the capability name: `fmt.Errorf("%w: tool-choice-required (zai)", ErrUnsupported)`.
+with the capability name: `fmt.Errorf("%w: pdf-input (provider)", ErrUnsupported)`.
 
 ### 2.7 Canonical serialization (`serialize.go`)
 
@@ -341,7 +340,7 @@ with the capability name: `fmt.Errorf("%w: tool-choice-required (zai)", ErrUnsup
   §9). Direct `encoding/json` marshaling remains available for ordinary
   JSON interop, but the standard library compacts and HTML-escapes
   `MarshalJSON` output, so it is not the raw-byte persistence contract.
-- Extension parts serialize as `"<provider>/<kind>"` (e.g. `zai/video_url`).
+- Extension parts serialize as `"<provider>/<kind>"`.
   Provider packages register decoders in `init()` via
   `llm.RegisterPartType(name string, decode func(json.RawMessage) (Part, error)) error`.
   Unknown types decode to an `UnknownPart{Type string; Data json.RawMessage}`
@@ -397,7 +396,7 @@ Wrapping a stream is plain function decoration over the returned iterator
 func RetryDroppedToolCalls(n int) Middleware
 ```
 
-### 2.8A Observability (`observe.go`)
+### 2.8A Observability (`usage.go`, `wiretap.go`, `retrylog.go`)
 
 All stdlib (`log/slog`, `net/http`, `sync`); silent by default; per FS §17B.
 
@@ -411,7 +410,8 @@ per-provider wiring pattern (established in phase 4's adapter, copied by
 later providers).
 
 ```go
-// Wire-level debug capture — one per HTTP attempt, secrets always redacted.
+// Wire-level debug capture — one per HTTP attempt. Sensitive headers are
+// always redacted; URLs and bodies remain verbatim application-sensitive data.
 type WireCapture struct {
     Provider        string
     Method, URL     string
@@ -573,6 +573,11 @@ reasoning across tool-call turns. Decision record:
   `include: ["reasoning.encrypted_content"]` unless `openai.Options`
   explicitly opts into server-side state (`Store`, `PreviousResponseID`,
   `Conversation`).
+- **Public request extensions**: `openai.Options` uses go-llm and
+  standard-library types (`Include`, `Conversation`, `Metadata`, enums, and
+  `[]json.RawMessage` hosted-tool objects). Hosted tools are validated as JSON
+  objects before conversion. Ordinary consumers do not import `openai-go`;
+  `Provider.Client` is the explicit vendor-typed escape hatch.
 - **Response map**: `output` items → parts in order — `reasoning` item →
   `ReasoningPart{Text: joined summary, Raw: full item JSON incl.
   encrypted_content}`; `message`/`output_text` → `TextPart` (annotations
@@ -604,10 +609,9 @@ reasoning across tool-call turns. Decision record:
 FS §17C). Serves ChatGPT Plus/Pro subscriptions against the Responses
 wire shape at `chatgpt.com/backend-api/codex`:
 
-- **Reuses the phase-5 Responses mapping**: when building this provider,
-  extract `providers/openai`'s request/response/stream mapping into a
-  shared internal package (e.g. `providers/internal/responses`) consumed
-  by both — the codex provider adds only endpoint, auth, and headers.
+- **Shared Responses mapping**: `providers/internal/responsesapi` contains
+  the request, response, stream, and error mapping consumed by both OpenAI
+  providers. The Codex provider adds only endpoint, auth, and headers.
 - Construction: `openaicodex.New(openaicodex.WithOAuth(cred, persist), ...)`
   — no API-key path (subscription-only). openai-go client configured
   with the codex base URL, bearer from the internal `provideroauth.Source`, and per-request
@@ -618,8 +622,8 @@ wire shape at `chatgpt.com/backend-api/codex`:
   to §3.2 via the shared mapping. Capabilities mirror `providers/openai`;
   `Models()` returns a curated static list (subscription backend has no
   public models endpoint).
-- Exact refresh endpoint + public client id verified from pi
-  (`oauth/openai-codex.ts`) / zero at implementation time.
+- Exact refresh endpoint and public client id were verified against pi and
+  zero's Codex OAuth implementations at implementation time.
 - **Reasoning-replay matching**: the shared Responses mapping takes the
   accepting provider id as a parameter. `openai` and `openai-codex` are
   **not mutually replayable** in v1 — each accepts only reasoning parts
@@ -633,11 +637,10 @@ wire shape at `chatgpt.com/backend-api/codex`:
   gpt-5.3-codex+ models that require phase on assistant messages.
   (Matching comment on the codex provider's `adapter()`.)
 
-### 3.3 OpenAI-compatible providers — public engine + Dialect presets (OpenRouter, vLLM, Ollama, ZAI)
+### 3.3 OpenAI-compatible providers — public engine + presets
 
 `providers/chatcompletions` implements one adapter over `openai-go`'s Chat
-Completions surface. **Promoted to a public package in v0.3** (decision
-2026-07-05: one layer, one name): the supported entry point is the
+Completions surface. The supported entry point is the
 key-OPTIONAL generic constructor plus the declarative `Compat` struct —
 self-hosted servers are commonly keyless, and no env fallback is consulted:
 
@@ -680,7 +683,7 @@ type Dialect interface {
     // reasoning_details tagged with Dialect.Name() for replay, content,
     // refusal, tool calls with malformed-call drops); dialects override only
     // for non-standard shapes. The default mapping reads BOTH `reasoning`
-    // and the legacy `reasoning_content` spelling (pre-rename vLLM, ZAI).
+    // and the legacy `reasoning_content` spelling used by older vLLM.
     ExtractParts(raw JSONObject, msg RawMessage) ([]llm.Part, []llm.DroppedToolCall, error)
 
     // ExtractExtras builds the dialect's typed Response.Raw extras from the
@@ -728,9 +731,10 @@ type Compat struct {
 }
 ```
 
-The raw wire types visible in Dialect signatures (`JSONObject`, `RawMessage`,
-`RawChoice`, `RawUsage`, ...) are exported with the same decoded-payload
-semantics they had internally.
+The raw wire types visible in `Dialect` signatures (`JSONObject`,
+`RawMessage`, `RawChoice`, `RawUsage`, ...) and `BuildParams` are advanced,
+vendor-coupled, and stability-exempt before v1. Ordinary callers use `New`,
+`Compat`, `Chat`, and `ChatStream`.
 
 The adapter owns everything common: message/part conversion, tools, response
 format, **fail-open schema adaptation** (per-dialect strict-mode
@@ -756,7 +760,7 @@ Dialect specifics (surface per functional spec §14):
   extracts `provider`, `native_finish_reason`, annotations,
   `reasoning_details` into typed response extras (accessor
   `openrouter.Extras(resp *llm.Response) (*ResponseExtras, bool)`).
-- **vllm** (v0.3; research: `vllm_research.md`): host-first
+- **vllm** (upstream research: `vllm_research.md`): host-first
   `vllm.New(baseURL, opts...)`, key-optional. Era-aware: modern default
   (v0.12+, `reasoning` field) with `WithLegacyEra()` switching reasoning
   replay to `reasoning_content`; `response_format: json_schema` is the
@@ -770,18 +774,15 @@ Dialect specifics (surface per functional spec §14):
   `EnableThinking` sugar), `vllm_xargs` passthrough. Numeric in-stream
   error codes classify through the canonical status table. Live
   `Models()` surfaces `max_model_len` as `ContextWindow` (LoRA `parent`
-  stays in Raw). finish_reason `abort` → `StopReasonError`. The
-  Responses-API opt-in surface stays deferred (flip criteria in plan
-  Future Work); `/tokenize` extension deferred (phase_10 plan notes).
+  stays in Raw); `ResolveModel` performs exact, fuzzy, and Qwen-preferred
+  selection over that list. `Tokenize`, `Detokenize`, and `TokenizerInfo`
+  target the server-root tokenizer endpoints; `Tokenize` reuses Chat request
+  conversion and returns exact `Count` plus `MaxModelLen`. finish_reason
+  `abort` → `StopReasonError`. A Responses-API opt-in remains future work.
 - **ollama**: data-only preset (community-verified, not live-tested):
   `ollama.New(baseURL)` = `chatcompletions.New` + localhost:11434/v1
   convention + name "ollama" + `StreamIncludeUsage`. No code paths of its
   own — anything beyond the OpenAI compatibility layer is out of scope.
-- **zai**: `thinking`/`reasoning_effort`/`do_sample`/`tool_stream`/
-  `request_id`/`user_id` extras; auto-sets `tool_stream: true` when
-  streaming with tools; `delta.reasoning_content` → `ReasoningDelta`;
-  numeric-string business-code error table; base URL selector
-  (`zai.General`, `zai.CodingPlan`); curated static model list.
 
 **Decision (phase 7): streaming bypasses `openai-go` with a direct SSE
 transport.** The adapter's `ChatStream` issues the POST itself and parses
@@ -806,13 +807,16 @@ status-line-only and does not retry transport errors.
 
 ### 3.4 Construction & configuration
 
-Every provider package:
+Provider packages expose the applicable options from this set. API-key
+providers expose `WithAPIKey`/`WithAPIKeyFunc`; the subscription-only Codex
+provider exposes `WithOAuth` instead; host-first and data-only presets reuse
+the public `chatcompletions` options where appropriate.
 
 ```go
 func New(opts ...Option) (*Provider, error)
 
 // Common options (mirrored per package, mapped onto SDK options):
-WithAPIKey(string)        // default: provider env var
+WithAPIKey(string)        // provider env fallback where supported; explicit for self-hosted
 WithBaseURL(string)
 WithHTTPClient(*http.Client) // default: llm.DefaultHTTPClient() (below)
 WithMaxRetries(int)       // default 2, delegated to the SDK's retry layer
@@ -824,9 +828,9 @@ WithWireCapture(func(llm.WireCapture)) // wire-level trace tap (FS §17B)
 WithDefaultMaxTokens(int)        // anthropic only
 ```
 
-No global state; constructors return errors (e.g. missing API key) rather
-than panicking. Retries live in the SDK layer for every SDK-mediated call —
-go-llm never stacks a second retry loop on top of an SDK one. Two
+No global mutable request state; constructors return errors (e.g. missing API
+key) rather than panicking. Retries live in the SDK layer for every
+SDK-mediated call — go-llm never stacks a second retry loop on top of one. Two
 direct-transport paths own their (single) retry loop instead, both bounded
 by the same `WithMaxRetries` count and both **billing-safe** — the retry
 decision is made before any stream bytes are consumed, and a 2xx response
@@ -843,9 +847,9 @@ retried.
 **Default HTTP client** (`httpclient.go`, core, stdlib-only — FS §17):
 
 ```go
-// DefaultHTTPClient returns the shared, lazily-built HTTP client used by
-// all provider constructors when WithHTTPClient is not supplied. Treat as
-// immutable. Passed to the SDKs via their WithHTTPClient options.
+// DefaultHTTPClient returns a fresh HTTP client used by provider
+// constructors when WithHTTPClient is not supplied. Clients share only a
+// private connection-pooling transport.
 func DefaultHTTPClient() *http.Client
 ```
 
@@ -854,12 +858,10 @@ handshake timeout, `ForceAttemptHTTP2`), then: `Client.Timeout = 0`
 (never a whole-body timeout — SSE), `ResponseHeaderTimeout = 120s`,
 `IdleConnTimeout = 30s`, `MaxIdleConnsPerHost = 16`, and on
 `runtime.GOOS == "darwin"`: `DisableKeepAlives = true` (macOS stale-pool
-hang workaround; implies per-request HTTP/1.1 — documented trade, from
-zero's production data). Shared via `sync.Once` (the third sanctioned
-lazy singleton, with the part-type registry and models table) so all
-providers pool connections together. Tests: darwin branch via a
-GOOS-parameterized constructor helper; a `Timeout==0` guard test (the
-SSE-killing footgun must never regress).
+hang workaround; implies per-request HTTP/1.1 — documented trade). The
+private transport is initialized once and shared for pooling; the mutable
+`*http.Client` wrapper is new on every call. Tests pin client independence,
+transport sharing, the darwin branch, and `Timeout==0`.
 
 **Auth-file loader** (`auth.go`, core, stdlib-only — FS §17):
 
@@ -885,18 +887,17 @@ type AuthCredential struct {
 }
 ```
 
-Unknown `type` values and unknown fields are preserved-tolerated (parse,
-don't error — forward-compatible with pi additions). Secrets never appear
-in `String()`/log output (no `Stringer` that prints them; the e2e harness
-logs provider names only).
+Unknown `type` values are retained, while unknown fields are tolerated and
+ignored for forward compatibility with pi additions. Secrets never appear in
+`String()`/log output (no `Stringer` that prints them; the e2e harness logs
+provider names only).
 
 **OAuth consumption** (FS §17C) builds on these types:
 
 ```go
 // Token sourcing is INTERNAL (providers/internal/provideroauth.Source):
 // per-provider refresh endpoints/client ids, goroutine-safe single-flight
-// refresh. No exported llm.TokenSource type exists — v0.1 shipped one with
-// zero consumers and v0.2 removed it.
+// refresh. No exported llm.TokenSource type exists.
 
 // Subscription-capable provider packages expose:
 //   WithOAuth(cred llm.AuthCredential, persist llm.OAuthPersistenceFunc) Option
@@ -938,13 +939,14 @@ boundary) so the taxonomy can't drift between code paths.
   canonical entry's pricing).
 - **Model table = embedded JSON snapshot** (`models.json`), refreshed by
   `make models` through `scripts/snapshot-models-table.ts` (tsx; dev-time only):
-  fetches `https://models.dev/api.json` (+ OpenRouter `/api/v1/models`
-  for its roster), **trims to our providers and the fields we consume**
-  (pricing $/MTok, context window, max output, canonical IDs, ZAI
-  roster), applies `scripts/overrides.json` (hand-maintained patch
-  table — pi's production lesson: upstream metadata is wrong often
-  enough that overrides are mandatory), and writes the final JSON with a
-  `generated_at` stamp. The root package `go:embed`s it and parses
+  validates the models.dev provider object maps and OpenRouter `data[]`,
+  trims them to Anthropic, OpenAI, and OpenRouter fields consumed by the
+  library, omits invalid limit/pricing sentinels, applies
+  `scripts/overrides.json`, and deterministically writes a `generated_at`
+  snapshot. Provider/count minimums, model-identity replacement, and material
+  metadata loss are guarded; destructive changes require an explicit
+  `--allow-destructive` review override. Writes are atomic and preserve the
+  previous file on failure. The root package `go:embed`s the result and parses
   **lazily** (`sync.Once` on first pricing/`Models()` use — no `init()`
   cost, one immutable table). The library never fetches at runtime.
   Snapshot refresh is a release-phase step and documented maintenance
@@ -1023,17 +1025,18 @@ func (u Usage) ContextUsage(window int64) ContextUsage
 
 Not goroutine-safe (documented); it's a builder, not a store.
 
-## 7A. `schema` Subpackage (stdlib-only)
+## 7A. `schema` Facade and `internal/schemajson`
 
-Hand-rolled, minimal reflection-based generator — deliberately **not** a
-full JSON Schema implementation, only the strict-mode subset providers
-accept (see functional spec §8):
+The public `schema` package is a zero-friction facade over the shared internal
+engine. The engine is deliberately not a full JSON Schema implementation; it
+generates and validates the strict subset provider APIs accept:
 
 ```go
 package schema
 
 // For generates a JSON Schema for T: objects from structs (json tags;
-// fields required unless pointer or `,omitempty` — overridable via the
+// fields required unless encoding/json can omit them (pointer,
+// `,omitempty`, or Go 1.26 `,omitzero`) — overridable via the
 // required/optional flags), strings/numbers/bools, slices, maps[string]X,
 // nested structs. Field tags use the ecosystem-standard `jsonschema` key
 // (invopop/eino/fugue convention), key=value pairs:
@@ -1056,10 +1059,10 @@ type JSONSchemaer interface{ JSONSchema() json.RawMessage }
 func ValidateArgs(t llm.Tool, args json.RawMessage) error
 ```
 
-Rejected alternative: `invopop/jsonschema` dependency — the supported schema
-subset is small enough that ~300 lines of `reflect` keeps `go.mod` clean.
-Unsupported Go types (channels, funcs, recursive structs) return errors, not
-panics.
+The schema engine itself uses only the standard library. Numeric enum
+comparison is exact across equivalent JSON spellings and arbitrary precision;
+schema shape is validated before model arguments. Unsupported Go types
+(channels, funcs, recursive structs) return errors, not panics.
 
 ## 7B. `llmtest` Package
 
@@ -1105,6 +1108,11 @@ via `llm.StreamText` or collect for `--json`/`--no-stream`), `models.go`
   `WithWireCapture(WireCaptureToLogger(stderr slog))`.
 - `--load`/`--save` use `UnmarshalMessages`/`MarshalMessages` + `History`
   verbatim — the CLI is the serialization + cross-provider-replay demo.
+- OpenAI Codex authentication precedence is `--auth-file`,
+  `OPENAI_CODEX_ACCESS_TOKEN`, then compatibility `--api-key`. The auth file
+  is loaded only when explicitly named, and refreshes are persisted through a
+  context-aware atomic writer. Help warns that command-line secrets are
+  exposed through argv and often shell history.
 - `--version` via `runtime/debug.ReadBuildInfo`.
 - Context: `signal.NotifyContext` for Ctrl-C — cancels the stream cleanly
   (exercises the cancellation contract).
@@ -1129,13 +1137,14 @@ via `llm.StreamText` or collect for `--json`/`--no-stream`), `models.go`
 4. **Typed ProviderOptions without generics contortions.** Marker interface
    + name check. Compile-time safety inside each provider package; runtime
    name check guards cross-provider mistakes.
-5. **openai-go extra fields.** Non-standard request fields via
+5. **Chat Completions SDK extra fields.** Non-standard request fields via
    `SetExtraFields`; non-standard response fields via preserved raw JSON
    (`.JSON.ExtraFields` / `RawJSON()`). This is the load-bearing mechanism
-   for OpenRouter/ZAI dialects and gets dedicated fixture tests.
+   for OpenRouter and vLLM dialects and gets dedicated fixture tests. OpenAI
+   Responses `Options` deliberately does not expose vendor SDK types.
 6. **Auto-set flags.** `store: false` + `include:
-   ["reasoning.encrypted_content"]` (OpenAI Responses), `tool_stream`
-   (ZAI, when streaming+tools), `stream_options.include_usage` (CC dialects
+   ["reasoning.encrypted_content"]` (OpenAI Responses when effectively
+   stateless), `stream_options.include_usage` (CC dialects
    where required) — set in the adapter, invisible to callers, covered by
    request-build golden tests.
 7. **Serialization forward-compatibility.** Unknown part types decode to
@@ -1169,15 +1178,15 @@ via `llm.StreamText` or collect for `--json`/`--no-stream`), `models.go`
 - **Response/stream fixture tests**: recorded provider JSON/SSE payloads
   replayed via `httptest.Server` → assert parts, stop reasons, usage, and
   unified event sequences. Fixtures include: OpenRouter comment keep-alives,
-  OpenRouter mid-stream error chunk, ZAI `reasoning_content`, Anthropic
+  OpenRouter mid-stream error chunk, vLLM legacy `reasoning_content`, Anthropic
   thinking + tool-use blocks, refusal stop, parallel tool calls,
   malformed tool calls (missing id/name, truncated args, duplicate ids →
   rescue or `ToolCallDropped`), and per-adapter usage-invariant tables
-  (FS §11 — esp. the OpenAI/ZAI cached-tokens subtraction).
+  (FS §11 — especially OpenAI/Codex cached-token subtraction).
 - **Collect-equivalence property**: for every stream fixture with a matching
   non-stream fixture, `Collect(stream)` equals the `Chat` response.
-- **Error-mapping table tests**: status/code → sentinel for all providers
-  (incl. ZAI business codes, OpenRouter 402/403-with-metadata).
+- **Error-mapping table tests**: status/code → sentinel for all providers,
+  including OpenRouter 402/403-with-metadata.
 - **Validation tests**: capability mismatches → `ErrUnsupported`.
 - **Serialization round-trip property**: for every fixture response and
   hand-built message set, canonical-helper
@@ -1200,7 +1209,8 @@ via `llm.StreamText` or collect for `--json`/`--no-stream`), `models.go`
 - **Observability tests**: logger output assertions via a captured slog
   handler (summary fields, levels, silence-by-default); `UsageTracker`
   aggregation across concurrent Chat + Stream calls (race detector);
-  wiretap redaction (no secret ever appears in a capture), SSE tee
+  wiretap sensitive-header redaction (URLs and bodies remain verbatim and
+  application-sensitive), SSE tee
   correctness, one capture per retry attempt.
 - **`llmtest` self-tests** double as the `Provider` interface conformance
   suite.
@@ -1248,7 +1258,7 @@ via `llm.StreamText` or collect for `--json`/`--no-stream`), `models.go`
       "openai":       {"type": "api_key", "key": "sk-...", "model": "optional-override"},
       "openai-codex": {"type": "oauth", "access": "...", "refresh": "...", "expires": 0, "accountId": "..."},
       "openrouter":   {"type": "api_key", "key": "sk-or-..."},
-      "zai":          {"type": "api_key", "key": "...", "base_url": "optional"}
+      "vllm":         {"base_url": "http://host:8000/v1", "model": "qwen"}
     }
   }
   ```
@@ -1258,11 +1268,11 @@ via `llm.StreamText` or collect for `--json`/`--no-stream`), `models.go`
   (overrides the pinned cheap default) and `base_url`. Parsing goes
   through the public `llm.LoadAuthFile` (FS §17), which accepts both
   this nested wrapper and a bare pi auth map. Providers missing from the
-  file fall back to their env var (`ANTHROPIC_API_KEY`, …); an empty
-  `key` counts as missing; still missing → that provider's scenarios
-  **skip with a visible SKIP**, never fail. `oauth` entries become
-  runnable when a subscription-style provider exists (deferred list).
-  The library never reads this file implicitly (FS §17).
+  file fall back to their supported env var; an empty key counts as missing.
+  Missing providers skip visibly, while malformed or remotely rejected
+  configured credentials fail. vLLM is configured by `base_url` and resolves
+  the optional model preference against its live model list. The library never
+  reads this file implicitly (FS §17).
 - **Fixture recording + offline replay**: the e2e harness accepts a
   `-record` flag that captures live wire payloads into the offline fixture
   corpus — fixtures stay honest as providers evolve instead of being
@@ -1280,26 +1290,20 @@ via `llm.StreamText` or collect for `--json`/`--no-stream`), `models.go`
   `schema.ValidateArgs` (model-emitted JSON is untrusted), and
   `schema.For` over generated struct shapes. Fuzz corpora checked in;
   short fuzz runs in CI.
-- Tooling: stdlib `testing` + `go-cmp`; `go vet` + `golangci-lint` +
-  `govulncheck`; race detector on. The recorded fixture corpus now drives
-  the offline mapping tests (see fixture recording + offline replay
-  above), and per-package coverage floors are enforced at the v0.1.0
-  baseline recorded in `docs/release.md` (chatcompletions 71%,
-  responsesapi 72%, anthropic 67%, openai 78%, openai-codex 66%,
-  openrouter 71% — `go test -cover`). These floors sit below an eventual
-  85% mapping gate because the remaining uncovered statements are
-  retry/backoff plumbing, OAuth refresh flows, and logging/transport
-  seams that recorded 200/4xx exchanges cannot reach; raising the gate
-  requires targeted transport-fault tests, not more recordings.
+- Tooling: stdlib `testing`; `go vet`, `golangci-lint`, `govulncheck`, and
+  the race detector. CI also runs credential-free live-runner manifest checks
+  and compiles every live-tag package. `scripts/check-coverage.sh` enforces the
+  current package floors in `docs/release.md`, including owned `-coverpkg`
+  groups for `internal/schemajson` (82%) and
+  `providers/internal/providerutil` (76%).
 
 ## 10. Non-Goals Reaffirmed
 
 Observability is built in but **silent by default** (FS §17B: `slog`
 logging, `UsageTracker`, wire capture — all stdlib-only); what stays out
 of core are third-party *integrations* (OpenTelemetry exporters, metrics
-backends), which build on those seams. No global logger. No global
-mutable state — the three sanctioned lazy/static singletons are the
-part-type decoder registry (write-once at `init()`), the embedded models
-table (`sync.Once` parse), and `DefaultHTTPClient()` (`sync.Once`,
-immutable by convention). No model capability database, no silent
-parameter clamping.
+backends), which build on those seams. No global logger. No global mutable
+request state: the part decoder registry is write-once, the embedded model
+table is lazily parsed, and default clients share only a private immutable-by-
+contract transport. No model capability database, no silent parameter
+clamping.

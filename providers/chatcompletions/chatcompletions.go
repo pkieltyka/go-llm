@@ -93,7 +93,7 @@ func WithAPIKeyFunc(fn func(context.Context) (string, error)) Option {
 	return func(o *options) { o.config.APIKeyFunc = fn }
 }
 
-// WithHTTPClient replaces the shared default HTTP client.
+// WithHTTPClient replaces the provider's default HTTP client.
 func WithHTTPClient(client *http.Client) Option {
 	return func(o *options) { o.config.HTTPClient = client }
 }

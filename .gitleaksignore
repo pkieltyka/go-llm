@@ -1,0 +1,5 @@
+# Local-only gollm-test.json findings. History findings include a commit hash
+# in their fingerprint, so a committed credential file remains detectable.
+gollm-test.json:anthropic-api-key:11
+gollm-test.json:generic-api-key:22
+gollm-test.json:jwt:14

@@ -15,7 +15,6 @@ import (
 
 	sdk "github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/responses"
-	"github.com/openai/openai-go/v3/shared"
 	llm "github.com/pkieltyka/go-llm"
 	"github.com/pkieltyka/go-llm/internal/testutil"
 )
@@ -188,21 +187,66 @@ func TestOpenAIProviderOptionsGolden(t *testing.T) {
 		ProviderOptions: Options{
 			Store:                &store,
 			PreviousResponseID:   "resp_prev",
-			Include:              []responses.ResponseIncludable{responses.ResponseIncludableMessageOutputTextLogprobs},
+			Include:              []Include{IncludeMessageOutputTextLogprobs},
 			Background:           &background,
-			Verbosity:            responses.ResponseTextConfigVerbosityLow,
-			Metadata:             shared.Metadata{"purpose": "test"},
-			ServiceTier:          responses.ResponseNewParamsServiceTierDefault,
+			HostedTools:          []json.RawMessage{json.RawMessage(`{"type":"web_search","search_context_size":"low"}`)},
+			Verbosity:            VerbosityLow,
+			Metadata:             Metadata{"purpose": "test"},
+			ServiceTier:          ServiceTierDefault,
 			SafetyIdentifier:     "user_hash",
-			PromptCacheRetention: responses.ResponseNewParamsPromptCacheRetention24h,
+			PromptCacheRetention: PromptCacheRetention24h,
 		},
 	}, false)
 	if err != nil {
 		t.Fatalf("buildParams returned error: %v", err)
 	}
 	got := testutil.MustCompactJSON(t, params)
-	want := `{"background":true,"previous_response_id":"resp_prev","store":true,"safety_identifier":"user_hash","include":["message.output_text.logprobs"],"metadata":{"purpose":"test"},"prompt_cache_retention":"24h","service_tier":"default","input":[{"content":[{"text":"hello","type":"input_text"}],"role":"user"}],"model":"gpt-test","text":{"verbosity":"low"}}`
+	want := `{"background":true,"previous_response_id":"resp_prev","store":true,"safety_identifier":"user_hash","include":["message.output_text.logprobs"],"metadata":{"purpose":"test"},"prompt_cache_retention":"24h","service_tier":"default","input":[{"content":[{"text":"hello","type":"input_text"}],"role":"user"}],"model":"gpt-test","text":{"verbosity":"low"},"tools":[{"type":"web_search","search_context_size":"low"}]}`
 	testutil.AssertJSONEqual(t, got, want)
+}
+
+func TestOpenAIConversationObjectWireGolden(t *testing.T) {
+	params, err := (&Provider{}).adapter().BuildParams(&llm.Request{
+		Model:    "gpt-test",
+		Messages: []llm.Message{llm.UserText("hello")},
+		ProviderOptions: Options{
+			ConversationID: "ignored-string-form",
+			Conversation:   &Conversation{ID: "conv_object"},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildParams returned error: %v", err)
+	}
+	testutil.AssertJSONEqual(t, testutil.MustCompactJSON(t, params), `{
+		"conversation":{"id":"conv_object"},
+		"include":[],
+		"input":[{"content":[{"text":"hello","type":"input_text"}],"role":"user"}],
+		"model":"gpt-test",
+		"store":false
+	}`)
+}
+
+func TestOpenAIHostedToolsRejectInvalidRawJSON(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  json.RawMessage
+	}{
+		{name: "invalid", raw: json.RawMessage(`{`)},
+		{name: "array", raw: json.RawMessage(`[]`)},
+		{name: "null", raw: json.RawMessage(`null`)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := (&Provider{}).adapter().BuildParams(&llm.Request{
+				Model:           "gpt-test",
+				Messages:        []llm.Message{llm.UserText("hello")},
+				ProviderOptions: Options{HostedTools: []json.RawMessage{tt.raw}},
+			}, false)
+			if !errors.Is(err, llm.ErrBadRequest) {
+				t.Fatalf("BuildParams error = %v, want ErrBadRequest", err)
+			}
+		})
+	}
 }
 
 func TestOpenAIEncryptedReasoningIncludeRequiresStatelessRequest(t *testing.T) {
@@ -216,6 +260,7 @@ func TestOpenAIEncryptedReasoningIncludeRequiresStatelessRequest(t *testing.T) {
 		{name: "store true", options: Options{Store: &store}, want: false},
 		{name: "previous response", options: Options{PreviousResponseID: "resp_prev"}, want: false},
 		{name: "conversation id", options: Options{ConversationID: "conv_1"}, want: false},
+		{name: "conversation object", options: Options{Conversation: &Conversation{ID: "conv_1"}}, want: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -223,7 +268,7 @@ func TestOpenAIEncryptedReasoningIncludeRequiresStatelessRequest(t *testing.T) {
 				Model:    "gpt-test",
 				Messages: []llm.Message{llm.UserText("hello")},
 			}
-			if tt.options.Store != nil || tt.options.PreviousResponseID != "" || tt.options.ConversationID != "" {
+			if tt.options.Store != nil || tt.options.PreviousResponseID != "" || tt.options.ConversationID != "" || tt.options.Conversation != nil {
 				req.ProviderOptions = tt.options
 			}
 			params, err := (&Provider{}).adapter().BuildParams(req, false)

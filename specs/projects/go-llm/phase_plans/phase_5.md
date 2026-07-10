@@ -4,6 +4,9 @@ status: complete
 
 # Phase 5: OpenAI Provider
 
+> Historical, non-normative execution record. `functional_spec.md` and
+> `architecture.md` define the current contract.
+
 ## Overview
 
 This phase adds the direct OpenAI Responses provider and closes the requested
