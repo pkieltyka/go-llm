@@ -359,3 +359,14 @@ normalization invariant → FS §11):
   by pi/claude/codex CLIs. Minting new ones (`llm-cli auth login`-style
   loopback PKCE; references: zero's provideroauth, pi's oauth/) stays
   deferred.
+
+**Connection prewarm helper** (deferred, gated on TTFT data
+from plan 2 phase 4): an explicit helper issuing one unauthenticated,
+single-attempt, bounded (~3s) HEAD to the provider base URL to prime the
+TCP+TLS handshake into the shared pool before a first request — a
+401/404/405 still warms the connection. Constraints if built: never
+called implicitly by `Chat`/`ChatStream`, never authenticated, never
+retried, invisible to retry/WireCapture semantics, and skipped entirely
+when the transport disables keep-alives (a non-reusable warmed connection
+is pure waste). Revisit only if measured time-to-first-token shows
+cold-start handshake cost worth optimizing; otherwise drop.
