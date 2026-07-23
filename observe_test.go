@@ -1029,3 +1029,70 @@ func TestNewRetryLoggerWarnsOnRetryableResponses(t *testing.T) {
 		}
 	}
 }
+
+func TestUsageTrackerStreamLatencyTelemetry(t *testing.T) {
+	p := llmtest.New(llmtest.WithName("fake"))
+	// Blocking call: every stream telemetry field must stay zero.
+	p.EnqueueResponse(&llm.Response{Provider: "fake", Model: "model-a", Usage: llm.Usage{TotalTokens: 1}})
+	// Text stream: MessageStart and first-content samples.
+	p.EnqueueStream(
+		llm.MessageStart{Provider: "fake", Model: "model-a"},
+		llm.TextDelta{Index: 0, Text: "hello"},
+		llm.MessageEnd{Usage: llm.Usage{TotalTokens: 2}},
+	)
+	// Tool-call stream: ToolCallStart counts as first content.
+	p.EnqueueStream(
+		llm.MessageStart{Provider: "fake", Model: "model-a"},
+		llm.ToolCallStart{Index: 0, ID: "call_1", Name: "lookup"},
+		llm.ToolCallEnd{Index: 0},
+		llm.MessageEnd{Usage: llm.Usage{TotalTokens: 2}},
+	)
+	// Empty deltas are not content: MessageStart sample only.
+	p.EnqueueStream(
+		llm.MessageStart{Provider: "fake", Model: "model-a"},
+		llm.TextDelta{Index: 0, Text: ""},
+		llm.MessageEnd{Usage: llm.Usage{TotalTokens: 2}},
+	)
+	// Error-only stream: a stream call with no samples at all.
+	p.EnqueueError(errors.New("boom"))
+
+	tracker := llm.NewUsageTracker()
+	wrapped := llm.Wrap(p, tracker.Middleware())
+	ctx := context.Background()
+	req := func() *llm.Request {
+		return &llm.Request{Model: "model-a", Messages: []llm.Message{llm.UserText("hi")}}
+	}
+
+	if _, err := wrapped.Chat(ctx, req()); err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+	afterChat := tracker.Stats()
+	if afterChat.StreamCalls != 0 || afterChat.MessageStartSamples != 0 || afterChat.TotalTimeToMessageStart != 0 ||
+		afterChat.FirstContentSamples != 0 || afterChat.TotalTimeToFirstContent != 0 {
+		t.Fatalf("blocking call produced stream telemetry: %+v", afterChat)
+	}
+
+	for i := 0; i < 3; i++ {
+		if _, err := llm.Collect(wrapped.ChatStream(ctx, req())); err != nil {
+			t.Fatalf("Collect %d returned error: %v", i, err)
+		}
+	}
+	if _, err := llm.Collect(wrapped.ChatStream(ctx, req())); err == nil {
+		t.Fatal("error stream did not error")
+	}
+
+	stats := tracker.Stats()
+	if stats.StreamCalls != 4 {
+		t.Fatalf("StreamCalls = %d, want 4", stats.StreamCalls)
+	}
+	if stats.MessageStartSamples != 3 || stats.TotalTimeToMessageStart <= 0 {
+		t.Fatalf("MessageStart samples/total = %d/%v, want 3/>0", stats.MessageStartSamples, stats.TotalTimeToMessageStart)
+	}
+	if stats.FirstContentSamples != 2 || stats.TotalTimeToFirstContent <= 0 {
+		t.Fatalf("FirstContent samples/total = %d/%v, want 2/>0", stats.FirstContentSamples, stats.TotalTimeToFirstContent)
+	}
+	bucket := stats.ByProviderModel["fake/model-a"]
+	if bucket.StreamCalls != 4 || bucket.MessageStartSamples != 3 || bucket.FirstContentSamples != 2 {
+		t.Fatalf("bucket telemetry = %+v", bucket)
+	}
+}

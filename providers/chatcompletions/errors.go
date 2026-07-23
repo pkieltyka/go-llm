@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	sdk "github.com/openai/openai-go/v3"
@@ -99,7 +100,10 @@ func stringifyCode(code any) string {
 	case string:
 		return value
 	case float64:
-		return strings.TrimSuffix(strings.TrimSuffix(fmt.Sprintf("%.0f", value), ".0"), ".")
+		// Faithful formatting, never rounding: a JSON 429 becomes "429" (so
+		// numeric status-like codes classify), while a fractional 429.5 stays
+		// "429.5" and deliberately fails integer classification.
+		return strconv.FormatFloat(value, 'f', -1, 64)
 	default:
 		return fmt.Sprint(value)
 	}

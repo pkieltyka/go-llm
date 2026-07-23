@@ -19,7 +19,28 @@ type usageAccumulator struct {
 	Errors        int64
 	Usage         Usage
 	TotalDuration time.Duration
+	streamStats   streamStats
 	cost          usageCostAggregation
+}
+
+// streamStats aggregates streaming latency telemetry. Averages are the
+// caller's division: TotalTimeToMessageStart/MessageStartSamples and
+// TotalTimeToFirstContent/FirstContentSamples.
+type streamStats struct {
+	StreamCalls             int64
+	MessageStartSamples     int64
+	TotalTimeToMessageStart time.Duration
+	FirstContentSamples     int64
+	TotalTimeToFirstContent time.Duration
+}
+
+// streamTimings carries one stream's observed latencies into record. Streams
+// that never produced the corresponding event contribute no sample.
+type streamTimings struct {
+	timeToMessageStart time.Duration
+	messageStartSeen   bool
+	timeToFirstContent time.Duration
+	firstContentSeen   bool
 }
 
 type usageCostAggregation struct {
@@ -30,11 +51,24 @@ type usageCostAggregation struct {
 
 // UsageStats is a snapshot of aggregated usage.
 type UsageStats struct {
-	Calls           int64
-	Errors          int64
-	Usage           Usage
-	TotalDuration   time.Duration
-	ByProviderModel map[string]UsageStats
+	Calls         int64
+	Errors        int64
+	Usage         Usage
+	TotalDuration time.Duration
+	// Streaming latency telemetry (ChatStream calls only; blocking calls
+	// leave every stream field zero). Time-to-message-start measures stream
+	// open → MessageStart; time-to-first-content measures stream open → the
+	// first non-empty TextDelta, non-empty ReasoningDelta, or
+	// ToolCallStart. Empty or error-only streams contribute no sample, so
+	// sample counts can trail StreamCalls; averages are
+	// TotalTimeToMessageStart/MessageStartSamples and
+	// TotalTimeToFirstContent/FirstContentSamples.
+	StreamCalls             int64
+	MessageStartSamples     int64
+	TotalTimeToMessageStart time.Duration
+	FirstContentSamples     int64
+	TotalTimeToFirstContent time.Duration
+	ByProviderModel         map[string]UsageStats
 }
 
 // NewUsageTracker returns a goroutine-safe usage aggregator.
@@ -68,7 +102,7 @@ func (t *UsageTracker) middlewareForProvider(defaultProvider string) Middleware 
 				if provider == "" {
 					provider = defaultProvider
 				}
-				t.record(provider, model, usage, err != nil, time.Since(start))
+				t.record(provider, model, usage, err != nil, time.Since(start), nil)
 				return resp, err
 			}
 		},
@@ -87,11 +121,12 @@ func (t *UsageTracker) trackStream(defaultProvider string, req *Request, events 
 		provider := defaultProvider
 		model := requestModel(req)
 		var usage Usage
+		var timings streamTimings
 		recorded := false
 		streamErr := false
 		defer func() {
 			if !recorded {
-				t.record(provider, model, usage, streamErr, time.Since(start))
+				t.record(provider, model, usage, streamErr, time.Since(start), &timings)
 			}
 		}()
 
@@ -115,9 +150,23 @@ func (t *UsageTracker) trackStream(defaultProvider string, req *Request, events 
 				if e.Model != "" {
 					model = e.Model
 				}
+				if !timings.messageStartSeen {
+					timings.messageStartSeen = true
+					timings.timeToMessageStart = time.Since(start)
+				}
+			case TextDelta:
+				if e.Text != "" {
+					timings.observeFirstContent(start)
+				}
+			case ReasoningDelta:
+				if e.Text != "" {
+					timings.observeFirstContent(start)
+				}
+			case ToolCallStart:
+				timings.observeFirstContent(start)
 			case MessageEnd:
 				usage = e.Usage
-				t.record(provider, model, usage, false, time.Since(start))
+				t.record(provider, model, usage, false, time.Since(start), &timings)
 				recorded = true
 			}
 			if !yield(normalized, nil) {
@@ -143,32 +192,55 @@ func (t *UsageTracker) Stats() UsageStats {
 	return out
 }
 
-func (t *UsageTracker) record(provider, model string, usage Usage, isErr bool, duration time.Duration) {
+func (t *UsageTracker) record(provider, model string, usage Usage, isErr bool, duration time.Duration, timings *streamTimings) {
 	key := modelKey(provider, model)
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	t.total.add(usage, isErr, duration)
+	t.total.add(usage, isErr, duration, timings)
 	bucket := t.buckets[key]
-	bucket.add(usage, isErr, duration)
+	bucket.add(usage, isErr, duration, timings)
 	t.buckets[key] = bucket
 }
 
-func (a *usageAccumulator) add(usage Usage, isErr bool, duration time.Duration) {
+func (a *usageAccumulator) add(usage Usage, isErr bool, duration time.Duration, timings *streamTimings) {
 	a.Calls++
 	if isErr {
 		a.Errors++
 	}
 	a.Usage = sumUsage(a.Usage, usage, &a.cost)
 	a.TotalDuration += duration
+	if timings != nil {
+		a.streamStats.StreamCalls++
+		if timings.messageStartSeen {
+			a.streamStats.MessageStartSamples++
+			a.streamStats.TotalTimeToMessageStart += timings.timeToMessageStart
+		}
+		if timings.firstContentSeen {
+			a.streamStats.FirstContentSamples++
+			a.streamStats.TotalTimeToFirstContent += timings.timeToFirstContent
+		}
+	}
+}
+
+func (s *streamTimings) observeFirstContent(start time.Time) {
+	if !s.firstContentSeen {
+		s.firstContentSeen = true
+		s.timeToFirstContent = time.Since(start)
+	}
 }
 
 func (a usageAccumulator) stats() UsageStats {
 	return UsageStats{
-		Calls:         a.Calls,
-		Errors:        a.Errors,
-		Usage:         cloneUsage(a.Usage),
-		TotalDuration: a.TotalDuration,
+		Calls:                   a.Calls,
+		Errors:                  a.Errors,
+		Usage:                   cloneUsage(a.Usage),
+		TotalDuration:           a.TotalDuration,
+		StreamCalls:             a.streamStats.StreamCalls,
+		MessageStartSamples:     a.streamStats.MessageStartSamples,
+		TotalTimeToMessageStart: a.streamStats.TotalTimeToMessageStart,
+		FirstContentSamples:     a.streamStats.FirstContentSamples,
+		TotalTimeToFirstContent: a.streamStats.TotalTimeToFirstContent,
 	}
 }
 

@@ -99,3 +99,33 @@ func TestUsageContextUsage(t *testing.T) {
 		t.Fatalf("ContextUsage = %+v, want used=100 remaining=100 percent=50", got)
 	}
 }
+
+// Pins the embedded-table expectations Phase 3a relies on (no snapshot
+// regeneration): the gpt-5.6 family rows exist with cache-write rates, dated
+// snapshots resolve by prefix, and cache-write tokens cost at the
+// cache-write rate rather than the input rate.
+func TestEmbeddedTableGPT56CacheWritePricing(t *testing.T) {
+	info, ok := llm.LookupModelInfo("openai", "gpt-5.6")
+	if !ok || info.Pricing == nil {
+		t.Fatalf("gpt-5.6 not in embedded table (ok=%v, pricing=%v)", ok, info.Pricing)
+	}
+	if info.Pricing.CacheWritePerMTok <= 0 {
+		t.Fatalf("gpt-5.6 cache-write rate = %v, want > 0", info.Pricing.CacheWritePerMTok)
+	}
+	if info.Pricing.CacheWritePerMTok == info.Pricing.InputPerMTok {
+		t.Fatalf("cache-write rate equals input rate (%v); cost test would be vacuous", info.Pricing.InputPerMTok)
+	}
+	for _, id := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-sol-2026-07-09"} {
+		if _, ok := llm.LookupModelInfo("openai", id); !ok {
+			t.Fatalf("%s did not resolve in embedded table", id)
+		}
+	}
+
+	costed := llm.EstimateCost(llm.Usage{CacheWriteTokens: 1_000_000}, *info.Pricing)
+	if costed.CostUSD == nil || *costed.CostUSD != info.Pricing.CacheWritePerMTok {
+		t.Fatalf("cache-write-only cost = %v, want %v", costed.CostUSD, info.Pricing.CacheWritePerMTok)
+	}
+	if costed.CostSource != llm.CostSourceEstimated {
+		t.Fatalf("cost source = %q, want estimated", costed.CostSource)
+	}
+}

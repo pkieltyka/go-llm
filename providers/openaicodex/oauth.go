@@ -30,6 +30,7 @@ func refreshCodexOAuth(ctx context.Context, client *http.Client, tokenURL string
 	if client == nil {
 		client = llm.DefaultHTTPClient()
 	}
+	client = provideroauth.NoRedirectClient(client)
 	if tokenURL == "" {
 		tokenURL = openAICodexOAuthTokenURL
 	}

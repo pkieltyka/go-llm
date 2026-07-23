@@ -377,6 +377,17 @@ func TestDefaultErrorKindTable(t *testing.T) {
 		{400, "content_filter", "", llm.ErrContentFiltered},
 		{400, "invalid_api_key", "", llm.ErrAuth},
 		{200, "", "", llm.ErrServer},
+		// Status-less in-stream errors with an integral status-like code
+		// classify through the canonical status table; fractional or
+		// non-numeric codes never do, and a real HTTP status always wins.
+		{0, "429", "", llm.ErrRateLimited},
+		{0, "401", "", llm.ErrAuth},
+		{0, "503", "", llm.ErrOverloaded},
+		{0, "429.5", "", llm.ErrServer},
+		{0, "999", "", llm.ErrServer},
+		{0, "302", "", llm.ErrServer},
+		{0, "insufficient_quota", "", llm.ErrInsufficientCredits},
+		{500, "429", "", llm.ErrServer},
 	}
 	for _, tc := range cases {
 		if got := chatcompletions.DefaultErrorKind(tc.status, tc.code, tc.message); !errors.Is(got, tc.want) {

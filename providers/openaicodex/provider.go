@@ -27,16 +27,39 @@ var capabilities = []llm.Capability{
 	llm.CapabilityModelsListing,
 }
 
-// staticModels is the curated Codex subscription list (the backend has no
-// public models endpoint). Source: pi's generated catalog
-// (packages/ai/src/providers/openai-codex.models.ts), verified 2026-07-03.
-// Note gpt-5.3-codex-spark really does publish MaxOutputTokens equal to its
-// ContextWindow (128000/128000) in that catalog — not a typo.
+// staticModels is the curated Codex subscription list, refreshed 2026-07-22
+// from the backend's authenticated discovery endpoint
+// (GET {base}/models?client_version=<compat> — it exists but requires the
+// compat query and a live bearer; adopting runtime discovery with this list
+// as fallback is recorded follow-up work in plan 2 phase 3b findings). The
+// internal "codex-auto-review" id is deliberately excluded. The gpt-5.6
+// family additionally reports an "ultra" reasoning level not yet in the
+// go-llm Effort vocabulary; it is omitted here until that vocabulary
+// decision is made. MaxOutputTokens follows the platform table — the
+// subscription backend controls the output budget itself. Note
+// gpt-5.3-codex-spark really does publish MaxOutputTokens equal to its
+// ContextWindow (128000/128000) — not a typo.
 var staticModels = []llm.ModelInfo{
-	{ID: "gpt-5.3-codex-spark", DisplayName: "GPT-5.3 Codex Spark", ContextWindow: 128000, MaxOutputTokens: 128000},
-	{ID: "gpt-5.4-mini", DisplayName: "GPT-5.4 mini", ContextWindow: 272000, MaxOutputTokens: 128000},
-	{ID: "gpt-5.4", DisplayName: "GPT-5.4", ContextWindow: 272000, MaxOutputTokens: 128000},
-	{ID: "gpt-5.5", DisplayName: "GPT-5.5", ContextWindow: 272000, MaxOutputTokens: 128000},
+	{ID: "gpt-5.3-codex-spark", DisplayName: "GPT-5.3 Codex Spark", ContextWindow: 128000, MaxOutputTokens: 128000, SupportedEfforts: codexEfforts()},
+	{ID: "gpt-5.4-mini", DisplayName: "GPT-5.4 mini", ContextWindow: 272000, MaxOutputTokens: 128000, SupportedEfforts: codexEfforts()},
+	{ID: "gpt-5.4", DisplayName: "GPT-5.4", ContextWindow: 272000, MaxOutputTokens: 128000, SupportedEfforts: codexEfforts()},
+	{ID: "gpt-5.5", DisplayName: "GPT-5.5", ContextWindow: 272000, MaxOutputTokens: 128000, SupportedEfforts: codexEfforts()},
+	{ID: "gpt-5.6-sol", DisplayName: "GPT-5.6-Sol", ContextWindow: 272000, MaxOutputTokens: 128000, SupportedEfforts: codex56Efforts()},
+	{ID: "gpt-5.6-terra", DisplayName: "GPT-5.6-Terra", ContextWindow: 272000, MaxOutputTokens: 128000, SupportedEfforts: codex56Efforts()},
+	{ID: "gpt-5.6-luna", DisplayName: "GPT-5.6-Luna", ContextWindow: 272000, MaxOutputTokens: 128000, SupportedEfforts: codex56Efforts()},
+}
+
+// codexEfforts returns a fresh slice per row so Models() copies can never
+// alias the curated list.
+func codexEfforts() []llm.Effort {
+	return []llm.Effort{llm.EffortLow, llm.EffortMedium, llm.EffortHigh}
+}
+
+// codex56Efforts is the gpt-5.6 family dial per the live discovery snapshot
+// (2026-07-22): low through max, plus an upstream "ultra" level omitted
+// pending an Effort-vocabulary decision.
+func codex56Efforts() []llm.Effort {
+	return []llm.Effort{llm.EffortLow, llm.EffortMedium, llm.EffortHigh, llm.EffortXHigh, llm.EffortMax}
 }
 
 // New constructs an OpenAI Codex subscription provider.
@@ -93,6 +116,7 @@ func (p *Provider) Models(ctx context.Context) ([]llm.ModelInfo, error) {
 	models := make([]llm.ModelInfo, len(staticModels))
 	for i, model := range staticModels {
 		models[i] = model
+		models[i].SupportedEfforts = append([]llm.Effort(nil), model.SupportedEfforts...)
 		if p != nil && p.priceTable != nil {
 			models[i].Pricing = priceForModel(p.priceTable, model.ID)
 		} else if info, ok := llm.LookupModelInfo(providerName, model.ID); ok && info.Pricing != nil {

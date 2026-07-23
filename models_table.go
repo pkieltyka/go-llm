@@ -28,13 +28,14 @@ type modelTableDocument struct {
 }
 
 type modelTableRow struct {
-	Provider        string        `json:"provider"`
-	ID              string        `json:"id"`
-	CanonicalID     string        `json:"canonical_id,omitempty"`
-	DisplayName     string        `json:"display_name,omitempty"`
-	ContextWindow   int           `json:"context_window,omitempty"`
-	MaxOutputTokens int           `json:"max_output_tokens,omitempty"`
-	Pricing         *ModelPricing `json:"pricing,omitempty"`
+	Provider         string        `json:"provider"`
+	ID               string        `json:"id"`
+	CanonicalID      string        `json:"canonical_id,omitempty"`
+	DisplayName      string        `json:"display_name,omitempty"`
+	ContextWindow    int           `json:"context_window,omitempty"`
+	MaxOutputTokens  int           `json:"max_output_tokens,omitempty"`
+	Pricing          *ModelPricing `json:"pricing,omitempty"`
+	SupportedEfforts []string      `json:"supported_efforts,omitempty"`
 }
 
 // PriceTableDate returns the generated_at stamp from the embedded model table.
@@ -142,6 +143,9 @@ func (t parsedModelTable) withCanonicalFallback(info ModelInfo) ModelInfo {
 		pricing := *canonical.Pricing
 		info.Pricing = &pricing
 	}
+	if len(info.SupportedEfforts) == 0 && len(canonical.SupportedEfforts) > 0 {
+		info.SupportedEfforts = append([]Effort(nil), canonical.SupportedEfforts...)
+	}
 	return info
 }
 
@@ -176,6 +180,12 @@ func (row modelTableRow) modelInfo() ModelInfo {
 		pricing := *row.Pricing
 		info.Pricing = &pricing
 	}
+	if len(row.SupportedEfforts) > 0 {
+		info.SupportedEfforts = make([]Effort, len(row.SupportedEfforts))
+		for i, effort := range row.SupportedEfforts {
+			info.SupportedEfforts[i] = Effort(effort)
+		}
+	}
 	return info
 }
 
@@ -183,6 +193,9 @@ func cloneModelInfo(info ModelInfo) ModelInfo {
 	if info.Pricing != nil {
 		pricing := *info.Pricing
 		info.Pricing = &pricing
+	}
+	if len(info.SupportedEfforts) > 0 {
+		info.SupportedEfforts = append([]Effort(nil), info.SupportedEfforts...)
 	}
 	return info
 }

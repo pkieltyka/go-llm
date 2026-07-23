@@ -18,6 +18,7 @@ export type ModelRow = {
   context_window?: number;
   max_output_tokens?: number;
   pricing?: Pricing;
+  supported_efforts?: string[];
 };
 
 export type SnapshotDocument = {
@@ -161,6 +162,7 @@ const metadataFields = [
   ["pricing.output_per_mtok", (row: ModelRow) => row.pricing?.output_per_mtok !== undefined],
   ["pricing.cache_read_per_mtok", (row: ModelRow) => row.pricing?.cache_read_per_mtok !== undefined],
   ["pricing.cache_write_per_mtok", (row: ModelRow) => row.pricing?.cache_write_per_mtok !== undefined],
+  ["supported_efforts", (row: ModelRow) => row.supported_efforts !== undefined],
 ] as const;
 
 function metadataLossProblems(
@@ -336,6 +338,7 @@ function rowsFromOverrides(input: unknown): ModelRow[] {
       context_window: optionalPositiveNumber(record, ["context_window"], label),
       max_output_tokens: optionalPositiveNumber(record, ["max_output_tokens"], label),
       pricing: pricingFromRecord(pricing, label),
+      supported_efforts: optionalEffortList(record, "supported_efforts", label),
     });
   });
 }
@@ -463,6 +466,30 @@ function requiredString(record: JSONRecord, name: string, label: string): string
   const value = optionalString(record, name, label);
   if (!value) throw new Error(`${label}.${name} must be a non-empty string`);
   return value;
+}
+
+// Ordered weakest → strongest; mirrors go-llm's Effort constants. Curated
+// supported_efforts lists must use these values in ascending order.
+const effortScale = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+
+function optionalEffortList(record: JSONRecord, name: string, label: string): string[] | undefined {
+  const value = record[name];
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(`${label}.${name} must be a non-empty array`);
+  }
+  let previous = -1;
+  for (const entry of value) {
+    const index = effortScale.indexOf(entry as (typeof effortScale)[number]);
+    if (typeof entry !== "string" || index < 0) {
+      throw new Error(`${label}.${name} entry ${JSON.stringify(entry)} is not a known effort`);
+    }
+    if (index <= previous) {
+      throw new Error(`${label}.${name} must be ordered weakest to strongest without duplicates`);
+    }
+    previous = index;
+  }
+  return value.map(String);
 }
 
 function optionalString(record: JSONRecord, name: string, label: string): string | undefined {

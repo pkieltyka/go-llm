@@ -15,14 +15,18 @@ import (
 )
 
 const (
-	providerName          = "openai-codex"
-	defaultCodexBaseURL   = "https://chatgpt.com/backend-api/codex"
-	defaultOriginator     = "codex_cli_rs"
-	organizationHeader    = "OpenAI-Organization"
-	projectHeader         = "OpenAI-Project"
-	accountIDHeader       = "chatgpt-account-id"
-	originatorHeader      = "originator"
-	defaultCodexUserAgent = "codex-cli/0.1"
+	providerName        = "openai-codex"
+	defaultCodexBaseURL = "https://chatgpt.com/backend-api/codex"
+	defaultOriginator   = "codex_cli_rs"
+	organizationHeader  = "OpenAI-Organization"
+	projectHeader       = "OpenAI-Project"
+	accountIDHeader     = "chatgpt-account-id"
+	originatorHeader    = "originator"
+	// defaultCodexUserAgent mirrors the Codex CLI version whose wire contract
+	// this provider implements: the backend gates newer models (the gpt-5.6
+	// family) on this compatibility version, so it applies to every
+	// subscription request, not only 5.6 ones.
+	defaultCodexUserAgent = "codex_cli_rs/0.144.0"
 )
 
 // Option configures an OpenAI Codex subscription provider.

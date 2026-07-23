@@ -1285,3 +1285,103 @@ func strconvQuote(s string) string {
 	raw, _ := json.Marshal(s)
 	return string(raw)
 }
+
+func TestOpenAIPromptCacheOptionsGolden(t *testing.T) {
+	params, err := (&Provider{}).adapter().BuildParams(&llm.Request{
+		Model:    "gpt-5.6",
+		Messages: []llm.Message{llm.UserText("hello")},
+		ProviderOptions: Options{
+			PromptCacheOptions: &PromptCacheOptions{Mode: PromptCacheModeExplicit, TTL: PromptCacheTTL30m},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildParams returned error: %v", err)
+	}
+	testutil.AssertJSONEqual(t, testutil.MustCompactJSON(t, params), `{
+		"include":["reasoning.encrypted_content"],
+		"input":[{"content":[{"text":"hello","type":"input_text"}],"role":"user"}],
+		"model":"gpt-5.6",
+		"prompt_cache_options":{"mode":"explicit","ttl":"30m"},
+		"store":false
+	}`)
+
+	// TTL-only form omits mode so OpenAI applies its implicit default.
+	params, err = (&Provider{}).adapter().BuildParams(&llm.Request{
+		Model:           "gpt-5.6",
+		Messages:        []llm.Message{llm.UserText("hello")},
+		ProviderOptions: Options{PromptCacheOptions: &PromptCacheOptions{TTL: PromptCacheTTL30m}},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildParams returned error: %v", err)
+	}
+	testutil.AssertJSONEqual(t, testutil.MustCompactJSON(t, params), `{
+		"include":["reasoning.encrypted_content"],
+		"input":[{"content":[{"text":"hello","type":"input_text"}],"role":"user"}],
+		"model":"gpt-5.6",
+		"prompt_cache_options":{"ttl":"30m"},
+		"store":false
+	}`)
+}
+
+func TestOpenAIPromptCacheOptionsPreflight(t *testing.T) {
+	tests := []struct {
+		name    string
+		options Options
+	}{
+		{"both retention and options", Options{
+			PromptCacheRetention: PromptCacheRetention24h,
+			PromptCacheOptions:   &PromptCacheOptions{TTL: PromptCacheTTL30m},
+		}},
+		{"empty options", Options{PromptCacheOptions: &PromptCacheOptions{}}},
+		{"unknown mode", Options{PromptCacheOptions: &PromptCacheOptions{Mode: "always"}}},
+		{"unknown ttl", Options{PromptCacheOptions: &PromptCacheOptions{TTL: "24h"}}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := (&Provider{}).adapter().BuildParams(&llm.Request{
+				Model:           "gpt-5.6",
+				Messages:        []llm.Message{llm.UserText("hello")},
+				ProviderOptions: tc.options,
+			}, false)
+			if !errors.Is(err, llm.ErrBadRequest) {
+				t.Fatalf("BuildParams error = %v, want ErrBadRequest", err)
+			}
+		})
+	}
+}
+
+func TestOpenAICacheWriteUsageFixture(t *testing.T) {
+	// Cache reads AND writes are subsets of input_tokens on the wire; the
+	// additive contract excludes both from InputTokens and preserves the
+	// provider-reported total.
+	resp := mustOpenAIResponse(t, `{
+		"id":"resp_1","model":"gpt-5.6","status":"completed",
+		"output":[{"id":"msg_1","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"hi","annotations":[]}]}],
+		"usage":{"input_tokens":20,"input_tokens_details":{"cached_tokens":3,"cache_write_tokens":5},"output_tokens":4,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":24}
+	}`)
+	mapped, err := (&Provider{}).adapter().MapResponse(resp)
+	if err != nil {
+		t.Fatalf("mapResponse returned error: %v", err)
+	}
+	u := mapped.Usage
+	if u.InputTokens != 12 || u.CacheReadTokens != 3 || u.CacheWriteTokens != 5 || u.OutputTokens != 4 || u.TotalTokens != 24 {
+		t.Fatalf("usage = %+v", u)
+	}
+	if got := u.InputTokens + u.CacheReadTokens + u.CacheWriteTokens + u.OutputTokens; got != u.TotalTokens {
+		t.Fatalf("additive contract violated: components sum %d, total %d", got, u.TotalTokens)
+	}
+
+	// Absent total_tokens reconstructs additively from all four components.
+	resp = mustOpenAIResponse(t, `{
+		"id":"resp_2","model":"gpt-5.6","status":"completed",
+		"output":[{"id":"msg_1","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"hi","annotations":[]}]}],
+		"usage":{"input_tokens":20,"input_tokens_details":{"cached_tokens":3,"cache_write_tokens":5},"output_tokens":4,"output_tokens_details":{"reasoning_tokens":0}}
+	}`)
+	mapped, err = (&Provider{}).adapter().MapResponse(resp)
+	if err != nil {
+		t.Fatalf("mapResponse returned error: %v", err)
+	}
+	if mapped.Usage.TotalTokens != 24 {
+		t.Fatalf("reconstructed total = %d, want 24", mapped.Usage.TotalTokens)
+	}
+}
