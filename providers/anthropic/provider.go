@@ -50,9 +50,12 @@ func (p *Provider) Models(ctx context.Context) ([]llm.ModelInfo, error) {
 			MaxOutputTokens: int(model.MaxTokens),
 			Raw:             model,
 		})
-		if info, ok := llm.LookupModelInfo(providerName, model.ID); ok && info.Pricing != nil {
-			pricing := *info.Pricing
-			models[len(models)-1].Pricing = &pricing
+		if info, ok := llm.LookupModelInfo(providerName, model.ID); ok {
+			if info.Pricing != nil {
+				pricing := *info.Pricing
+				models[len(models)-1].Pricing = &pricing
+			}
+			models[len(models)-1].SupportedEfforts = info.SupportedEfforts
 		}
 	}
 	if err := pager.Err(); err != nil {

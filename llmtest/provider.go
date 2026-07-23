@@ -453,6 +453,9 @@ func cloneModels(models []llm.ModelInfo) []llm.ModelInfo {
 			pricing := *model.Pricing
 			out[i].Pricing = &pricing
 		}
+		if len(model.SupportedEfforts) > 0 {
+			out[i].SupportedEfforts = append([]llm.Effort(nil), model.SupportedEfforts...)
+		}
 	}
 	return out
 }

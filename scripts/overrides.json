@@ -1,3 +1,458 @@
 {
-  "models": []
+  "notes": {
+    "supported_efforts": "Curated 2026-07-22 (specs/plans/2-provider-improvements.md phase 5). gpt-5* reasoning models: minimal..high per the OpenAI Responses reasoning.effort enum; *-codex and o3/o4 families: low..high; Anthropic extended-thinking models: the full go-llm dial including none (efforts map to thinking budgets per FS §9). chat-latest, deep-research, o1, image, embedding, and realtime rows are deliberately uncurated. Verify rows against current vendor docs when models change. models.json was hand-synced with these overrides on 2026-07-22; the next regeneration reproduces them."
+  },
+  "models": [
+    {
+      "provider": "anthropic",
+      "id": "claude-fable-5",
+      "supported_efforts": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    {
+      "provider": "anthropic",
+      "id": "claude-haiku-4-5",
+      "supported_efforts": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    {
+      "provider": "anthropic",
+      "id": "claude-haiku-4-5-20251001",
+      "supported_efforts": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    {
+      "provider": "anthropic",
+      "id": "claude-opus-4-1",
+      "supported_efforts": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    {
+      "provider": "anthropic",
+      "id": "claude-opus-4-1-20250805",
+      "supported_efforts": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    {
+      "provider": "anthropic",
+      "id": "claude-opus-4-5",
+      "supported_efforts": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    {
+      "provider": "anthropic",
+      "id": "claude-opus-4-5-20251101",
+      "supported_efforts": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    {
+      "provider": "anthropic",
+      "id": "claude-opus-4-6",
+      "supported_efforts": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    {
+      "provider": "anthropic",
+      "id": "claude-opus-4-7",
+      "supported_efforts": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    {
+      "provider": "anthropic",
+      "id": "claude-opus-4-8",
+      "supported_efforts": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    {
+      "provider": "anthropic",
+      "id": "claude-sonnet-4-5",
+      "supported_efforts": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    {
+      "provider": "anthropic",
+      "id": "claude-sonnet-4-5-20250929",
+      "supported_efforts": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    {
+      "provider": "anthropic",
+      "id": "claude-sonnet-4-6",
+      "supported_efforts": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    {
+      "provider": "anthropic",
+      "id": "claude-sonnet-5",
+      "supported_efforts": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-5",
+      "supported_efforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-5-codex",
+      "supported_efforts": [
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-5-mini",
+      "supported_efforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-5-nano",
+      "supported_efforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-5-pro",
+      "supported_efforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-5.1",
+      "supported_efforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-5.1-codex",
+      "supported_efforts": [
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-5.1-codex-max",
+      "supported_efforts": [
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-5.1-codex-mini",
+      "supported_efforts": [
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-5.2",
+      "supported_efforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-5.2-codex",
+      "supported_efforts": [
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-5.2-pro",
+      "supported_efforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-5.3-codex",
+      "supported_efforts": [
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-5.3-codex-spark",
+      "supported_efforts": [
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-5.4",
+      "supported_efforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-5.4-mini",
+      "supported_efforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-5.4-nano",
+      "supported_efforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-5.4-pro",
+      "supported_efforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-5.5",
+      "supported_efforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-5.5-pro",
+      "supported_efforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-5.6",
+      "supported_efforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-5.6-luna",
+      "supported_efforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-5.6-sol",
+      "supported_efforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-5.6-terra",
+      "supported_efforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    {
+      "provider": "openai",
+      "id": "o3",
+      "supported_efforts": [
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    {
+      "provider": "openai",
+      "id": "o3-mini",
+      "supported_efforts": [
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    {
+      "provider": "openai",
+      "id": "o3-pro",
+      "supported_efforts": [
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    {
+      "provider": "openai",
+      "id": "o4-mini",
+      "supported_efforts": [
+        "low",
+        "medium",
+        "high"
+      ]
+    }
+  ]
 }

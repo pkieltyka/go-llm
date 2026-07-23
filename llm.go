@@ -33,7 +33,12 @@ type ModelInfo struct {
 	ContextWindow   int
 	MaxOutputTokens int
 	Pricing         *ModelPricing
-	Raw             any
+	// SupportedEfforts enumerates the reasoning Effort levels the model
+	// supports, ordered weakest → strongest. The metadata is ADVISORY —
+	// empty means unknown, request forwarding and server-side validation
+	// are unchanged, and preflight never rejects an effort based on it.
+	SupportedEfforts []Effort
+	Raw              any
 }
 
 // ModelPricing stores per-million-token prices in USD.

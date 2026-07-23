@@ -82,6 +82,7 @@ func (p *Provider) Models(ctx context.Context) ([]llm.ModelInfo, error) {
 				pricing := *embedded.Pricing
 				info.Pricing = &pricing
 			}
+			info.SupportedEfforts = embedded.SupportedEfforts
 		}
 		models = append(models, info)
 	}
