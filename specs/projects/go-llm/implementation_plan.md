@@ -358,7 +358,23 @@ normalization invariant → FS §11):
   scope** (phase 6, FS §17C) — consuming + refreshing credentials minted
   by pi/claude/codex CLIs. Minting new ones (`llm-cli auth login`-style
   loopback PKCE; references: zero's provideroauth, pi's oauth/) stays
-  deferred.
+  deferred. Design rules for when it lands (recorded 2026-07-22 with the
+  credential-POST redirect hardening): one exported endpoint validator
+  (https-or-loopback) applied to every endpoint at discovery-merge time,
+  plus a backstop validation at the authorize-URL choke point so a missed
+  merge site can't open a downgraded URL; skip network discovery entirely
+  when endpoints are fully preconfigured; and all credential-bearing
+  POSTs go through `provideroauth.NoRedirectClient` (already enforced for
+  refresh).
+
+**`TextPart.Cache` → OpenAI `prompt_cache_breakpoint` mapping** (deferred):
+openai-go v3.44 exposes `prompt_cache_breakpoint` on Responses input
+content ("marks the exact end of a reusable prompt prefix", TTL inherited
+from `prompt_cache_options.ttl`), so mapping the unified `CacheHint` onto
+OpenAI explicit breakpoints is now representable — FS §15's statement that
+hints are not sent to OpenAI stays normative until this ships. Pairs with
+`PromptCacheOptions` mode=explicit (plan 2 phase 3a); revisit once
+explicit-mode caching is exercised live.
 
 **Connection prewarm helper** (deferred, gated on TTFT data
 from plan 2 phase 4): an explicit helper issuing one unauthenticated,
