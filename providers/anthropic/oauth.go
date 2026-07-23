@@ -40,6 +40,7 @@ func refreshAnthropicOAuth(ctx context.Context, client *http.Client, tokenURL st
 	if client == nil {
 		client = llm.DefaultHTTPClient()
 	}
+	client = provideroauth.NoRedirectClient(client)
 	if tokenURL == "" {
 		tokenURL = anthropicOAuthTokenURL
 	}
