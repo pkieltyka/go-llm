@@ -44,7 +44,7 @@ type codexTransport struct {
 // was never accepted, so a retry cannot double-bill. The retry decision is
 // made purely on the response status line — a 2xx response is returned
 // untouched before any stream bytes are consumed, and is never retried.
-func (t codexTransport) postStream(ctx context.Context, body []byte) (*http.Response, error) {
+func (t codexTransport) postStream(ctx context.Context, body []byte, lite bool) (*http.Response, error) {
 	if strings.TrimSpace(t.endpoint) == "" {
 		return nil, fmt.Errorf("%w: missing OpenAI Codex endpoint", llm.ErrBadRequest)
 	}
@@ -52,7 +52,7 @@ func (t codexTransport) postStream(ctx context.Context, body []byte) (*http.Resp
 		return nil, fmt.Errorf("%w: missing OpenAI Codex OAuth source", llm.ErrAuth)
 	}
 	for attempt := 0; ; attempt++ {
-		resp, err := t.doAttempt(ctx, body)
+		resp, err := t.doAttempt(ctx, body, lite)
 		if err != nil {
 			return nil, err
 		}
@@ -73,12 +73,17 @@ func (t codexTransport) postStream(ctx context.Context, body []byte) (*http.Resp
 	}
 }
 
-func (t codexTransport) doAttempt(ctx context.Context, body []byte) (*http.Response, error) {
+func (t codexTransport) doAttempt(ctx context.Context, body []byte, lite bool) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	t.applyHeaders(req)
+	// Applied after applyHeaders so test header overrides compose with it:
+	// the backend serves the gpt-5.6 family only when the Lite header is set.
+	if lite {
+		req.Header.Set(codexResponsesLiteHeader, "true")
+	}
 	client := t.httpClient
 	if client == nil {
 		client = llm.DefaultHTTPClient()
@@ -166,6 +171,11 @@ func codexStreamingBody(params responses.ResponseNewParams) ([]byte, error) {
 	delete(fields, "max_output_tokens")
 	delete(fields, "top_p")
 	delete(fields, "temperature")
+	if isGPT56Model(string(params.Model)) {
+		if err := applyResponsesLite(fields); err != nil {
+			return nil, err
+		}
+	}
 	fields["stream"] = json.RawMessage("true")
 	return json.Marshal(fields)
 }
@@ -179,7 +189,7 @@ func (p *Provider) codexEvents(ctx context.Context, params responses.ResponseNew
 			return
 		}
 		remote := providerutil.StreamContract(providerName, func(remoteYield func(llm.Event, error) bool) {
-			resp, err := p.transport.postStream(ctx, body)
+			resp, err := p.transport.postStream(ctx, body, isGPT56Model(requestModel))
 			if err != nil {
 				remoteYield(nil, p.adapter().MapError(err))
 				return
