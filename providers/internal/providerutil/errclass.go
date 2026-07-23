@@ -2,6 +2,7 @@ package providerutil
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 
 	llm "github.com/pkieltyka/go-llm"
@@ -18,10 +19,14 @@ type ErrorKindHook func(status int, code, message string) error
 
 // ErrorKind classifies a provider error into a normalized sentinel: family
 // hooks first, then the shared OpenAI-style code/message heuristics, then
-// the canonical status mapping (StatusErrorKind). Weak code matches
-// (invalid_request → ErrBadRequest, server_error → ErrServer) apply only to
-// status-less errors (in-stream error events), so an HTTP status always
-// classifies per the canonical table.
+// the canonical status mapping (StatusErrorKind). Status-less errors
+// (in-stream error events, status 0) whose code is itself an integer HTTP
+// status in 400–599 — servers commonly mirror the status into `code` after
+// a 200 stream begins, e.g. {"error":{"code":"429"}} — classify through the
+// canonical status table; non-integral codes ("429.5") never do. Weak code
+// matches (invalid_request → ErrBadRequest, server_error → ErrServer) also
+// apply only to status-less errors, so an HTTP status always classifies per
+// the canonical table.
 func ErrorKind(status int, code, message string, hooks ...ErrorKindHook) error {
 	for _, hook := range hooks {
 		if kind := hook(status, code, message); kind != nil {
@@ -33,6 +38,11 @@ func ErrorKind(status int, code, message string, hooks ...ErrorKindHook) error {
 	}
 	if status >= 400 {
 		return StatusErrorKind(status)
+	}
+	if status == 0 {
+		if n, err := strconv.Atoi(strings.TrimSpace(code)); err == nil && n >= 400 && n < 600 {
+			return StatusErrorKind(n)
+		}
 	}
 	if kind := weakCodeKind(code); kind != nil {
 		return kind

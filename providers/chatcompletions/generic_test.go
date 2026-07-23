@@ -274,8 +274,11 @@ func TestGenericNewCompatSniff(t *testing.T) {
 				Model:    "m",
 				Messages: []llm.Message{llm.UserText("hi")},
 			}))
-			if !errors.Is(err, llm.ErrServer) {
-				t.Fatalf("sniffed error = %v, want ErrServer", err)
+			// The status-like code 503 classifies through the canonical
+			// status table (ErrOverloaded), matching the vLLM dialect's
+			// long-standing treatment of numeric in-stream codes.
+			if !errors.Is(err, llm.ErrOverloaded) {
+				t.Fatalf("sniffed error = %v, want ErrOverloaded", err)
 			}
 			if resp == nil || resp.Text() != "par" {
 				t.Fatalf("partial response = %+v", resp)

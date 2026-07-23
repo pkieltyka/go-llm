@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strconv"
 
 	sdk "github.com/openai/openai-go/v3"
 	llm "github.com/pkieltyka/go-llm"
@@ -169,16 +168,12 @@ func (dialect) MapStopReason(raw string) llm.StopReason {
 	return chatcompletions.DefaultStopReason(raw)
 }
 
-// MapErrorStatus layers vLLM's numeric in-stream error codes over the shared
-// classifier: mid-stream error events carry no HTTP status, but their `code`
-// mirrors one (e.g. {"object":"error","code":503} after HTTP 200), so a
-// numeric code classifies through the canonical status table.
+// MapErrorStatus defers to the shared classifier, which handles vLLM's
+// numeric in-stream error codes: mid-stream error events carry no HTTP
+// status, but their `code` mirrors one (e.g. {"object":"error","code":503}
+// after HTTP 200), and the unified classifier maps integral status-like
+// codes through the canonical status table.
 func (dialect) MapErrorStatus(status int, code, message string) error {
-	if status == 0 {
-		if n, err := strconv.Atoi(code); err == nil && n >= 400 && n < 600 {
-			return chatcompletions.DefaultErrorKind(n, "", message)
-		}
-	}
 	return chatcompletions.DefaultErrorKind(status, code, message)
 }
 
