@@ -82,6 +82,9 @@ func (a Adapter) buildParamsAfterValidation(req *llm.Request) (responses.Respons
 	if req.TopP != nil {
 		params.TopP = sdk.Float(*req.TopP)
 	}
+	// prompt_cache_key is Responses-surface-only by design: strict
+	// OpenAI-compatible gateways reject unknown fields with 400, so never
+	// add it to the Chat Completions engine without a provider-kind gate.
 	if req.SessionID != "" {
 		params.PromptCacheKey = sdk.String(req.SessionID)
 	}

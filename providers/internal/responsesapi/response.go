@@ -149,21 +149,29 @@ func mapResponseStop(resp responses.Response, sawRefusal, sawFunctionCall bool) 
 }
 
 func (a Adapter) mapUsage(model shared.ResponsesModel, usage responses.ResponseUsage) llm.Usage {
+	// OpenAI reports cache reads and writes as subsets of input_tokens;
+	// the additive contract (FS §11) wants InputTokens to EXCLUDE both, so
+	// each subset is subtracted with underflow protection.
 	cacheRead := usage.InputTokensDetails.CachedTokens
+	cacheWrite := usage.InputTokensDetails.CacheWriteTokens
 	inputTokens := usage.InputTokens
 	if cacheRead > 0 && inputTokens >= cacheRead {
 		inputTokens -= cacheRead
 	}
+	if cacheWrite > 0 && inputTokens >= cacheWrite {
+		inputTokens -= cacheWrite
+	}
 	out := llm.Usage{
-		InputTokens:     inputTokens,
-		CacheReadTokens: cacheRead,
-		OutputTokens:    usage.OutputTokens,
-		ReasoningTokens: usage.OutputTokensDetails.ReasoningTokens,
-		TotalTokens:     usage.TotalTokens,
-		Raw:             usage,
+		InputTokens:      inputTokens,
+		CacheReadTokens:  cacheRead,
+		CacheWriteTokens: cacheWrite,
+		OutputTokens:     usage.OutputTokens,
+		ReasoningTokens:  usage.OutputTokensDetails.ReasoningTokens,
+		TotalTokens:      usage.TotalTokens,
+		Raw:              usage,
 	}
 	if out.TotalTokens == 0 {
-		out.TotalTokens = out.InputTokens + out.CacheReadTokens + out.OutputTokens
+		out.TotalTokens = out.InputTokens + out.CacheReadTokens + out.CacheWriteTokens + out.OutputTokens
 	}
 	if a.PriceTable != nil {
 		return llm.EstimateCostWithTable(a.PriceTable, a.ProviderName, string(model), out)
