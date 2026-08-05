@@ -24,7 +24,7 @@ func TestMatchModelRanksNormalizedModelNames(t *testing.T) {
 	}
 }
 
-func TestMatchModelUsesCanonicalIDsAndPrefersLaterTies(t *testing.T) {
+func TestMatchModelUsesCanonicalIDsAndPrefersLatestVersion(t *testing.T) {
 	models := []llm.ModelInfo{
 		{ID: "first-opus", CanonicalID: "anthropic/claude-opus-4-8"},
 		{ID: "second-opus", CanonicalID: "anthropic/claude-opus-4-9"},
@@ -37,7 +37,41 @@ func TestMatchModelUsesCanonicalIDsAndPrefersLaterTies(t *testing.T) {
 
 	matched, ok = llm.MatchModel(models, "opus")
 	if !ok || matched.ID != "second-opus" {
-		t.Fatalf("MatchModel tie = (%+v, %v), want later provider model", matched, ok)
+		t.Fatalf("MatchModel tie = (%+v, %v), want latest provider model", matched, ok)
+	}
+}
+
+func TestMatchModelPrefersLatestVersionRegardlessOfCatalogOrder(t *testing.T) {
+	for _, models := range [][]llm.ModelInfo{
+		{{ID: "gpt-5.1"}, {ID: "gpt-5.6"}},
+		{{ID: "gpt-5.6"}, {ID: "gpt-5.1"}},
+	} {
+		matched, ok := llm.MatchModel(models, "gpt-5")
+		if !ok || matched.ID != "gpt-5.6" {
+			t.Fatalf("MatchModel(%v, gpt-5) = (%+v, %v), want gpt-5.6", models, matched, ok)
+		}
+	}
+
+	models := []llm.ModelInfo{{ID: "gpt-5.10"}, {ID: "gpt-5.6"}}
+	matched, ok := llm.MatchModel(models, "gpt-5")
+	if !ok || matched.ID != "gpt-5.10" {
+		t.Fatalf("MatchModel natural version = (%+v, %v), want gpt-5.10", matched, ok)
+	}
+
+	models = []llm.ModelInfo{{ID: "gpt-5.6-sol"}, {ID: "gpt-5.6"}}
+	matched, ok = llm.MatchModel(models, "gpt-5")
+	if !ok || matched.ID != "gpt-5.6" {
+		t.Fatalf("MatchModel base version = (%+v, %v), want gpt-5.6", matched, ok)
+	}
+}
+
+func TestMatchModelDoesNotReorderCatalog(t *testing.T) {
+	models := []llm.ModelInfo{{ID: "gpt-5.6"}, {ID: "gpt-5.1"}}
+	if _, ok := llm.MatchModel(models, "gpt-5"); !ok {
+		t.Fatal("MatchModel returned no match")
+	}
+	if models[0].ID != "gpt-5.6" || models[1].ID != "gpt-5.1" {
+		t.Fatalf("MatchModel reordered input: %+v", models)
 	}
 }
 
