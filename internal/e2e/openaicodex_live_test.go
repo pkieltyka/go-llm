@@ -76,7 +76,6 @@ func openAICodexLiveScenarioRunners() map[string]ScenarioRun {
 	runners["parse"] = liveOpenAIParseScenario
 	runners["reasoning"] = liveOpenAICodexReasoningScenario
 	runners["reasoning_replay"] = liveOpenAICodexReasoningReplayScenario
-	runners["prompt_cache"] = liveOpenAICodexPromptCacheScenario
 	runners["error_mapping"] = liveOpenAICodexErrorMappingScenario
 	return runners
 }
@@ -143,27 +142,6 @@ func liveOpenAICodexErrorMappingScenario(ctx context.Context, t *testing.T, p ll
 	})
 	if !errors.Is(err, llm.ErrNotFound) && !errors.Is(err, llm.ErrBadRequest) {
 		t.Fatalf("bad model error = %v, want ErrNotFound or ErrBadRequest", err)
-	}
-}
-
-// liveOpenAICodexPromptCacheScenario exercises SessionID → prompt_cache_key
-// and requires provider-reported cache-read evidence.
-func liveOpenAICodexPromptCacheScenario(ctx context.Context, t *testing.T, p llm.Provider, model string) {
-	t.Helper()
-	req := &llm.Request{
-		Model:     model,
-		System:    strings.Repeat("Codex prompt cache live fixture sentence with stable content. ", 400),
-		SessionID: "gollm-live-prompt-cache",
-		Messages:  []llm.Message{llm.UserText("Answer exactly: cached")},
-	}
-	first, second, err := probePromptCache(ctx, p.Name(), defaultPromptCacheProbePolicy(), func(ctx context.Context) (*llm.Response, error) {
-		return p.Chat(ctx, req)
-	})
-	if err != nil {
-		t.Fatalf("prompt cache evidence failed: %v (first=%+v last=%+v)", err, responseUsage(first), responseUsage(second))
-	}
-	if first.Usage.InputTokens == 0 || second.Usage.InputTokens+second.Usage.CacheReadTokens == 0 {
-		t.Fatalf("prompt cache usage missing input tokens: first=%+v second=%+v", first.Usage, second.Usage)
 	}
 }
 

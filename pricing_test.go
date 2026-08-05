@@ -33,6 +33,9 @@ func TestLookupModelInfoFallbacks(t *testing.T) {
 	if _, ok := llm.LookupModelInfo("openai", "gpt-52"); ok {
 		t.Fatalf("boundaryless prefix fallback returned ok=true")
 	}
+	if _, ok := llm.LookupModelInfo("openai", "gpt-5-chat-latest"); ok {
+		t.Fatalf("non-dated gpt-5 variant inherited base-model metadata")
+	}
 	if llm.PriceTableDate() == "" {
 		t.Fatalf("PriceTableDate returned empty string")
 	}

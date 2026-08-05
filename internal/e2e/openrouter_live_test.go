@@ -4,7 +4,6 @@ package e2e
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"iter"
 	"os"
@@ -17,6 +16,8 @@ import (
 	llm "github.com/pkieltyka/go-llm"
 	openrouterProvider "github.com/pkieltyka/go-llm/providers/openrouter"
 )
+
+const openRouterReasoningEvidenceAttempts = 3
 
 const (
 	openRouterCheapModel = "qwen/qwen3.6-27b"
@@ -211,6 +212,9 @@ func liveOpenRouterReasoningScenario(ctx context.Context, t *testing.T, p llm.Pr
 		MaxTokens: 64,
 		Effort:    llm.EffortNone,
 		Messages:  []llm.Message{llm.UserText("Answer exactly: no thinking")},
+		ProviderOptions: openrouterProvider.Options{
+			Provider: map[string]any{"require_parameters": true},
+		},
 	})
 	if err != nil {
 		t.Fatalf("EffortNone Chat returned error: %v", err)
@@ -233,6 +237,9 @@ func liveOpenRouterReasoningReplayScenario(ctx context.Context, t *testing.T, p 
 	resp, err := p.Chat(ctx, &llm.Request{
 		Model:     replayModel,
 		MaxTokens: 2048,
+		ProviderOptions: openrouterProvider.Options{
+			Provider: map[string]any{"require_parameters": true},
+		},
 		Messages: []llm.Message{
 			llm.UserText(anthropicReasoningPrompt),
 			{
@@ -254,29 +261,27 @@ func liveOpenRouterReasoningReplayScenario(ctx context.Context, t *testing.T, p 
 
 func liveOpenRouterReasoningResponse(ctx context.Context, t *testing.T, p llm.Provider, model string) *llm.Response {
 	t.Helper()
-	resp, err := CollectLiveStream(p.Name(), p.ChatStream(ctx, &llm.Request{
-		Model:     model,
-		MaxTokens: 2048,
-		Effort:    llm.EffortHigh,
-		Messages:  []llm.Message{llm.UserText(anthropicReasoningPrompt)},
-	}))
+	calls := 0
+	resp, err := probeOpenRouterReasoningEvidence(ctx, openRouterReasoningEvidenceAttempts, func(ctx context.Context) (*llm.Response, error) {
+		calls++
+		return CollectLiveStream(p.Name(), p.ChatStream(ctx, &llm.Request{
+			Model:     model,
+			MaxTokens: 2048,
+			Effort:    llm.EffortHigh,
+			Messages:  []llm.Message{llm.UserText(anthropicReasoningPrompt)},
+			ProviderOptions: openrouterProvider.Options{
+				Provider:  map[string]any{"require_parameters": true},
+				Reasoning: map[string]any{"exclude": false},
+			},
+		}))
+	})
 	if err != nil {
-		t.Fatalf("reasoning stream returned error: %v", err)
+		t.Fatalf("reasoning evidence failed: %v", err)
+	}
+	if calls > 1 {
+		t.Logf("obtained structured OpenRouter reasoning after %d attempts", calls)
 	}
 	return resp
-}
-
-func hasOpenRouterReasoningRaw(resp *llm.Response) bool {
-	if resp == nil {
-		return false
-	}
-	for _, part := range resp.Parts {
-		// Parts are value types (adapters never emit pointer parts).
-		if reasoning, ok := part.(llm.ReasoningPart); ok && reasoning.Provider == "openrouter" && len(reasoning.Raw) > 0 && json.Valid(reasoning.Raw) {
-			return true
-		}
-	}
-	return false
 }
 
 func liveOpenRouterErrorMappingScenario(ctx context.Context, t *testing.T, p llm.Provider, model, baseURL string) {

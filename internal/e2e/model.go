@@ -15,7 +15,8 @@ type modelPreferenceResolver interface {
 // ResolveConfiguredModel uses a provider-specific resolver when available.
 // vLLM implements this interface and performs its fuzzy Qwen-aware selection.
 // Other providers retain the request alias; their Models scenario validates
-// that alias against IDs and canonical IDs returned by the listing endpoint.
+// that alias against IDs and canonical IDs returned by the listing endpoint,
+// with fuzzy matching for unqualified configured model names.
 func ResolveConfiguredModel(ctx context.Context, provider llm.Provider, preference string) (string, error) {
 	if resolver, ok := provider.(modelPreferenceResolver); ok {
 		model, err := resolver.ResolveModel(ctx, preference)
@@ -44,6 +45,9 @@ func resolveListedModel(providerID, configured string, models []llm.ModelInfo) (
 		if modelIdentityListsMatch(configuredIDs, listedIDs) {
 			return model, true
 		}
+	}
+	if !parseModelIdentity(configured).qualified {
+		return llm.MatchModel(models, configured)
 	}
 	return llm.ModelInfo{}, false
 }
