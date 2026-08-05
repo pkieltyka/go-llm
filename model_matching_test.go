@@ -43,8 +43,8 @@ func TestMatchModelUsesCanonicalIDsAndPrefersLatestVersion(t *testing.T) {
 
 func TestMatchModelPrefersLatestVersionRegardlessOfCatalogOrder(t *testing.T) {
 	for _, models := range [][]llm.ModelInfo{
-		{{ID: "gpt-5.1"}, {ID: "gpt-5.6"}},
-		{{ID: "gpt-5.6"}, {ID: "gpt-5.1"}},
+		{{ID: "gpt-5"}, {ID: "gpt-5.1"}, {ID: "gpt-5.6"}},
+		{{ID: "gpt-5.6"}, {ID: "gpt-5.1"}, {ID: "gpt-5"}},
 	} {
 		matched, ok := llm.MatchModel(models, "gpt-5")
 		if !ok || matched.ID != "gpt-5.6" {
@@ -62,6 +62,71 @@ func TestMatchModelPrefersLatestVersionRegardlessOfCatalogOrder(t *testing.T) {
 	matched, ok = llm.MatchModel(models, "gpt-5")
 	if !ok || matched.ID != "gpt-5.6" {
 		t.Fatalf("MatchModel base version = (%+v, %v), want gpt-5.6", matched, ok)
+	}
+}
+
+func TestMatchModelKeepsExplicitMinorVersionExact(t *testing.T) {
+	models := []llm.ModelInfo{{ID: "gpt-5.10"}, {ID: "gpt-5.1"}}
+	matched, ok := llm.MatchModel(models, "gpt-5.1")
+	if !ok || matched.ID != "gpt-5.1" {
+		t.Fatalf("MatchModel explicit version = (%+v, %v), want gpt-5.1", matched, ok)
+	}
+}
+
+func TestMatchModelDoesNotTreatModelMetadataAsVersion(t *testing.T) {
+	tests := []struct {
+		name   string
+		query  string
+		models []llm.ModelInfo
+		want   string
+	}{
+		{
+			name:  "parameter counts",
+			query: "qwen",
+			models: []llm.ModelInfo{
+				{ID: "qwen/qwen3-235b-a22b"},
+				{ID: "qwen/qwen3.8-max"},
+				{ID: "qwen/qwen3.6-27b"},
+			},
+			want: "qwen/qwen3.8-max",
+		},
+		{
+			name:  "quantization levels and compact dates",
+			query: "qwen",
+			models: []llm.ModelInfo{
+				{ID: "qwen/qwen3-30b-fp8-2507"},
+				{ID: "qwen/qwen3.6-27b-nvfp4"},
+			},
+			want: "qwen/qwen3.6-27b-nvfp4",
+		},
+		{
+			name:  "dated snapshots",
+			query: "gpt-4o",
+			models: []llm.ModelInfo{
+				{ID: "gpt-4o-20241120"},
+				{ID: "gpt-4o-2024-11-20"},
+				{ID: "gpt-4o"},
+			},
+			want: "gpt-4o",
+		},
+		{
+			name:  "numeric provider names",
+			query: "euryale",
+			models: []llm.ModelInfo{
+				{ID: "sao10k/l3.1-euryale-70b"},
+				{ID: "sao10k/l3.3-euryale-70b"},
+			},
+			want: "sao10k/l3.3-euryale-70b",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			matched, ok := llm.MatchModel(test.models, test.query)
+			if !ok || matched.ID != test.want {
+				t.Fatalf("MatchModel(%q) = (%+v, %v), want %q", test.query, matched, ok, test.want)
+			}
+		})
 	}
 }
 
