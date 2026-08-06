@@ -192,7 +192,8 @@ stability-exempt before v1.
 
 Self-hosted servers are first-class: constructors are **host-first** and the
 API key is **optional** (no environment fallback). The `providers/vllm`
-preset knows vLLM's dialect — `reasoning` output (parsed to
+preset targets the current stable vLLM v0.26.0 protocol and knows its
+dialect — `reasoning` output (parsed to
 `llm.ReasoningPart`, streamed as `ReasoningDelta`), `Effort` →
 `reasoning_effort`, choice-less mid-stream error events, `max_model_len` as
 `ModelInfo.ContextWindow`, and typed extensions (`top_k`, `min_p`,
@@ -222,10 +223,6 @@ resp, err := p.Chat(ctx, &llm.Request{
 	},
 })
 ```
-
-Older vLLM deployments (pre-v0.12) use `vllm.WithLegacyEra()`; structured
-output rides the era-portable `response_format: json_schema` spelling either
-way.
 
 For deployments that support it, `vllm.Options.ThinkingTokenBudget` caps
 reasoning without adding a provider-neutral knob. When `MaxTokens` is set,
@@ -260,7 +257,7 @@ p, err = chatcompletions.New("https://api.example.com/v1",
 )
 ```
 
-Bonus recipe, verified live against vLLM 0.24: vLLM ≥0.11.1 also serves an
+Bonus recipe: current vLLM v0.26.0 also serves an
 **Anthropic `/v1/messages` endpoint**, so the Anthropic provider can target a
 vLLM box directly — `anthropic.New(anthropic.WithBaseURL("http://localhost:8000"),
 anthropic.WithAPIKey("dummy"))` completes chats with usage and even maps

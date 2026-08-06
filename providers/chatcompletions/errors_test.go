@@ -31,7 +31,7 @@ func TestParseProviderErrorCodeForms(t *testing.T) {
 		{`{"error":{"code":"429","message":"m"}}`, "429"},
 		{`{"error":{"code":429,"message":"m"}}`, "429"},
 		{`{"error":{"code":429.5,"message":"m"}}`, "429.5"},
-		{`{"object":"error","code":503,"message":"m"}`, "503"},
+		{`{"code":503,"message":"m"}`, "503"},
 	}
 	for _, tc := range cases {
 		code, message, _ := parseProviderError([]byte(tc.body))

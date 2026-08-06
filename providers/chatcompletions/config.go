@@ -87,17 +87,15 @@ type Compat struct {
 	// ReasoningReplayField, when non-empty, names the assistant-message field
 	// used to replay same-provider plain-text reasoning (ReasoningPart.Text
 	// with a matching Provider and no Raw payload) back to the server — e.g.
-	// "reasoning" for modern vLLM, "reasoning_content" for pre-rename
-	// servers. Raw reasoning_details payloads always replay as
+	// "reasoning" for vLLM. Raw reasoning_details payloads always replay as
 	// reasoning_details regardless of this field. Empty (the default) drops
 	// plain-text reasoning on replay, matching servers whose chat templates
 	// discard prior thinking anyway.
 	ReasoningReplayField string
 
 	// SniffMidStreamErrors treats choice-less SSE data events that carry an
-	// error payload — nested {"error":{...}} or legacy flat
-	// {"object":"error",...} — as normalized in-stream errors. vLLM emits
-	// these after HTTP 200 when generation fails mid-stream; without the
+	// nested {"error":{...}} payload as a normalized in-stream error. vLLM
+	// emits these after HTTP 200 when generation fails mid-stream; without the
 	// sniff such events would be silently absorbed as extras.
 	SniffMidStreamErrors bool
 

@@ -613,7 +613,7 @@ reasoning across tool-call turns. Decision record:
   indices — output-item positions — are identical on both paths.
 - **Errors**: `*openai.Error` → `ProviderError` (type/code/param preserved).
 - `Models()`: `GET /models`; `Client()` returns the SDK client (raw access
-  incl. Chat Completions for legacy knobs).
+  including provider-specific Chat Completions fields).
 
 ### 3.2A OpenAI Codex (subscription provider, shared Responses mapping)
 
@@ -694,8 +694,7 @@ type Dialect interface {
     // defers to the adapter's default chat-completions mapping (reasoning +
     // reasoning_details tagged with Dialect.Name() for replay, content,
     // refusal, tool calls with malformed-call drops); dialects override only
-    // for non-standard shapes. The default mapping reads BOTH `reasoning`
-    // and the legacy `reasoning_content` spelling used by older vLLM.
+    // for non-standard shapes. The default mapping reads `reasoning`.
     ExtractParts(raw JSONObject, msg RawMessage) ([]llm.Part, []llm.DroppedToolCall, error)
 
     // ExtractExtras builds the dialect's typed Response.Raw extras from the
@@ -728,13 +727,13 @@ type Compat struct {
     MapEffort func(llm.Effort) map[string]any
 
     // Assistant-message field for replaying same-provider PLAIN-TEXT
-    // reasoning ("reasoning" modern vLLM / "reasoning_content" legacy);
+    // reasoning (for example, vLLM's "reasoning");
     // "" (default) drops it, matching templates that discard prior thinking.
     // Raw reasoning_details payloads always replay as reasoning_details.
     ReasoningReplayField string
 
-    // Treat choice-less SSE data events carrying an error payload (nested
-    // {"error":{...}} or legacy flat {"object":"error",...}) as normalized
+    // Treat choice-less SSE data events carrying a nested
+    // {"error":{...}} payload as a normalized
     // in-stream errors — vLLM emits these after HTTP 200 (the goose-crash
     // case). Events with a "choices" key (even empty: trailing usage
     // chunks) are never sniffed.
@@ -780,13 +779,11 @@ Dialect specifics (surface per functional spec §14):
   `reasoning_details` into typed response extras; enables cache-aware
   role-tool text blocks after a focused live write/read cache probe (accessor
   `openrouter.Extras(resp *llm.Response) (*ResponseExtras, bool)`).
-- **vllm** (upstream research: `vllm_research.md`): host-first
-  `vllm.New(baseURL, opts...)`, key-optional. Era-aware: modern default
-  (v0.12+, `reasoning` field) with `WithLegacyEra()` switching reasoning
-  replay to `reasoning_content`; `response_format: json_schema` is the
-  era-portable structured-output spelling either way (both fields are
-  always read on responses). Effort → `reasoning_effort`
-  (none..high, vLLM-only "max"; unified "xhigh" → "high"). Compat:
+- **vllm** (upstream research: `vllm_research.md`): current-stable v0.26.0,
+  host-first `vllm.New(baseURL, opts...)`, key-optional. Reasoning replay and
+  response parsing use `reasoning`; JSON-schema output uses
+  `response_format: json_schema`. Effort → `reasoning_effort`
+  (none, minimal, low, medium, high, xhigh, and vLLM-only "max"). Compat:
   `SniffMidStreamErrors` (choice-less SSE error events),
   `NormalizeToolUseStop` (named-function forced tool calls finish "stop" on the wire; `tool_choice:"required"` reports "tool_calls" correctly),
   `StreamIncludeUsage`. Typed `vllm.Options`: `top_k`, `min_p`,
@@ -1203,7 +1200,7 @@ via `llm.StreamText` or collect for `--json`/`--no-stream`), `models.go`
 - **Response/stream fixture tests**: recorded provider JSON/SSE payloads
   replayed via `httptest.Server` → assert parts, stop reasons, usage, and
   unified event sequences. Fixtures include: OpenRouter comment keep-alives,
-  OpenRouter mid-stream error chunk, vLLM legacy `reasoning_content`, Anthropic
+  OpenRouter mid-stream error chunk, vLLM `reasoning`, Anthropic
   thinking + tool-use blocks, refusal stop, parallel tool calls,
   malformed tool calls (missing id/name, truncated args, duplicate ids →
   rescue or `ToolCallDropped`), and per-adapter usage-invariant tables

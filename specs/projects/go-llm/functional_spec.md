@@ -27,7 +27,7 @@ verified with Go 1.26.5 or newer. Streaming uses standard iterators (`iter`).
 | OpenAI | Wraps official `openai-go` (direct) | **Responses API** — OpenAI's recommended surface for new projects; enables reasoning continuity + content (see provider_capabilities.md) |
 | OpenAI Codex | `providers/openaicodex` — shares the Responses mapping with `providers/openai` | **ChatGPT Plus/Pro subscription** via OAuth — `chatgpt.com/backend-api/codex` (§17C) |
 | OpenRouter | Shared OpenAI-compatible adapter (via `openai-go`), preset base URL + auth + typed extensions | `https://openrouter.ai/api/v1` |
-| vLLM | `providers/vllm` — preset over the public `chatcompletions` engine; **host-first construction** (self-hosted: `http://host:8000/v1`, key optional via `--api-key` bearer), era-aware (modern v0.12+ default, `WithLegacyEra()`) | Live-tested. Includes fuzzy model resolution and concrete-provider `/tokenize`, `/detokenize`, and `/tokenizer_info` extensions. Full upstream research: `vllm_research.md` |
+| vLLM | `providers/vllm` — current-stable v0.26.0 preset over the public `chatcompletions` engine; **host-first construction** (self-hosted: `http://host:8000/v1`, key optional via `--api-key` bearer) | Live-tested. Includes fuzzy model resolution and concrete-provider `/tokenize`, `/detokenize`, and `/tokenizer_info` extensions. Full upstream research: `vllm_research.md` |
 | Ollama | `providers/ollama` — data-only preset over the public `chatcompletions` engine (`http://localhost:11434/v1` convention) | Offline conformance-tested; not in the credentialed live matrix |
 | Custom | Public `Provider` interface — anyone can implement their own; or `chatcompletions.New(baseURL, opts...)` for any OpenAI-compatible server, with quirks declared via the `Compat` struct | |
 
@@ -47,7 +47,8 @@ Decisions:
   returns reasoning content and discards reasoning between tool-call
   turns). Stateless operation: the adapter sets `store: false` and
   round-trips encrypted reasoning items. Chat Completions remains fully
-  supported upstream; legacy-only knobs are reachable via the raw client.
+  supported upstream; Chat Completions-only knobs are reachable via the raw
+  client.
 - OpenRouter, vLLM, and Ollama are presets over one public
   OpenAI-compatible, chat-completions-shaped engine. OpenRouter and vLLM add
   typed provider options and response mappings; Ollama is a data-only preset.
@@ -279,7 +280,7 @@ adapter and its OpenRouter, vLLM, and Ollama presets.
 | OpenAI (Responses) | SSE **semantic typed events** (`response.output_text.delta`, `response.function_call_arguments.delta`, `response.reasoning_summary_text.delta`, `response.output_item.added/done`, `response.completed`, …) | Deltas keyed by output-item/content index (no `choices[].delta`); reasoning summary deltas → `ReasoningDelta`; usage arrives on `response.completed`; `response.failed`/`error` events → normalized in-stream error |
 | CC-shaped adapter (OpenRouter, vLLM, Ollama, custom) | SSE `chat.completion.chunk` + `data: [DONE]` | Choice index 0 only; tool-call deltas indexed via `delta.tool_calls[].index`; `stream_options.include_usage` set where a dialect requires it; usage-only tails and comment keep-alives tolerated |
 | OpenRouter (dialect specifics) | as CC-shaped row | SSE **comment keep-alives** (`: OPENROUTER PROCESSING`) must be skipped; **mid-stream errors** arrive as an HTTP-200 chunk with `finish_reason: "error"` + `error{}` object → normalized in-stream error; usage+cost auto-included in final chunk; `reasoning`/`reasoning_details` on deltas |
-| vLLM (dialect specifics) | as CC-shaped row | Reads modern `reasoning` and legacy `reasoning_content`; choice-less error events normalize in-stream; forced tool calls ending with wire `stop` normalize to `tool_use` |
+| vLLM (dialect specifics) | as CC-shaped row | Reads `reasoning`; choice-less nested error events normalize in-stream; forced tool calls ending with wire `stop` normalize to `tool_use` |
 
 - Usage always surfaces on the `MessageEnd` event regardless of where the
   provider reports it.
@@ -463,7 +464,7 @@ nearest supported native level; the table is documented in code):
 | `low` | `low` | `low` | `low` | `low` |
 | `medium` | `medium` | `medium` | `medium` | `medium` |
 | `high` | `high` | `high` | `high` | `high` |
-| `xhigh` | `xhigh` where accepted, otherwise `high` | `xhigh` | `xhigh` | `high` (nearest) |
+| `xhigh` | `xhigh` where accepted, otherwise `high` | `xhigh` | `xhigh` | `xhigh` |
 | `max` | `max` where accepted, otherwise `high` | `xhigh` (nearest) | `max` | `max` (native) |
 | `none` | thinking disabled/omitted | `none` | `enabled: false` | `none` |
 
@@ -723,17 +724,14 @@ conflict. Current extension surface:
   toggles), `ThinkingTokenBudget`, and `XArgs` (`vllm_xargs` engine
   passthrough). The budget emits `thinking_token_budget` only when explicitly
   set, must be positive and compatible with effective thinking enablement,
-  and reserves 1,024 visible-answer tokens when `MaxTokens` is set. Era selection via
-  `vllm.WithLegacyEra()` (pre-v0.12 servers: `reasoning_content` replay).
+  and reserves 1,024 visible-answer tokens when `MaxTokens` is set.
 - `StructuredOutputs` (native `structured_outputs` constraint modes,
-  v0.12+): exactly one of `Regex`, `Choice`, `Grammar`, `StructuralTag`
+  current vLLM): exactly one of `Regex`, `Choice`, `Grammar`, `StructuralTag`
   (raw JSON), plus `WhitespacePattern`; JSON-schema output stays on the
   unified `ResponseFormat` (era-portable spelling). Conflicts fail loud at
   build: set together with `ResponseFormat` → `ErrBadRequest` (one
-  constraint system per request; unified owns the slot), set under
-  `WithLegacyEra()` → `ErrUnsupported` (modern servers silently ignore the
-  removed `guided_*` spelling, so no fallback is emitted), zero/multiple
-  modes → `ErrBadRequest`.
+  constraint system per request; unified owns the slot), zero/multiple modes
+  → `ErrBadRequest`.
 - Tokenizer extension methods (escape hatch on the concrete provider, not
   `llm.Provider`): `Tokenize(ctx, *llm.Request)` → `TokenizeResult{Count,
   MaxModelLen, Tokens}` (exact chat-template-aware prompt accounting via
@@ -758,7 +756,7 @@ service tiers), raw SDK access via `Client()`.
 **OpenAI** (`openai.Options`): Responses-specific `Store`,
 `PreviousResponseID`, `ConversationID`/`Conversation`, `Include`,
 `Background`, `HostedTools`, `Verbosity`, `Metadata`, `ServiceTier`,
-`SafetyIdentifier`, and `PromptCacheRetention`. These use library-owned or
+`SafetyIdentifier`, and `PromptCacheOptions`. These use library-owned or
 standard-library types; `HostedTools` is a slice of validated JSON objects so
 future hosted-tool shapes do not expose SDK unions. `Client()` remains an
 advanced vendor-typed escape hatch.

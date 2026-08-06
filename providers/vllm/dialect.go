@@ -13,11 +13,8 @@ import (
 )
 
 // dialect carries the vLLM-specific behavior for the shared chat-completions
-// engine. legacyEra switches the reasoning replay field for pre-v0.12
-// servers.
-type dialect struct {
-	legacyEra bool
-}
+// engine.
+type dialect struct{}
 
 func (dialect) Name() string           { return providerName }
 func (dialect) DefaultBaseURL() string { return "" }
@@ -27,43 +24,31 @@ func (dialect) Capabilities() []llm.Capability {
 	return append([]llm.Capability(nil), capabilities...)
 }
 
-func (d dialect) Compat() chatcompletions.Compat {
-	// Modern era (v0.12+) replays reasoning under `reasoning`; the server
-	// normalizes `reasoning_content` too, but pre-rename servers only accept
-	// the old spelling.
-	replayField := "reasoning"
-	if d.legacyEra {
-		replayField = "reasoning_content"
-	}
+func (dialect) Compat() chatcompletions.Compat {
 	return chatcompletions.Compat{
 		// vLLM reports usage on a trailing empty-choices chunk when
 		// stream_options.include_usage is set.
 		StreamIncludeUsage: true,
 		MapEffort:          mapEffort,
 		// vLLM emits mid-stream failures as choice-less SSE error events
-		// after HTTP 200 (nested on current servers, flat {"object":"error"}
-		// historically) — the goose-crash case; sniff both shapes.
+		// after HTTP 200 — the goose-crash case.
 		SniffMidStreamErrors: true,
 		// Forced (named) tool calls end with finish_reason "stop" on vLLM
 		// (OpenAI CC semantics); normalize to tool_use when calls are present.
 		NormalizeToolUseStop: true,
-		ReasoningReplayField: replayField,
+		ReasoningReplayField: "reasoning",
 	}
 }
 
 // mapEffort implements FS §9's vLLM column: the wire field is
-// `reasoning_effort` with enum none|minimal|low|medium|high|max ("max" is
-// vLLM-specific). The unified "xhigh" has no vLLM level and maps to the
-// nearest, "high". Non-none efforts auto-inject enable_thinking server-side.
+// `reasoning_effort` with enum none|minimal|low|medium|high|xhigh|max ("max"
+// is vLLM-specific). Non-none efforts auto-inject enable_thinking
+// server-side.
 func mapEffort(effort llm.Effort) map[string]any {
-	switch effort {
-	case "":
+	if effort == "" {
 		return nil
-	case llm.EffortXHigh:
-		return map[string]any{"reasoning_effort": "high"}
-	default:
-		return map[string]any{"reasoning_effort": string(effort)}
 	}
+	return map[string]any{"reasoning_effort": string(effort)}
 }
 
 func (d dialect) ApplyRequest(req *llm.Request, _ *sdk.ChatCompletionNewParams, extras chatcompletions.JSONObject) error {
@@ -148,14 +133,11 @@ func (o Options) thinkingTokenBudget(req *llm.Request) (int, error) {
 // structuredOutputsValue validates and builds the structured_outputs wire
 // object. Conflict rules are documented on the StructuredOutputs type: the
 // unified ResponseFormat wins the constraint-system slot (two constraint
-// systems on one request is ambiguous → fail loud), the param requires a
-// modern-era server, and exactly one mode field may be set.
-func (d dialect) structuredOutputsValue(req *llm.Request, so StructuredOutputs) (map[string]any, error) {
+// systems on one request is ambiguous → fail loud), and exactly one mode
+// field may be set.
+func (dialect) structuredOutputsValue(req *llm.Request, so StructuredOutputs) (map[string]any, error) {
 	if req.ResponseFormat != nil {
 		return nil, fmt.Errorf("%w: vllm: Request.ResponseFormat and Options.StructuredOutputs are both set — use one constraint system (JSON schema belongs on ResponseFormat)", llm.ErrBadRequest)
-	}
-	if d.legacyEra {
-		return nil, fmt.Errorf("%w: vllm: StructuredOutputs needs a v0.12+ server (provider has WithLegacyEra): structured_outputs does not exist pre-v0.12, and the legacy guided_* spelling is not emitted because modern servers silently ignore it", llm.ErrUnsupported)
 	}
 	value := map[string]any{}
 	if so.Regex != "" {
@@ -217,8 +199,7 @@ func (dialect) MapErrorStatus(status int, code, message string) error {
 }
 
 // ExtractParts defers to the engine's default chat-completions mapping: vLLM
-// reasoning is plain text on `reasoning` (or legacy `reasoning_content`,
-// which the default mapping also reads), and content/tool-call shapes are
+// reasoning is plain text on `reasoning`, and content/tool-call shapes are
 // standard.
 func (dialect) ExtractParts(_ chatcompletions.JSONObject, _ chatcompletions.RawMessage) ([]llm.Part, []llm.DroppedToolCall, error) {
 	return nil, nil, nil

@@ -198,23 +198,23 @@ func TestOpenAIProviderOptionsGolden(t *testing.T) {
 		Model:    "gpt-test",
 		Messages: []llm.Message{llm.UserText("hello")},
 		ProviderOptions: Options{
-			Store:                &store,
-			PreviousResponseID:   "resp_prev",
-			Include:              []Include{IncludeMessageOutputTextLogprobs},
-			Background:           &background,
-			HostedTools:          []json.RawMessage{json.RawMessage(`{"type":"web_search","search_context_size":"low"}`)},
-			Verbosity:            VerbosityLow,
-			Metadata:             Metadata{"purpose": "test"},
-			ServiceTier:          ServiceTierDefault,
-			SafetyIdentifier:     "user_hash",
-			PromptCacheRetention: PromptCacheRetention24h,
+			Store:              &store,
+			PreviousResponseID: "resp_prev",
+			Include:            []Include{IncludeMessageOutputTextLogprobs},
+			Background:         &background,
+			HostedTools:        []json.RawMessage{json.RawMessage(`{"type":"web_search","search_context_size":"low"}`)},
+			Verbosity:          VerbosityLow,
+			Metadata:           Metadata{"purpose": "test"},
+			ServiceTier:        ServiceTierDefault,
+			SafetyIdentifier:   "user_hash",
+			PromptCacheOptions: &PromptCacheOptions{TTL: PromptCacheTTL30m},
 		},
 	}, false)
 	if err != nil {
 		t.Fatalf("buildParams returned error: %v", err)
 	}
 	got := testutil.MustCompactJSON(t, params)
-	want := `{"background":true,"previous_response_id":"resp_prev","store":true,"safety_identifier":"user_hash","include":["message.output_text.logprobs"],"metadata":{"purpose":"test"},"prompt_cache_retention":"24h","service_tier":"default","input":[{"content":[{"text":"hello","type":"input_text"}],"role":"user"}],"model":"gpt-test","text":{"verbosity":"low"},"tools":[{"type":"web_search","search_context_size":"low"}]}`
+	want := `{"background":true,"previous_response_id":"resp_prev","store":true,"safety_identifier":"user_hash","include":["message.output_text.logprobs"],"metadata":{"purpose":"test"},"prompt_cache_options":{"ttl":"30m"},"service_tier":"default","input":[{"content":[{"text":"hello","type":"input_text"}],"role":"user"}],"model":"gpt-test","text":{"verbosity":"low"},"tools":[{"type":"web_search","search_context_size":"low"}]}`
 	testutil.AssertJSONEqual(t, got, want)
 }
 
@@ -1341,10 +1341,6 @@ func TestOpenAIPromptCacheOptionsPreflight(t *testing.T) {
 		name    string
 		options Options
 	}{
-		{"both retention and options", Options{
-			PromptCacheRetention: PromptCacheRetention24h,
-			PromptCacheOptions:   &PromptCacheOptions{TTL: PromptCacheTTL30m},
-		}},
 		{"empty options", Options{PromptCacheOptions: &PromptCacheOptions{}}},
 		{"unknown mode", Options{PromptCacheOptions: &PromptCacheOptions{Mode: "always"}}},
 		{"unknown ttl", Options{PromptCacheOptions: &PromptCacheOptions{TTL: "24h"}}},

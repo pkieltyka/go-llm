@@ -37,7 +37,7 @@ type Options struct {
 	// (chat_template_kwargs).
 	ChatTemplateKwargs map[string]any
 	// StructuredOutputs selects a native constrained-decoding mode (the
-	// v0.12+ structured_outputs request param). See the type documentation
+	// structured_outputs request param). See the type documentation
 	// for modes, conflict rules, and the thinking interaction.
 	StructuredOutputs *StructuredOutputs
 	// XArgs is vLLM's generic engine passthrough (vllm_xargs). Values must
@@ -46,29 +46,23 @@ type Options struct {
 }
 
 // StructuredOutputs selects one of vLLM's native constrained-decoding modes,
-// sent as the top-level structured_outputs request param (v0.12+; also
-// present on the 0.23/0.24 line). Exactly one of Regex, Choice, Grammar, or
-// StructuralTag must be set. JSON-schema output deliberately does NOT live
-// here: use the unified llm.Request.ResponseFormat, which the preset sends
-// as the era-portable response_format json_schema spelling.
+// sent as the top-level structured_outputs request param. Exactly one of
+// Regex, Choice, Grammar, or StructuralTag must be set. JSON-schema output
+// deliberately does NOT live here: use the unified
+// llm.Request.ResponseFormat, which the preset sends as response_format
+// json_schema.
 //
 // Conflicts fail loud at request build (FS §14: one constraint system per
 // request):
 //   - set together with Request.ResponseFormat → llm.ErrBadRequest
-//   - set on a WithLegacyEra provider → llm.ErrUnsupported: the param only
-//     exists on v0.12+ servers, and the pre-v0.12 guided_* spelling is not
-//     emitted as a fallback because modern servers silently ignore unknown
-//     fields (a probed guided_json request free-forms with no error)
 //   - zero or multiple mode fields → llm.ErrBadRequest (the server 400s on
 //     multiple modes; the client fails first with a clearer message)
 //
-// Live finding (vLLM 0.23/0.24-family, qwen3 reasoning parser): constraint
-// modes misbehave INTERMITTENTLY while thinking is active — a Choice
-// constraint can return concatenated choice members ("greengreen",
-// "greenblue") with thinking on (reproduced 5/5 at temperature 1.0, only
-// sometimes at temperature 0), and exact output with it off — so disable
-// thinking (llm.EffortNone or EnableThinking=false) when using these modes
-// on reasoning-parser hosts.
+// Current vLLM requires the server-side
+// --structured-outputs-config.enable_in_reasoning=True setting when
+// structured outputs must constrain reasoning content. Without that setting,
+// disable thinking (llm.EffortNone or EnableThinking=false) for constrained
+// requests.
 type StructuredOutputs struct {
 	// Regex constrains output to a regular expression (Rust-regex syntax on
 	// the xgrammar/guidance backends; lm-format-enforcer uses Python re).
@@ -103,7 +97,6 @@ type config struct {
 	priceTable      llm.PriceTable
 	logger          *slog.Logger
 	wireCapture     func(llm.WireCapture)
-	legacyEra       bool
 }
 
 // WithAPIKey sets a static API key (vLLM's --api-key bearer token). Keys are
@@ -119,14 +112,6 @@ func WithAPIKey(key string) Option {
 // WithAPIKeyFunc sets a per-request key resolver. It wins over WithAPIKey.
 func WithAPIKeyFunc(fn func(context.Context) (string, error)) Option {
 	return func(c *config) { c.apiKeyFunc = fn }
-}
-
-// WithLegacyEra targets pre-v0.12 vLLM servers: assistant reasoning replays
-// under the legacy `reasoning_content` field instead of `reasoning`.
-// Response parsing reads both spellings in either era, and structured output
-// uses the era-portable `response_format: json_schema` spelling throughout.
-func WithLegacyEra() Option {
-	return func(c *config) { c.legacyEra = true }
 }
 
 // WithHTTPClient replaces the provider's default HTTP client.
@@ -171,7 +156,7 @@ func WithWireCapture(fn func(llm.WireCapture)) Option {
 
 func (c config) chatcompletionsConfig(baseURL string) chatcompletions.Config {
 	return chatcompletions.Config{
-		Dialect:         dialect{legacyEra: c.legacyEra},
+		Dialect:         dialect{},
 		APIKey:          c.apiKey,
 		APIKeyFunc:      c.apiKeyFunc,
 		KeyOptional:     true,

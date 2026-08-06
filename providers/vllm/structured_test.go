@@ -29,7 +29,7 @@ func buildStructuredRequest(t *testing.T, p *Provider, req *llm.Request) json.Ra
 }
 
 // TestStructuredOutputsGolden pins the structured_outputs extras shape for
-// each native mode (v0.12+ wire param; probe-verified on the live host).
+// each native mode.
 func TestStructuredOutputsGolden(t *testing.T) {
 	cases := map[string]struct {
 		so   StructuredOutputs
@@ -125,24 +125,5 @@ func TestStructuredOutputsConflicts(t *testing.T) {
 				t.Fatalf("BuildParams error = %v, want ErrBadRequest", err)
 			}
 		})
-	}
-}
-
-// TestStructuredOutputsLegacyEraGate: the structured_outputs param exists
-// only on v0.12+ servers, and pre-v0.12 guided_* is not emitted as a
-// fallback (modern servers silently ignore it — the #1 wrong-era footgun),
-// so a WithLegacyEra provider rejects the option outright.
-func TestStructuredOutputsLegacyEraGate(t *testing.T) {
-	p, err := New("http://vllm.test/v1", WithLegacyEra())
-	if err != nil {
-		t.Fatalf("New returned error: %v", err)
-	}
-	_, err = p.inner.BuildParams(&llm.Request{
-		Model:           "m",
-		Messages:        []llm.Message{llm.UserText("hi")},
-		ProviderOptions: Options{StructuredOutputs: &StructuredOutputs{Choice: []string{"a", "b"}}},
-	}, false)
-	if !errors.Is(err, llm.ErrUnsupported) {
-		t.Fatalf("legacy-era error = %v, want ErrUnsupported", err)
 	}
 }

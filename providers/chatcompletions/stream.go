@@ -108,18 +108,13 @@ func (p *Provider) streamEvents(ctx context.Context, req *llm.Request, params sd
 
 // sniffStreamError detects choice-less SSE data events that carry an error
 // payload — vLLM emits these after HTTP 200 when generation fails mid-stream
-// (Compat.SniffMidStreamErrors). Both the nested {"error":{...}} and the
-// legacy flat {"object":"error","message":...,"code":N} shapes are
-// recognized; events that carry a "choices" key (even an empty array, like
-// trailing usage chunks) are never treated as errors here — in-choice errors
-// stay with mapChunk.
+// (Compat.SniffMidStreamErrors). Events that carry a "choices" key (even an
+// empty array, like trailing usage chunks) are never treated as errors here —
+// in-choice errors stay with mapChunk.
 func (p *Provider) sniffStreamError(payload []byte) error {
 	var probe struct {
-		Object  string          `json:"object"`
 		Choices json.RawMessage `json:"choices"`
 		Error   *rawError       `json:"error"`
-		Message string          `json:"message"`
-		Code    any             `json:"code"`
 	}
 	if err := json.Unmarshal(payload, &probe); err != nil {
 		return nil // let the chunk decoder report malformed payloads
@@ -129,9 +124,6 @@ func (p *Provider) sniffStreamError(payload []byte) error {
 	}
 	if probe.Error != nil && (probe.Error.Message != "" || probe.Error.Code != nil) {
 		return p.mapChunkError(probe.Error, payload)
-	}
-	if probe.Object == "error" {
-		return p.mapChunkError(&rawError{Code: probe.Code, Message: probe.Message}, payload)
 	}
 	return nil
 }
@@ -351,7 +343,7 @@ func (s *streamState) mapChunk(chunk rawChatCompletion, raw []byte) ([]llm.Event
 func choiceHasOutputDelta(delta rawMessage) bool {
 	return delta.Content != "" ||
 		delta.Refusal != "" ||
-		delta.reasoningText() != "" ||
+		delta.Reasoning != "" ||
 		len(delta.ReasoningDetails) > 0 ||
 		len(delta.ToolCalls) > 0
 }
@@ -444,7 +436,7 @@ func joinRawArray(elements []json.RawMessage) json.RawMessage {
 
 func (s *streamState) mapDelta(choice rawChoice) []llm.Event {
 	var events []llm.Event
-	if text := choice.Delta.reasoningText(); text != "" {
+	if text := choice.Delta.Reasoning; text != "" {
 		reasoningIndex := s.reasoningIndex()
 		s.reasoningTextBlocks[reasoningIndex] = struct{}{}
 		events = append(events, llm.ReasoningDelta{Index: reasoningIndex, Text: text})

@@ -39,29 +39,16 @@ type RawChoice struct {
 	Raw          JSONObject `json:"-"`
 }
 
-// RawMessage is a decoded wire message or stream delta. Reasoning carries the
-// current `reasoning` field name; ReasoningContent carries the legacy
-// `reasoning_content` spelling still emitted by older servers (pre-rename
-// vLLM, DeepSeek-convention dialects) — the adapter's default mapping reads
-// both, preferring Reasoning.
+// RawMessage is a decoded wire message or stream delta.
 type RawMessage struct {
 	Role             string          `json:"role"`
 	Content          string          `json:"content"`
 	Refusal          string          `json:"refusal"`
 	ToolCalls        []RawToolCall   `json:"tool_calls"`
 	Reasoning        string          `json:"reasoning"`
-	ReasoningContent string          `json:"reasoning_content"`
 	ReasoningDetails json.RawMessage `json:"reasoning_details"`
 	Annotations      json.RawMessage `json:"annotations"`
 	Raw              JSONObject      `json:"-"`
-}
-
-// reasoningText returns the reasoning text, tolerating both field spellings.
-func (m RawMessage) reasoningText() string {
-	if m.Reasoning != "" {
-		return m.Reasoning
-	}
-	return m.ReasoningContent
 }
 
 // RawToolCall is a decoded wire tool call (complete or delta fragment).
@@ -99,8 +86,7 @@ type RawOutputUsage struct {
 	ReasoningTokens int64 `json:"reasoning_tokens"`
 }
 
-// RawError is a decoded wire error payload (nested error object, flat legacy
-// object, or mid-stream error chunk).
+// RawError is a decoded wire error payload.
 type RawError struct {
 	Code     any        `json:"code"`
 	Message  string     `json:"message"`

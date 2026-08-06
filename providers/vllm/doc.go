@@ -8,24 +8,18 @@
 //	p, err := vllm.New("http://localhost:8000/v1")
 //	model, err := p.ResolveModel(ctx, "qwen") // e.g. nvidia/Qwen-3.6-27B-NVFP4
 //
-// # Server eras
+// # Supported server
 //
-// Deployed vLLM spans years of releases and SILENTLY IGNORES unknown request
-// fields, so wrong-era parameters degrade silently rather than erroring. The
-// preset defaults to the modern era (v0.12+): reasoning replays under the
-// `reasoning` field and structured output uses `response_format: json_schema`
-// — the portable spelling accepted by both eras. WithLegacyEra switches
-// reasoning replay to the pre-rename `reasoning_content` field for older
-// servers (and rejects Options.StructuredOutputs, a v0.12+ param); response
-// parsing always tolerates both spellings.
+// The preset targets the current stable vLLM v0.26.0 protocol. Reasoning
+// replays under `reasoning`; native constraints use `structured_outputs`.
 //
 // # Structured outputs
 //
 // JSON-schema and JSON-mode output ride the unified llm.Request.ResponseFormat
-// (sent as response_format, portable across eras). vLLM's additional native
+// (sent as response_format). vLLM's additional native
 // constraint modes — regex, choice, EBNF grammar, structural tag — are typed
-// on Options.StructuredOutputs and sent as the v0.12+ structured_outputs
-// param. Exactly one mode per request; combining with ResponseFormat is
+// on Options.StructuredOutputs and sent as structured_outputs. Exactly one
+// mode per request; combining with ResponseFormat is
 // rejected at build (see the StructuredOutputs type for the conflict rules
 // and the thinking interaction observed live).
 //
@@ -44,8 +38,8 @@
 // Servers started with --reasoning-parser stream `delta.reasoning` fragments,
 // which map to llm.ReasoningDelta / llm.ReasoningPart with plain text (vLLM
 // reasoning has no signed or encrypted payloads). Request.Effort maps to
-// `reasoning_effort` (vLLM accepts none..high plus the vLLM-specific "max";
-// the unified "xhigh" maps to "high"). Thinking-by-default models (Qwen3.6)
+// `reasoning_effort` (vLLM accepts none, minimal, low, medium, high, xhigh,
+// and the vLLM-specific max). Thinking-by-default models (Qwen3.6)
 // honor llm.EffortNone or Options.EnableThinking=false to answer directly.
 // Options.ThinkingTokenBudget can opt into vLLM's deployment-specific
 // `thinking_token_budget` extension; when Request.MaxTokens is set, the
@@ -57,10 +51,9 @@
 // Tool calling with tool_choice "auto" requires the server flags
 // --enable-auto-tool-choice --tool-call-parser <name>; without them such
 // requests fail server-side (the client cannot detect this from /v1/models).
-// Forced tool choice (named or "required") and strict tools use constrained
-// decoding, which on some deployments (observed on vLLM 0.24.0 with the
-// qwen3 reasoning parser) returns HTTP 500 while thinking is enabled —
-// disable thinking (EffortNone / EnableThinking=false) for forced tool calls
-// on reasoning-parser hosts. Usage.CacheReadTokens is populated only when
+// Structured output applied to reasoning requires
+// --structured-outputs-config.enable_in_reasoning=True; otherwise disable
+// thinking (EffortNone / EnableThinking=false) for constrained requests.
+// Usage.CacheReadTokens is populated only when
 // the server runs with --enable-prompt-tokens-details.
 package vllm

@@ -36,6 +36,6 @@ func TestReplayRecordedFixtures(t *testing.T) {
 		ToolCallMarkers: []string{`"tool_calls"`},
 		// vLLM blocking responses always carry `"reasoning":null`; only a
 		// string-valued field means reasoning content was produced.
-		ReasoningTextMarkers: []string{`"reasoning":"`, `"reasoning_content":"`},
+		ReasoningTextMarkers: []string{`"reasoning":"`},
 	})
 }

@@ -156,11 +156,9 @@ cache-options surface and the usage math.
    ```
 
    Add `PromptCacheOptions *PromptCacheOptions` to `openai.Options`.
-   Rules: emit the wire field only when explicitly supplied; validate
-   enum values in preflight; preflight-reject a request that sets both
-   `PromptCacheRetention` and `PromptCacheOptions` (the SDK deprecates
-   retention and documents ttl as a *minimum cache lifetime* — different
-   semantics, never silently translate). No model-name preflight gate:
+   Rules: emit the wire field only when explicitly supplied and validate
+   enum values in preflight. The public adapter exposes only the current
+   `prompt_cache_options.ttl` wire shape. No model-name preflight gate:
    the option stays forward-compatible and the server owns model
    acceptance (docs say gpt-5.6+; a client-side gate would wrongly
    reject future models).

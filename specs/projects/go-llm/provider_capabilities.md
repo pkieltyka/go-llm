@@ -34,7 +34,7 @@ directional, not precise.
 | Provider | Normalized (N+P) | Unique (U) | Notes |
 |---|---|---|---|
 | Anthropic | ~50% (20 of ~40) | ~50% | Uniqueness = platform machinery: server tools, MCP, skills, compaction, task budgets, fast mode |
-| OpenAI (Responses) | ~59% (19 of ~32) | ~41% | Uniqueness = hosted tools + conversation state + background mode; Responses dropped most CC legacy knobs |
+| OpenAI (Responses) | ~59% (19 of ~32) | ~41% | Uniqueness = hosted tools + conversation state + background mode; Responses omits many CC-only knobs |
 | OpenRouter | ~51% (19 of ~37) | ~49% | Uniqueness = routing/marketplace: fallbacks, provider prefs, plugins, presets |
 | ZAI | ~60% (15 of ~25) | ~40% | Uniqueness = bundled server tools (web_search/retrieval) + extra modalities |
 
@@ -99,7 +99,7 @@ skills, apply_patch, tool_search · conversation state (`store`,
 mechanism · prompt templates (`prompt: {id, version}`) ·
 `context_management` compaction · reasoning summary detail levels ·
 `verbosity` · `metadata` · `service_tier` · `safety_identifier` ·
-`prompt_cache_retention`.
+`prompt_cache_options`.
 
 **Dropped by Responses** (existed on Chat Completions; *not* carried into
 go-llm's OpenAI surface): `stop` sequences (→ go-llm gates
