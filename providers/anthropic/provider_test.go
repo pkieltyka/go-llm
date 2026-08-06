@@ -1638,17 +1638,6 @@ func collectAnthropicStream(t *testing.T, rawEvents []string) *llm.Response {
 	return testutil.CollectRawEvents(t, rawEvents, state.mapEvent)
 }
 
-func collectContractAnthropicStream(t *testing.T, rawEvents []string) *llm.Response {
-	t.Helper()
-	state := newStreamState(&Provider{})
-	events := testutil.MapRawEvents(t, rawEvents, state.mapEvent)
-	resp, err := llm.Collect(providerutil.StreamContract(providerName, testutil.EventSeq(events...)))
-	if err != nil {
-		t.Fatalf("Collect returned error: %v", err)
-	}
-	return resp
-}
-
 func newAnthropicStreamFixtureProvider(t *testing.T, roundTrip func(*http.Request) (*http.Response, error)) *Provider {
 	t.Helper()
 	provider, err := New(
