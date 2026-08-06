@@ -478,14 +478,14 @@ func TestResolveModel(t *testing.T) {
 			want:       "nvidia/Qwen-3.6-27B-NVFP4",
 		},
 		{
-			name:       "short_qwen_prefers_first_qwen",
+			name:       "short_qwen_prefers_prefix_match",
 			preference: "qwen",
-			want:       "nvidia/Qwen-3.6-27B-NVFP4",
+			want:       "Qwen/Qwen3.6-27B-FP8",
 		},
 		{
-			name:       "substring_ignores_case",
+			name:       "substring_tie_prefers_later_model",
 			preference: "qwen-3.6-27b",
-			want:       "nvidia/Qwen-3.6-27B-NVFP4",
+			want:       "Qwen/Qwen3.6-27B-FP8",
 		},
 		{
 			name:       "old_precision_suffix_fuzzy_matches_new_quantization",

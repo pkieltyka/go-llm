@@ -12,10 +12,11 @@ import (
 const defaultModelPreference = "qwen"
 
 // ResolveModel lists the served vLLM models and returns the best match for
-// preference. Matching is intentionally soft: exact match wins, then
-// case-insensitive substring/normalized-substring match, then a token overlap
-// score. If preference is empty or has no useful match, ResolveModel prefers
-// the first served Qwen model and finally the first served model.
+// preference. Matching is intentionally soft: the shared model matcher tries
+// normalized exact, prefix, and substring matches before the vLLM-specific
+// token-overlap fallback handles changed deployment and quantization suffixes.
+// If preference is empty or has no useful match, ResolveModel prefers the first
+// served Qwen model and finally the first served model.
 //
 // This is useful for self-hosted servers whose model IDs include deployment
 // prefixes or quantization suffixes, e.g. preference "qwen-3.6-27b" matching
@@ -34,40 +35,22 @@ func (p *Provider) ResolveModel(ctx context.Context, preference string) (llm.Mod
 func selectModel(models []llm.ModelInfo, preference string) llm.ModelInfo {
 	preference = strings.TrimSpace(preference)
 	if preference != "" {
-		if model, ok := exactModel(models, preference); ok {
-			return model
-		}
-		if model, ok := substringModel(models, preference); ok {
+		if model, ok := llm.MatchModel(models, preference); ok {
 			return model
 		}
 		if model, ok := scoredModel(models, preference); ok {
 			return model
 		}
 	}
-	if model, ok := substringModel(models, defaultModelPreference); ok {
+	if model, ok := firstModelMatch(models, defaultModelPreference); ok {
 		return model
 	}
 	return models[0]
 }
 
-func exactModel(models []llm.ModelInfo, preference string) (llm.ModelInfo, bool) {
-	for _, model := range models {
-		if strings.EqualFold(model.ID, preference) {
-			return model, true
-		}
-	}
-	return llm.ModelInfo{}, false
-}
-
-func substringModel(models []llm.ModelInfo, preference string) (llm.ModelInfo, bool) {
-	needle := strings.ToLower(preference)
-	normalizedNeedle := normalizeModelID(preference)
-	for _, model := range models {
-		id := strings.ToLower(model.ID)
-		if strings.Contains(id, needle) {
-			return model, true
-		}
-		if normalizedNeedle != "" && strings.Contains(normalizeModelID(model.ID), normalizedNeedle) {
+func firstModelMatch(models []llm.ModelInfo, preference string) (llm.ModelInfo, bool) {
+	for i := range models {
+		if model, ok := llm.MatchModel(models[i:i+1], preference); ok {
 			return model, true
 		}
 	}
@@ -92,16 +75,6 @@ func scoredModel(models []llm.ModelInfo, preference string) (llm.ModelInfo, bool
 		}
 	}
 	return best, bestScore > 0
-}
-
-func normalizeModelID(value string) string {
-	var b strings.Builder
-	for _, r := range strings.ToLower(value) {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
 }
 
 func modelTokenSet(value string) map[string]bool {

@@ -50,9 +50,9 @@ func PriceTableDate() string {
 
 // LookupModelInfo returns embedded model metadata without making a network call.
 //
-// Lookup first tries provider/model exact match, then the longest provider-local
-// prefix match for dated model variants, then canonical-ID fallback for pricing
-// and missing metadata.
+// Lookup first tries provider/model exact match, then an equivalent dot/dash
+// spelling, then the longest provider-local prefix match for dated model
+// variants, and finally canonical-ID fallback for missing metadata.
 func LookupModelInfo(provider, modelID string) (ModelInfo, bool) {
 	table, err := loadDefaultModelTable()
 	if err != nil {
@@ -97,6 +97,10 @@ func (t parsedModelTable) lookup(provider, modelID string) (ModelInfo, bool) {
 	if info, ok := t.ByKey[modelKey(provider, modelID)]; ok {
 		return t.withCanonicalFallback(info), true
 	}
+	if info, ok := t.lookupSeparatorEquivalent(provider, modelID); ok {
+		info.ID = modelID
+		return t.withCanonicalFallback(info), true
+	}
 
 	var (
 		best    ModelInfo
@@ -104,7 +108,7 @@ func (t parsedModelTable) lookup(provider, modelID string) (ModelInfo, bool) {
 		found   bool
 	)
 	for _, row := range t.Rows {
-		if row.Provider != provider || !modelIDHasBoundaryPrefix(modelID, row.ID) {
+		if row.Provider != provider || !datedModelVariant(modelID, row.ID) {
 			continue
 		}
 		if len(row.ID) <= bestLen {
@@ -119,6 +123,57 @@ func (t parsedModelTable) lookup(provider, modelID string) (ModelInfo, bool) {
 	}
 	best.ID = modelID
 	return t.withCanonicalFallback(best), true
+}
+
+func (t parsedModelTable) lookupSeparatorEquivalent(provider, modelID string) (ModelInfo, bool) {
+	normalizedModelID := normalizeModelSeparators(modelID)
+	for _, row := range t.Rows {
+		if row.Provider != provider {
+			continue
+		}
+		info := row.modelInfo()
+		if normalizeModelSeparators(info.ID) == normalizedModelID ||
+			(info.CanonicalID != "" && normalizeModelSeparators(info.CanonicalID) == normalizedModelID) {
+			return info, true
+		}
+	}
+	return ModelInfo{}, false
+}
+
+func normalizeModelSeparators(value string) string {
+	return strings.ReplaceAll(strings.ToLower(value), ".", "-")
+}
+
+func datedModelVariant(modelID, prefix string) bool {
+	if !modelIDHasBoundaryPrefix(modelID, prefix) || len(modelID) <= len(prefix) {
+		return false
+	}
+	suffix := modelID[len(prefix)+1:]
+	return hasCompactDatePrefix(suffix) || hasDashedDatePrefix(suffix)
+}
+
+func hasCompactDatePrefix(value string) bool {
+	if len(value) < 8 {
+		return false
+	}
+	for i := range 8 {
+		if value[i] < '0' || value[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func hasDashedDatePrefix(value string) bool {
+	if len(value) < len("2006-01-02") || value[4] != '-' || value[7] != '-' {
+		return false
+	}
+	for _, i := range [...]int{0, 1, 2, 3, 5, 6, 8, 9} {
+		if value[i] < '0' || value[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (t parsedModelTable) withCanonicalFallback(info ModelInfo) ModelInfo {

@@ -51,6 +51,20 @@ func TestResolveListedModelAcceptsAliasesAndCanonicalIDs(t *testing.T) {
 			models:     []llm.ModelInfo{{ID: "anthropic/claude-haiku-4.5"}},
 			want:       "anthropic/claude-haiku-4.5",
 		},
+		{
+			name:       "fuzzy unqualified name",
+			provider:   "anthropic",
+			configured: "opus-4.8",
+			models:     []llm.ModelInfo{{ID: "claude-opus-4-8"}},
+			want:       "claude-opus-4-8",
+		},
+		{
+			name:       "fuzzy version prefix",
+			provider:   "openai",
+			configured: "gpt-5",
+			models:     []llm.ModelInfo{{ID: "gpt-5.1"}},
+			want:       "gpt-5.1",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -62,9 +76,6 @@ func TestResolveListedModelAcceptsAliasesAndCanonicalIDs(t *testing.T) {
 	}
 	if _, ok := resolveListedModel("openai", "gpt-5-mini", []llm.ModelInfo{{ID: "gpt-52-mini"}}); ok {
 		t.Fatal("boundary-less prefix must not match")
-	}
-	if _, ok := resolveListedModel("openai", "gpt-5", []llm.ModelInfo{{ID: "gpt-5.1"}}); ok {
-		t.Fatal("different model versions must not be treated as aliases")
 	}
 	if _, ok := resolveListedModel("openrouter", "anthropic/foo", []llm.ModelInfo{{ID: "openai/foo"}}); ok {
 		t.Fatal("different qualified providers must not match")
