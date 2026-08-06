@@ -1023,10 +1023,13 @@ func TestNewRetryLoggerWarnsOnRetryableResponses(t *testing.T) {
 	_ = resp.Body.Close()
 
 	got := b.String()
-	for _, want := range []string{"level=WARN", "llm provider retryable response", "provider=fake", "status=429", "retry_after=2", "attempt=2"} {
+	for _, want := range []string{"level=WARN", "llm provider retryable response", "provider=fake", "status=429", "retry_after_duration=2s", "attempt=2"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("log output %q missing %q", got, want)
 		}
+	}
+	if strings.Contains(got, "retry_after=2") {
+		t.Fatalf("log output %q contains raw Retry-After header", got)
 	}
 }
 

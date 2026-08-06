@@ -230,6 +230,28 @@ func TestOpenRouterBuildRequestGolden(t *testing.T) {
 	}
 }
 
+func TestOpenRouterToolResultCacheHintUsesContentBlocks(t *testing.T) {
+	p, err := New(WithAPIKey("test"))
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	params, err := p.buildParams(&llm.Request{
+		Model: "anthropic/claude-test",
+		Messages: []llm.Message{{Role: llm.RoleTool, Parts: []llm.Part{
+			llm.ToolResultPart{ToolCallID: "call_1", Content: []llm.Part{
+				llm.TextPart{Text: "cached", Cache: &llm.CacheHint{}},
+			}},
+		}}},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildParams returned error: %v", err)
+	}
+	want := `[{"content":[{"cache_control":{"type":"ephemeral"},"text":"cached","type":"text"}],"role":"tool","tool_call_id":"call_1"}]`
+	if got := testutil.MustCompactJSON(t, params.Messages); got != want {
+		t.Fatalf("tool messages = %s, want %s", got, want)
+	}
+}
+
 func TestOpenRouterEffortMapping(t *testing.T) {
 	// FS §9 OpenRouter column: every unified level passes through verbatim as
 	// reasoning.effort; none maps to reasoning.enabled=false; empty sends
@@ -621,7 +643,7 @@ func TestOpenRouterStreamRetriesBeforeYield(t *testing.T) {
 		mustWrite(t, w, `data: {"id":"gen_1","model":"openai/gpt-test","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}`+"\n\n")
 		mustWrite(t, w, `data: {"id":"gen_1","model":"openai/gpt-test","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2,"cost":0.00001}}`+"\n\n")
 		mustWrite(t, w, "data: [DONE]\n\n")
-	}, WithMaxRetries(1))
+	}, WithMaxRetries(1), WithResponseRetries(true))
 	resp, err := llm.Collect(p.ChatStream(context.Background(), &llm.Request{Model: "openai/gpt-test", Messages: []llm.Message{llm.UserText("hello")}}))
 	if err != nil {
 		t.Fatalf("Collect returned error: %v", err)

@@ -63,6 +63,19 @@ type Compat struct {
 	// never dropped.
 	StreamIncludeUsage bool
 
+	// InferMissingFinishReason permits otherwise clean streams to finish when
+	// choice zero never supplies finish_reason. At [DONE] or clean EOF, the
+	// adapter infers tool_use when a valid tool call completed and end_turn
+	// otherwise. StopReasonRaw remains empty. The strict default rejects the
+	// stream as a provider error.
+	InferMissingFinishReason bool
+
+	// ToolMessageContentBlocks permits role:"tool" content arrays when a
+	// tool-result TextPart carries a CacheHint. The default remains the broadly
+	// compatible concatenated string form; enable this only for providers known
+	// to accept Anthropic-style text blocks with cache_control on tool results.
+	ToolMessageContentBlocks bool
+
 	// MapEffort translates the unified Effort into top-level wire request
 	// fields (nil result: send nothing). When MapEffort itself is nil the
 	// adapter sends {"reasoning_effort": "<level>"} — the spelling shared by
@@ -118,10 +131,13 @@ type Config struct {
 	BaseURL     string
 	HTTPClient  *http.Client
 	MaxRetries  *int
-	Timeout     time.Duration
-	PriceTable  llm.PriceTable
-	Logger      *slog.Logger
-	WireCapture func(llm.WireCapture)
+	// ResponseRetries opts into retrying explicit 429/503/529 responses.
+	// It is false by default because model invocations are not idempotent.
+	ResponseRetries bool
+	Timeout         time.Duration
+	PriceTable      llm.PriceTable
+	Logger          *slog.Logger
+	WireCapture     func(llm.WireCapture)
 }
 
 // NewWithDialect constructs a provider from a full Dialect implementation.
@@ -150,7 +166,7 @@ func NewWithDialect(cfg Config) (*Provider, error) {
 	compat := cfg.Dialect.Compat()
 	maxRetries := compatMaxRetries(cfg.MaxRetries)
 	observed := providerutil.ObservedHTTPClient(cfg.HTTPClient, cfg.Dialect.Name(), cfg.Logger, cfg.WireCapture)
-	httpClient := providerutil.SafeRetryHTTPClient(observed, maxRetries)
+	httpClient := providerutil.SafeRetryHTTPClient(observed, maxRetries, cfg.ResponseRetries)
 	client := sdk.NewClient(sdkOptions(cfg, baseURL, httpClient)...)
 	headers := providerutil.AmbientCustomHeaders()
 	headers.Del("OpenAI-Organization")

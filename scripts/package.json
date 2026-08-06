@@ -1,6 +1,7 @@
 {
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@11.20.0",
   "scripts": {
     "snapshot-models-table": "node --import tsx snapshot-models-table.ts",
     "test": "node --import tsx --test snapshot-models-table.test.ts"

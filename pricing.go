@@ -1,6 +1,9 @@
 package llm
 
-import "strings"
+import (
+	"math"
+	"strings"
+)
 
 // PriceTable stores per-million-token prices keyed by "provider/model-id".
 type PriceTable map[string]ModelPricing
@@ -61,6 +64,7 @@ func EstimateCost(usage Usage, pricing ModelPricing) Usage {
 	if usage.CostUSD != nil {
 		return usage
 	}
+	pricing = pricingForUsage(usage, pricing)
 	cost := (float64(usage.InputTokens)*pricing.InputPerMTok +
 		float64(usage.OutputTokens)*pricing.OutputPerMTok +
 		float64(usage.CacheReadTokens)*pricing.CacheReadPerMTok +
@@ -68,6 +72,34 @@ func EstimateCost(usage Usage, pricing ModelPricing) Usage {
 	usage.CostUSD = &cost
 	usage.CostSource = CostSourceEstimated
 	return usage
+}
+
+func pricingForUsage(usage Usage, pricing ModelPricing) ModelPricing {
+	occupancy := usage.InputTokens + usage.CacheReadTokens + usage.CacheWriteTokens
+	bestThreshold := int64(0)
+	for _, tier := range pricing.Tiers {
+		if occupancy <= tier.InputTokensAbove || tier.InputTokensAbove <= bestThreshold || !validPricingTier(tier) {
+			continue
+		}
+		bestThreshold = tier.InputTokensAbove
+		pricing.InputPerMTok = tier.InputPerMTok
+		pricing.OutputPerMTok = tier.OutputPerMTok
+		pricing.CacheReadPerMTok = tier.CacheReadPerMTok
+		pricing.CacheWritePerMTok = tier.CacheWritePerMTok
+	}
+	return pricing
+}
+
+func validPricingTier(tier ModelPricingTier) bool {
+	return tier.InputTokensAbove > 0 &&
+		validPrice(tier.InputPerMTok) &&
+		validPrice(tier.OutputPerMTok) &&
+		validPrice(tier.CacheReadPerMTok) &&
+		validPrice(tier.CacheWritePerMTok)
+}
+
+func validPrice(price float64) bool {
+	return price >= 0 && !math.IsNaN(price) && !math.IsInf(price, 0)
 }
 
 // EstimateCostForModel estimates response cost from the embedded model table.

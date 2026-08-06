@@ -67,7 +67,7 @@ func StreamContract(provider string, seq iter.Seq2[llm.Event, error]) iter.Seq2[
 				return false
 			}
 			_, isStart := normalized.(llm.MessageStart)
-			_, isEnd := normalized.(llm.MessageEnd)
+			end, isEnd := normalized.(llm.MessageEnd)
 			switch {
 			case !started && !isStart:
 				failed = true
@@ -76,6 +76,10 @@ func StreamContract(provider string, seq iter.Seq2[llm.Event, error]) iter.Seq2[
 			case started && isStart:
 				failed = true
 				yield(nil, streamContractError(provider, "duplicate MessageStart"))
+				return false
+			case isEnd && end.StopReason == "":
+				failed = true
+				yield(nil, streamContractError(provider, "MessageEnd has an empty stop reason"))
 				return false
 			}
 

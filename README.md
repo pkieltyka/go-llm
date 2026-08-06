@@ -22,9 +22,8 @@ where they exist and pulled in only by the provider package you import.
   scenarios. `chatcompletions.New(baseURL)` covers any other
   OpenAI-compatible server (Ollama, llama.cpp, Groq, Together, ...).
 - **Subscription auth**: consume and auto-refresh OAuth credentials minted by
-  existing CLIs (pi, claude, codex). `llm.LoadAuthFile` reads the same
-  credential format pi uses; renewed tokens are handed back to your code to
-  persist.
+  compatible existing CLIs. `llm.LoadAuthFile` reads the documented
+  credential union; renewed tokens are handed back to your code to persist.
 - **Tools**: parallel calls, streamed arguments, and a defined contract for
   malformed tool calls — rescue what's rescuable, drop the rest *visibly*
   (`ToolCallDropped`), with an opt-in `llm.RetryDroppedToolCalls` middleware.
@@ -43,8 +42,9 @@ where they exist and pulled in only by the provider package you import.
 - **Usage & cost**: normalized tokens (including cache reads/writes and
   reasoning tokens), `CostUSD` from native provider reporting (OpenRouter) or
   estimated from an embedded, refreshable [models.dev](https://models.dev)
-  price table — with provenance in `CostSource` (`native` vs `estimated`) —
-  plus `ContextUsage` for context-window accounting.
+  price table, including request-wide long-context pricing tiers — with
+  provenance in `CostSource` (`native` vs `estimated`) — plus `ContextUsage`
+  for context-window accounting.
 - **Capabilities**: `Capabilities()` discovery with pre-flight request
   validation — unsupported features fail fast with `ErrUnsupported`, never
   silently.
@@ -54,7 +54,8 @@ where they exist and pulled in only by the provider package you import.
   `llm.Wrap`, and observability built in but silent by default (`slog`
   logging, `UsageTracker`, wire capture via `WithWireCapture`). Sensitive
   headers are always redacted; captured URLs and bodies remain
-  application-sensitive data.
+  application-sensitive data. Built-in failure logs use safe provider-error
+  summaries and never emit provider-controlled bodies or metadata.
 - **Testing**: `llmtest` — like `net/http/httptest`, but for code that
   consumes go-llm.
 - **CLI**: `llm-cli`, a curl-like frontend built entirely on the public API.
@@ -146,12 +147,12 @@ openai.New()     // OPENAI_API_KEY
 openrouter.New() // OPENROUTER_API_KEY
 ```
 
-Subscription providers consume credentials minted by existing tools (pi,
-claude, codex) — go-llm refreshes tokens automatically and hands renewals
+Subscription providers consume credentials minted by compatible existing
+tools — go-llm refreshes tokens automatically and hands renewals
 back to your code to persist; it never writes credential files itself:
 
 ```go
-auth, err := llm.LoadAuthFile("auth.json") // pi-compatible credential format
+auth, err := llm.LoadAuthFile("auth.json") // documented credential union
 if err != nil {
 	panic(err)
 }
@@ -195,7 +196,8 @@ preset knows vLLM's dialect — `reasoning` output (parsed to
 `llm.ReasoningPart`, streamed as `ReasoningDelta`), `Effort` →
 `reasoning_effort`, choice-less mid-stream error events, `max_model_len` as
 `ModelInfo.ContextWindow`, and typed extensions (`top_k`, `min_p`,
-`stop_token_ids`, `chat_template_kwargs`, `vllm_xargs`, plus native
+`stop_token_ids`, `chat_template_kwargs`, `thinking_token_budget`,
+`vllm_xargs`, plus native
 `structured_outputs` constraint modes — regex/choice/grammar/structural-tag
 via `vllm.StructuredOutputs`; JSON schema stays on the unified
 `ResponseFormat`):
@@ -224,6 +226,11 @@ resp, err := p.Chat(ctx, &llm.Request{
 Older vLLM deployments (pre-v0.12) use `vllm.WithLegacyEra()`; structured
 output rides the era-portable `response_format: json_schema` spelling either
 way.
+
+For deployments that support it, `vllm.Options.ThinkingTokenBudget` caps
+reasoning without adding a provider-neutral knob. When `MaxTokens` is set,
+go-llm clamps the configured budget to reserve 1,024 tokens for the visible
+answer and rejects thinking-disabled combinations before sending the request.
 
 vLLM also gives you **exact token counting**: the preset exposes the
 server's `/tokenize` endpoints as typed extension methods, so context
@@ -281,7 +288,7 @@ go install github.com/pkieltyka/go-llm/cmd/llm-cli@latest
 llm-cli -p openai -m gpt-5.5 "write a short haiku about Go"
 echo "long input" | llm-cli -p anthropic -m claude-opus-4-8 -s "summarize stdin"
 llm-cli -p openrouter -m openai/gpt-5.5 --usage --json "return a JSON status"
-llm-cli -p openai-codex --auth-file ~/.pi/agent/auth.json -m gpt-5.4 "review this diff"
+llm-cli -p openai-codex --auth-file ~/.config/llm/auth.json -m gpt-5.4 "review this diff"
 
 llm-cli models -p openrouter          # list models (table or --json)
 
@@ -312,7 +319,7 @@ via `p.Requests()`. See [`examples/testing`](examples/testing) for a complete
 worked example. Repository commands:
 
 ```sh
-make build       # go build ./...
+make build       # compile all packages and create bin/llm-cli
 make test        # offline tests with the race detector
 make models      # refresh the embedded root models.json snapshot
 ```

@@ -30,7 +30,7 @@ go-llm/
 │   └── pnpm-lock.yaml                            # reproducible dev-tool dependency graph
 ├── validate.go                                   # capability/request validation
 ├── httpclient.go                                 # fresh clients over one private tuned transport (FS §17)
-├── auth.go                                       # LoadAuthFile — pi-compatible credential parsing (FS §17)
+├── auth.go                                       # explicit credential-file parsing (FS §17)
 ├── serialize.go                                  # canonical JSON for Message/Part/Response
 ├── middleware.go                                 # Middleware + Wrap decorator
 ├── usage.go, wiretap.go, retrylog.go             # usage tracking, wire capture, retry logging
@@ -328,7 +328,10 @@ Both layers in one type: `errors.Is` matches the sentinel via `Unwrap`;
 `errors.As` extracts `*ProviderError` for provider detail. Context errors
 (`context.Canceled`, `DeadlineExceeded`) pass through unwrapped. Provider
 `Code`, `Message`, `Metadata`, and `RawBody` are untrusted and never enter the
-built-in operational logger; it formats them through `SafeError`.
+built-in operational logger; it formats them through `SafeError`. Provider
+labels appear only when they are at most 64 bytes and contain ASCII
+letters/digits or `._-`; invalid labels are omitted. Non-provider errors are
+returned verbatim by design.
 
 `ErrUnsupported` is produced by pre-flight validation (§6) and always wrapped
 with the capability name: `fmt.Errorf("%w: pdf-input (provider)", ErrUnsupported)`.
@@ -408,8 +411,9 @@ FS §17B's Warn-level retry visibility ("retries and rate-limit waits at
 Warn") is implemented **at the transport layer** — the same tap point as
 the wiretap: SDK-internal retries are invisible to the adapter, but every
 HTTP attempt passes the transport, so a provider with `WithLogger` installs
-a lightweight logging RoundTripper that logs Warn on 429/503/529 responses
-(status + `Retry-After` + attempt ordinal per request). Part of the
+a lightweight logging RoundTripper that logs Warn on eligible retries
+(status + parsed delay + attempt ordinal per request; never the raw
+provider-controlled retry header). Part of the
 per-provider wiring pattern (established in phase 4's adapter, copied by
 later providers).
 
@@ -536,6 +540,8 @@ syntaxes/message splicing are explicitly rejected feature requests.
   adaptive thinking + `output_config.effort` with `display: summarized`;
   MaxTokens default **16384** when unset (constructor-overridable via
   `WithDefaultMaxTokens`).
+  Tool-result text uses the same cache-aware text mapping, so nested hints
+  survive alongside existing image/file hints.
 - Response map: content blocks → parts (`thinking` blocks → `ReasoningPart`
   with the full block JSON in `Raw`); stop reasons per spec table.
 - Stream map: typed SDK events → unified events (block-index bookkeeping for
@@ -572,7 +578,9 @@ reasoning across tool-call turns. Decision record:
   `reasoning: {effort, summary: "auto"}` (`none` supported natively);
   `ResponseFormat` → `text: {format}`; tools → flattened function shape
   (`strict` default-on per Responses convention, disabled when
-  `Tool.Strict` is false); `SessionID` → `prompt_cache_key`.
+  `Tool.Strict` is false); `SessionID` → `prompt_cache_key`. Keys longer
+  than 64 runes become a 47-rune prefix plus `-` and 16 lowercase SHA-256
+  hex characters; shorter values stay byte-identical.
 - **Statelessness**: always `store: false` +
   `include: ["reasoning.encrypted_content"]` unless `openai.Options`
   explicitly opts into server-side state (`Store`, `PreviousResponseID`,
@@ -609,8 +617,8 @@ reasoning across tool-call turns. Decision record:
 
 ### 3.2A OpenAI Codex (subscription provider, shared Responses mapping)
 
-`providers/openaicodex` — provider id `"openai-codex"` (pi-compatible;
-FS §17C). Serves ChatGPT Plus/Pro subscriptions against the Responses
+`providers/openaicodex` — provider id `"openai-codex"` (FS §17C). Serves
+ChatGPT Plus/Pro subscriptions against the Responses
 wire shape at `chatgpt.com/backend-api/codex`:
 
 - **Shared Responses mapping**: `providers/internal/responsesapi` contains
@@ -621,13 +629,13 @@ wire shape at `chatgpt.com/backend-api/codex`:
   with the codex base URL, bearer from the internal `provideroauth.Source`, and per-request
   headers: `chatgpt-account-id` (resolved from the stored credential's
   `accountId` — re-resolved per request so refreshes that rotate the
-  account claim take effect; zero's lesson) and `originator`.
+  account claim take effect) and `originator`.
 - Statelessness, tools, reasoning items, stop-reason mapping: identical
   to §3.2 via the shared mapping. Capabilities mirror `providers/openai`;
   `Models()` returns a curated static list (subscription backend has no
   public models endpoint).
-- Exact refresh endpoint and public client id were verified against pi and
-  zero's Codex OAuth implementations at implementation time.
+- Exact refresh endpoint and public client id are pinned and covered by
+  focused authentication tests.
 - **Reasoning-replay matching**: the shared Responses mapping takes the
   accepting provider id as a parameter. `openai` and `openai-codex` are
   **not mutually replayable** in v1 — each accepts only reasoning parts
@@ -701,11 +709,18 @@ type Dialect interface {
     Models(ctx context.Context, p *Provider) ([]llm.ModelInfo, error)
 }
 
-// Compat declares data-expressible quirks; Dialect keeps behavioral hooks
-// (oh-my-pi's compat-block-as-data pattern). Compat is the growth surface —
-// new quirks land here, not on Dialect.
+// Compat declares data-expressible quirks; Dialect keeps behavioral hooks.
+// Compat is the growth surface — new quirks land here, not on Dialect.
 type Compat struct {
     StreamIncludeUsage bool // set stream_options.include_usage on streams
+
+    // Permit clean [DONE]/EOF to infer end_turn or tool_use when the wire
+    // omitted finish_reason. Strict false-by-default behavior errors.
+    InferMissingFinishReason bool
+
+    // Permit cache-aware role-tool text content blocks. Without a nested
+    // hint, retain string content exactly.
+    ToolMessageContentBlocks bool
 
     // Unified Effort → top-level wire fields. nil default:
     // {"reasoning_effort": "<level>"} (OpenAI CC + vLLM spelling);
@@ -762,7 +777,8 @@ Dialect specifics (surface per functional spec §14):
   detects mid-stream error chunks (`finish_reason == "error"` or `error`
   extra field) → normalized in-stream error; maps `usage.cost` → `CostUSD`;
   extracts `provider`, `native_finish_reason`, annotations,
-  `reasoning_details` into typed response extras (accessor
+  `reasoning_details` into typed response extras; enables cache-aware
+  role-tool text blocks after a focused live write/read cache probe (accessor
   `openrouter.Extras(resp *llm.Response) (*ResponseExtras, bool)`).
 - **vllm** (upstream research: `vllm_research.md`): host-first
   `vllm.New(baseURL, opts...)`, key-optional. Era-aware: modern default
@@ -775,7 +791,8 @@ Dialect specifics (surface per functional spec §14):
   `NormalizeToolUseStop` (named-function forced tool calls finish "stop" on the wire; `tool_choice:"required"` reports "tool_calls" correctly),
   `StreamIncludeUsage`. Typed `vllm.Options`: `top_k`, `min_p`,
   `repetition_penalty`, `stop_token_ids`, `chat_template_kwargs` (+
-  `EnableThinking` sugar), `vllm_xargs` passthrough. Numeric in-stream
+  `EnableThinking` sugar), opt-in `thinking_token_budget` (clamped to reserve
+  1,024 visible-answer tokens), `vllm_xargs` passthrough. Numeric in-stream
   error codes classify through the canonical status table. Live
   `Models()` surfaces `max_model_len` as `ContextWindow` (LoRA `parent`
   stays in Raw); `ResolveModel` performs exact, fuzzy, and Qwen-preferred
@@ -799,12 +816,12 @@ artifacts; (2) **comment keep-alives** (`: OPENROUTER PROCESSING`) are
 skipped explicitly per the SSE spec instead of depending on unverified SDK
 decoder behavior; (3) **retry control** — SDK retry loops are disabled and a
 shared HTTP transport policy covers blocking and streaming calls uniformly.
-The policy retries only explicit 429/503/529 rejections and failures proven
-to happen before HTTP request bytes were sent (temporary DNS,
-dial/proxy-connect failure, TLS handshake timeout). It never replays
-ambiguous EOF/reset/broken-pipe/read-timeout failures or other 5xx responses:
-a non-idempotent completion may already be running and billable upstream.
-A 2xx response is returned before any stream bytes are consumed and is never
+By default it retries only replayable requests with typed proof of a
+pre-send temporary DNS, dial, or proxy-connect failure. Explicit response
+replay for 429/503/529 is an at-least-once opt-in. It never replays ambiguous
+EOF/reset/broken-pipe/read/write-timeout failures or other 5xx responses: a
+non-idempotent completion may already be running and billable upstream. A 2xx
+response is returned before any stream bytes are consumed and is never
 retried; see §3.4. Blocking `Chat` still uses openai-go for wire mapping.
 
 ### 3.4 Construction & configuration
@@ -821,7 +838,8 @@ func New(opts ...Option) (*Provider, error)
 WithAPIKey(string)        // provider env fallback where supported; explicit for self-hosted
 WithBaseURL(string)
 WithHTTPClient(*http.Client) // default: llm.DefaultHTTPClient() (below)
-WithMaxRetries(int)       // default 2, shared billing-safe transport policy
+WithMaxRetries(int)       // default 2 additional attempts in the shared policy
+WithResponseRetries(bool) // opt into at-least-once 429/503/529 replay
 WithTimeout(time.Duration)
 WithAPIKeyFunc(func(context.Context) (string, error)) // rotating/expiring creds; wins over WithAPIKey
 WithPriceTable(llm.PriceTable)   // cost estimation override
@@ -833,11 +851,15 @@ WithDefaultMaxTokens(int)        // anthropic only
 No global mutable request state; constructors return errors (e.g. missing API
 key) rather than panicking. SDK retry loops are forced to zero and one shared
 transport wrapper owns the bounded `WithMaxRetries` policy for SDK-backed and
-direct Chat Completions calls. Only 429/503/529 and provably pre-send
-transport failures are replayed. Redirected POST failures, context
+direct Chat Completions calls. Default replay requires a replayable body and
+typed proof of a pre-send DNS/dial/proxy-connect failure. Explicit
+429/503/529 response replay is disabled unless `WithResponseRetries(true)`
+opts into at-least-once semantics. Redirected POST failures, context
 cancellation/deadline, ambiguous post-send transport failures, and all other
-statuses return immediately. The Codex subscription streaming transport
-(§3.2A) retains its narrower status-line-only 429/503/529 loop.
+statuses return immediately. `X-Should-Retry: false` vetoes response replay;
+provider-requested delays over 30 seconds return the untouched response.
+Codex direct streaming uses this same wrapper; OAuth's sole 401 refresh is a
+separate bounded auth epoch.
 
 **Default HTTP client** (`httpclient.go`, core, stdlib-only — FS §17):
 
@@ -861,8 +883,8 @@ transport sharing, the darwin branch, and `Timeout==0`.
 **Auth-file loader** (`auth.go`, core, stdlib-only — FS §17):
 
 ```go
-// LoadAuthFile parses a pi-compatible credential file: either a bare
-// map[providerID]credential (pi's ~/.pi/agent/auth.json) or the same map
+// LoadAuthFile parses a credential file: either a bare
+// map[providerID]credential or the same map
 // nested under {"providers": ...} (gollm-test.json). Explicit opt-in —
 // nothing in go-llm calls this implicitly.
 func LoadAuthFile(path string) (AuthFile, error)
@@ -898,8 +920,8 @@ provider names only).
 //   WithOAuth(cred llm.AuthCredential, persist llm.OAuthPersistenceFunc) Option
 // OAuthPersistenceFunc is func(context.Context, llm.AuthCredential) error.
 // Semantics: refresh before expiry; one forced-refresh retry on 401
-// (zero's SendWithAuthRetry pattern); every renewal invokes persist with the
-// finite generation context. The callback MUST honor that context and return
+// per auth epoch; every renewal invokes persist with the finite generation
+// context. The callback MUST honor that context and return
 // only after durable storage. Publication occurs only after a nil return;
 // cancellation, deadline, and persistence errors wake waiters unchanged.
 // Refresh-token credentials require non-nil persist at construction;
@@ -914,7 +936,7 @@ Chat/ChatStream(ctx, req)
   1. validate(req, provider)     — required fields; capability pre-flight (§6);
                                    ProviderOptions type/name check
   2. build                       — llm.Request → SDK params (+ dialect extras)
-  3. call                        — SDK request (SDK handles retries/backoff)
+  3. call                        — shared retry transport; SDK retries disabled
   4. map                         — SDK response/stream → llm.Response / events
                                    (errors normalized at this boundary only)
 ```
@@ -932,6 +954,10 @@ boundary) so the taxonomy can't drift between code paths.
   and provider-qualified `CanonicalID` indirection (an aggregator model with a
   known canonical ID such as `"anthropic/claude-sonnet-4-5"` falls back to the
   canonical entry's pricing).
+- `ModelPricing.Tiers` stores complete request-wide rates. Cost selection
+  scans for the highest valid input-occupancy threshold strictly exceeded by
+  input + cache-read + cache-write tokens; exact equality uses the lower
+  tier. Tier slices are deep-copied with catalog/model values.
 - **Model table = embedded JSON snapshot** (`models.json`), refreshed by
   `make models` through `scripts/snapshot-models-table.ts` (tsx; dev-time only):
   validates the models.dev provider object maps and OpenRouter `data[]`,
@@ -944,6 +970,9 @@ boundary) so the taxonomy can't drift between code paths.
   previous file on failure. The root package `go:embed`s the result and parses
   **lazily** (`sync.Once` on first pricing/`Models()` use — no `init()`
   cost, one immutable table). The library never fetches at runtime.
+  Parsing fails closed on unknown fields, duplicate/unsorted identities,
+  invalid limits/prices/tiers/efforts, invalid timestamps, and trailing or
+  concatenated JSON.
   Snapshot refresh is a release-phase step and documented maintenance
   task. `PriceTableDate` is read from `generated_at`. Users override via
   `WithPriceTable`.
@@ -1109,6 +1138,8 @@ via `llm.StreamText` or collect for `--json`/`--no-stream`), `models.go`
   context-aware atomic writer. Help warns that command-line secrets are
   exposed through argv and often shell history.
 - `--version` via `runtime/debug.ReadBuildInfo`.
+- `make build` compiles every package and emits `bin/llm-cli`; CI executes
+  credential-free help/version smoke tests on that artifact.
 - Context: `signal.NotifyContext` for Ctrl-C — cancels the stream cleanly
   (exercises the cancellation contract).
 - Tests: flag→Request construction table tests against `llmtest`; smoke
@@ -1153,8 +1184,7 @@ via `llm.StreamText` or collect for `--json`/`--no-stream`), `models.go`
    synthesize ids for missing/duplicate ids (`call_<n>` style), buffer
    argument deltas until id+name are known, and emit `ToolCallDropped`
    (never an error, never silence) only when a call remains unusable at
-   block/stream end. Adopted from zero's production design (its collector
-   + `tool-call-dropped` event); the retry *nudge* is `go-agent`'s job.
+   block/stream end; the retry *nudge* is `go-agent`'s job.
    When deterministic duplicate-id reconciliation changes an already-started
    provisional call, adapters emit `ToolCallIDChanged` and keep its arguments
    and lifecycle intact; this is an identity correction, never a visible drop.
@@ -1226,6 +1256,8 @@ via `llm.StreamText` or collect for `--json`/`--no-stream`), `models.go`
   - multimodal: bundled red-square PNG → answer contains "red"
   - prompt caching (Anthropic): >4K-token cached system prompt, second
     call shows `CacheReadTokens > 0`
+  - focused OpenRouter tool-result cache acceptance: cache-aware role-tool
+    blocks are present on the wire and a repeated call reports cache reads
   - usage/cost: tokens > 0; `CostUSD` non-nil on OpenRouter
   - live error mapping: bogus model → `ErrNotFound`/`ErrBadRequest`;
     invalid key → `ErrAuth`
@@ -1243,9 +1275,7 @@ via `llm.StreamText` or collect for `--json`/`--no-stream`), `models.go`
   constants file, tight `MaxTokens`. Never runs in CI by default.
   **Credentials/config**: the harness loads `gollm-test.json` from the
   repo root — gitignored, with `gollm-test.json.sample` committed. The
-  `providers` map uses the **pi-compatible credential format** (pi's
-  `~/.pi/agent/auth.json` content can be pasted under `"providers"`
-  verbatim):
+  `providers` map uses the documented credential format:
   ```json
   {
     "providers": {

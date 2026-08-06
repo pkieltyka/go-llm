@@ -510,10 +510,13 @@ func successfulStreamError(res result) error {
 				return fmt.Errorf("MessageStart count = %d at event %d, want exactly one", startCount, i)
 			}
 		}
-		if _, ok := event.(llm.MessageEnd); ok {
+		if end, ok := event.(llm.MessageEnd); ok {
 			endCount++
 			if endCount > 1 {
 				return fmt.Errorf("MessageEnd count = %d at event %d, want exactly one", endCount, i)
+			}
+			if end.StopReason == "" {
+				return fmt.Errorf("MessageEnd at event %d has an empty stop reason", i)
 			}
 		}
 		if ended {

@@ -109,6 +109,32 @@ func TestTokenizeBuildsChatShapedBody(t *testing.T) {
 	}
 }
 
+func TestTokenizeOmitsThinkingTokenBudgetFromTemplateBody(t *testing.T) {
+	var gotBody []byte
+	p := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		mustWrite(t, w, `{"count":1,"max_model_len":4096,"tokens":[1]}`)
+	})
+	budget := 2048
+	enabled := true
+	_, err := p.Tokenize(context.Background(), &llm.Request{
+		Model:     "m",
+		MaxTokens: 4096,
+		Messages:  []llm.Message{llm.UserText("hi")},
+		ProviderOptions: Options{
+			ThinkingTokenBudget: &budget,
+			EnableThinking:      &enabled,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Tokenize returned error: %v", err)
+	}
+	if strings.Contains(string(gotBody), "thinking_token_budget") {
+		t.Fatalf("tokenize body contains generation-only thinking_token_budget: %s", gotBody)
+	}
+}
+
 // TestTokenizeHitsServerRootNotV1 pins the path answer probed live: the
 // tokenizer endpoints live at the server root while the OpenAI surface hangs
 // off /v1 (POST /v1/tokenize is 404), so a conventional ".../v1" base URL

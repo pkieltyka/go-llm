@@ -29,17 +29,18 @@ type Option func(*config)
 type apiKeyFunc func(context.Context) (string, error)
 
 type config struct {
-	apiKey       string
-	apiKeyFunc   apiKeyFunc
-	baseURL      string
-	httpClient   *http.Client
-	maxRetries   *int
-	timeout      time.Duration
-	priceTable   llm.PriceTable
-	logger       *slog.Logger
-	wireCapture  func(llm.WireCapture)
-	organization string
-	project      string
+	apiKey          string
+	apiKeyFunc      apiKeyFunc
+	baseURL         string
+	httpClient      *http.Client
+	maxRetries      *int
+	responseRetries bool
+	timeout         time.Duration
+	priceTable      llm.PriceTable
+	logger          *slog.Logger
+	wireCapture     func(llm.WireCapture)
+	organization    string
+	project         string
 }
 
 func defaultConfig() config {
@@ -74,11 +75,18 @@ func WithHTTPClient(client *http.Client) Option {
 	return func(c *config) { c.httpClient = client }
 }
 
-// WithMaxRetries bounds billing-safe retries. Only explicit 429/503/529
-// rejections and transport failures proven to occur before request bytes were
-// sent are replayed. Default: 2 additional attempts.
+// WithMaxRetries bounds automatic transport retries and, when enabled by
+// WithResponseRetries, response retries. Default: 2 additional attempts.
 func WithMaxRetries(n int) Option {
 	return func(c *config) { c.maxRetries = &n }
+}
+
+// WithResponseRetries enables or disables retries of explicit 429/503/529
+// responses. They are disabled by default because model requests are not
+// idempotent. Typed failures proven to occur before request bytes were sent
+// may still be retried within the WithMaxRetries bound.
+func WithResponseRetries(enabled bool) Option {
+	return func(c *config) { c.responseRetries = enabled }
 }
 
 // WithTimeout applies a context deadline to provider calls.
@@ -131,7 +139,7 @@ func (c config) sdkOptions() []sdkoption.RequestOption {
 	}
 	observed := providerutil.ObservedHTTPClient(c.httpClient, providerName, c.logger, c.wireCapture)
 	opts := []sdkoption.RequestOption{
-		sdkoption.WithHTTPClient(providerutil.SafeRetryHTTPClient(observed, maxRetries)),
+		sdkoption.WithHTTPClient(providerutil.SafeRetryHTTPClient(observed, maxRetries, c.responseRetries)),
 		// The shared transport owns retry classification. Leaving SDK retries on
 		// would replay ambiguous no-response errors and stack a second loop.
 		sdkoption.WithMaxRetries(0),

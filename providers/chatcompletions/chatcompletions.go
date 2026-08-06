@@ -98,11 +98,18 @@ func WithHTTPClient(client *http.Client) Option {
 	return func(o *options) { o.config.HTTPClient = client }
 }
 
-// WithMaxRetries bounds billing-safe retries for blocking and streaming calls.
-// Only explicit 429/503/529 rejections and transport failures proven to occur
-// before request bytes were sent are replayed. Default: 2 additional attempts.
+// WithMaxRetries bounds automatic transport retries and, when enabled by
+// WithResponseRetries, response retries. Default: 2 additional attempts.
 func WithMaxRetries(n int) Option {
 	return func(o *options) { o.config.MaxRetries = &n }
+}
+
+// WithResponseRetries enables or disables retries of explicit 429/503/529
+// responses. They are disabled by default because model requests are not
+// idempotent. Typed failures proven to occur before request bytes were sent
+// may still be retried within the WithMaxRetries bound.
+func WithResponseRetries(enabled bool) Option {
+	return func(o *options) { o.config.ResponseRetries = enabled }
 }
 
 // WithTimeout applies a context deadline to provider calls.

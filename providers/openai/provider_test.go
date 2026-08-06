@@ -177,6 +177,19 @@ func TestOpenAIBuildRequestGolden(t *testing.T) {
 	}
 }
 
+func TestOpenAIPromptCacheKeyWireLimit(t *testing.T) {
+	params, err := (&Provider{}).adapter().BuildParams(&llm.Request{
+		Model: "gpt-test", SessionID: strings.Repeat("a", 65), Messages: []llm.Message{llm.UserText("hello")},
+	}, false)
+	if err != nil {
+		t.Fatalf("BuildParams returned error: %v", err)
+	}
+	want := `{"prompt_cache_key":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-635361c48bb9eab1","store":false,"include":["reasoning.encrypted_content"],"input":[{"content":[{"text":"hello","type":"input_text"}],"role":"user"}],"model":"gpt-test"}`
+	if got := testutil.MustCompactJSON(t, params); got != want {
+		t.Fatalf("wire body = %s, want %s", got, want)
+	}
+}
+
 func TestOpenAIProviderOptionsGolden(t *testing.T) {
 	store := true
 	background := true

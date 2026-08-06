@@ -14,6 +14,13 @@ import (
 )
 
 type unsupportedParallelExtrasDialect struct{ replayDialect }
+type toolMessageContentBlocksDialect struct{ replayDialect }
+
+func (toolMessageContentBlocksDialect) Compat() chatcompletions.Compat {
+	compat := replayDialect{}.Compat()
+	compat.ToolMessageContentBlocks = true
+	return compat
+}
 
 func (unsupportedParallelExtrasDialect) Capabilities() []llm.Capability {
 	return []llm.Capability{
@@ -32,6 +39,18 @@ func newReplayProvider(t *testing.T) *chatcompletions.Provider {
 	t.Helper()
 	p, err := chatcompletions.NewWithDialect(chatcompletions.Config{
 		Dialect: replayDialect{},
+		APIKey:  "replay-key",
+	})
+	if err != nil {
+		t.Fatalf("chatcompletions.NewWithDialect returned error: %v", err)
+	}
+	return p
+}
+
+func newToolMessageContentBlocksProvider(t *testing.T) *chatcompletions.Provider {
+	t.Helper()
+	p, err := chatcompletions.NewWithDialect(chatcompletions.Config{
+		Dialect: toolMessageContentBlocksDialect{},
 		APIKey:  "replay-key",
 	})
 	if err != nil {
@@ -200,6 +219,78 @@ func TestBuildParamsRichRequest(t *testing.T) {
 	testutil.AssertJSONEqual(t, string(raw), want)
 	if strings.Contains(string(raw), "foreign") {
 		t.Fatalf("wire params leaked foreign reasoning: %s", raw)
+	}
+}
+
+func TestToolResultContentBlocksPreserveCacheHints(t *testing.T) {
+	p := newToolMessageContentBlocksProvider(t)
+	params, err := p.BuildParams(&llm.Request{
+		Model: "replay-model",
+		Messages: []llm.Message{{Role: llm.RoleTool, Parts: []llm.Part{
+			llm.ToolResultPart{ToolCallID: "call_1", Content: []llm.Part{
+				llm.Text("plain"),
+				&llm.TextPart{Text: "cached", Cache: &llm.CacheHint{}},
+				llm.TextPart{Text: "long", Cache: &llm.CacheHint{TTL: time.Hour}},
+			}},
+		}}},
+	}, false)
+	if err != nil {
+		t.Fatalf("BuildParams returned error: %v", err)
+	}
+	want := `[{"content":[{"text":"plain","type":"text"},{"cache_control":{"type":"ephemeral"},"text":"cached","type":"text"},{"cache_control":{"ttl":"1h","type":"ephemeral"},"text":"long","type":"text"}],"role":"tool","tool_call_id":"call_1"}]`
+	if got := testutil.MustCompactJSON(t, params.Messages); got != want {
+		t.Fatalf("tool messages = %s, want %s", got, want)
+	}
+}
+
+func TestToolResultContentBlocksRequireHintAndCompatibility(t *testing.T) {
+	tests := []struct {
+		name    string
+		provide func(*testing.T) *chatcompletions.Provider
+		parts   []llm.Part
+	}{
+		{
+			name:    "compatible provider without hint",
+			provide: newToolMessageContentBlocksProvider,
+			parts:   []llm.Part{llm.Text("one"), llm.Text("two")},
+		},
+		{
+			name:    "default provider with hint",
+			provide: newReplayProvider,
+			parts:   []llm.Part{llm.Text("one"), llm.TextPart{Text: "two", Cache: &llm.CacheHint{}}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			params, err := tt.provide(t).BuildParams(&llm.Request{
+				Model: "replay-model",
+				Messages: []llm.Message{{Role: llm.RoleTool, Parts: []llm.Part{
+					llm.ToolResultPart{ToolCallID: "call_1", Content: tt.parts},
+				}}},
+			}, false)
+			if err != nil {
+				t.Fatalf("BuildParams returned error: %v", err)
+			}
+			want := `[{"content":"onetwo","role":"tool","tool_call_id":"call_1"}]`
+			if got := testutil.MustCompactJSON(t, params.Messages); got != want {
+				t.Fatalf("tool messages = %s, want %s", got, want)
+			}
+		})
+	}
+}
+
+func TestToolResultContentBlocksRejectUnsupportedNestedParts(t *testing.T) {
+	_, err := newToolMessageContentBlocksProvider(t).BuildParams(&llm.Request{
+		Model: "replay-model",
+		Messages: []llm.Message{{Role: llm.RoleTool, Parts: []llm.Part{
+			llm.ToolResultPart{ToolCallID: "call_1", Content: []llm.Part{
+				llm.TextPart{Text: "cached", Cache: &llm.CacheHint{}},
+				llm.ImageData([]byte{1, 2, 3}, "image/png"),
+			}},
+		}}},
+	}, false)
+	if !errors.Is(err, llm.ErrUnsupported) {
+		t.Fatalf("tool-result image error = %v, want ErrUnsupported", err)
 	}
 }
 

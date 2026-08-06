@@ -121,6 +121,7 @@ func (p *Provider) Models(ctx context.Context) ([]llm.ModelInfo, error) {
 			models[i].Pricing = priceForModel(p.priceTable, model.ID)
 		} else if info, ok := llm.LookupModelInfo(providerName, model.ID); ok && info.Pricing != nil {
 			pricing := *info.Pricing
+			pricing.Tiers = append([]llm.ModelPricingTier(nil), info.Pricing.Tiers...)
 			models[i].Pricing = &pricing
 		}
 	}
@@ -132,6 +133,7 @@ func priceForModel(table llm.PriceTable, model string) *llm.ModelPricing {
 	if !ok {
 		return nil
 	}
+	pricing.Tiers = append([]llm.ModelPricingTier(nil), pricing.Tiers...)
 	return &pricing
 }
 

@@ -7,6 +7,8 @@ PNPM ?= pnpm
 
 build:
 	$(GO) build ./...
+	mkdir -p bin
+	$(GO) build -o bin/llm-cli ./cmd/llm-cli
 
 test:
 	$(GO) test -race -count=1 ./... $(TEST_ARGS)

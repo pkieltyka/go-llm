@@ -20,8 +20,7 @@ const (
 	anthropicOAuthTokenURL = "https://platform.claude.com/v1/oauth/token"
 
 	// Claude Code identity (FS §17C): subscription OAuth tokens are only
-	// served to Claude-Code-identified traffic. Values mirror pi's
-	// api/anthropic-messages.ts (claudeCodeVersion 2.1.75).
+	// served to Claude-Code-identified traffic.
 	anthropicClaudeCodeBeta = "claude-code-20250219"
 	anthropicOAuthUserAgent = "claude-cli/2.1.75"
 

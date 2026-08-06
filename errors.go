@@ -41,16 +41,18 @@ type ProviderError struct {
 	Kind       error
 }
 
-// SafeSummary returns a source-free provider error description suitable for
-// logs and metrics. It deliberately excludes Code, Message, Metadata, and
-// RawBody because all four may contain provider-controlled request data.
+// SafeSummary returns a provider error description suitable for logs and
+// metrics. It deliberately excludes Code, Message, Metadata, and RawBody
+// because all four may contain provider-controlled request data. Provider is
+// included only when it is a short adapter identifier made of ASCII letters,
+// digits, '.', '_', or '-'.
 func (e *ProviderError) SafeSummary() string {
 	if e == nil {
 		return "<nil>"
 	}
 	prefix := "llm"
-	if e.Provider != "" {
-		prefix += "/" + e.Provider
+	if provider := safeProviderLabel(e.Provider); provider != "" {
+		prefix += "/" + provider
 	}
 	if e.HTTPStatus != 0 {
 		prefix += fmt.Sprintf(": %d", e.HTTPStatus)
@@ -63,9 +65,25 @@ func (e *ProviderError) SafeSummary() string {
 	return prefix + " (provider error)"
 }
 
-// SafeError formats ProviderError values without provider-controlled content.
-// Non-provider errors are returned verbatim so local validation and programming
-// errors retain their actionable detail.
+func safeProviderLabel(provider string) string {
+	if provider == "" || len(provider) > 64 {
+		return ""
+	}
+	for i := 0; i < len(provider); i++ {
+		c := provider[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-' {
+			continue
+		}
+		return ""
+	}
+	return provider
+}
+
+// SafeError formats ProviderError values without their untrusted detail
+// fields. Errors that do not wrap ProviderError are returned verbatim; callers
+// must therefore use it only where non-provider errors are trusted local
+// validation, configuration, or programming errors.
 func SafeError(err error) string {
 	if err == nil {
 		return "<nil>"

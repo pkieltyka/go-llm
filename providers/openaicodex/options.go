@@ -33,18 +33,19 @@ const (
 type Option func(*config)
 
 type config struct {
-	oauthCred     llm.AuthCredential
-	persistence   llm.OAuthPersistenceFunc
-	baseURL       string
-	httpClient    *http.Client
-	maxRetries    *int
-	timeout       time.Duration
-	priceTable    llm.PriceTable
-	logger        *slog.Logger
-	wireCapture   func(llm.WireCapture)
-	tokenURL      string
-	originator    string
-	customHeaders http.Header
+	oauthCred       llm.AuthCredential
+	persistence     llm.OAuthPersistenceFunc
+	baseURL         string
+	httpClient      *http.Client
+	maxRetries      *int
+	responseRetries bool
+	timeout         time.Duration
+	priceTable      llm.PriceTable
+	logger          *slog.Logger
+	wireCapture     func(llm.WireCapture)
+	tokenURL        string
+	originator      string
+	customHeaders   http.Header
 }
 
 func defaultConfig() config {
@@ -77,13 +78,18 @@ func WithHTTPClient(client *http.Client) Option {
 	return func(c *config) { c.httpClient = client }
 }
 
-// WithMaxRetries bounds automatic retries. It applies both to SDK-managed
-// endpoints and to the direct Codex streaming transport, which retries only
-// billing-safe rejections (429/503/529 — the request was never accepted)
-// before any stream bytes are read, honoring Retry-After with exponential
-// backoff otherwise. Default: 2 additional attempts.
+// WithMaxRetries bounds automatic transport retries and, when enabled by
+// WithResponseRetries, response retries. Default: 2 additional attempts.
 func WithMaxRetries(n int) Option {
 	return func(c *config) { c.maxRetries = &n }
+}
+
+// WithResponseRetries enables or disables retries of explicit 429/503/529
+// responses. They are disabled by default because model requests are not
+// idempotent. Typed failures proven to occur before request bytes were sent
+// may still be retried within the WithMaxRetries bound.
+func WithResponseRetries(enabled bool) Option {
+	return func(c *config) { c.responseRetries = enabled }
 }
 
 // WithTimeout applies a context deadline to provider calls.
@@ -110,8 +116,8 @@ func WithWireCapture(fn func(llm.WireCapture)) Option {
 //
 // The originator identifies the client that minted the OAuth token flow. The
 // default, "codex_cli_rs", matches tokens minted by the official Codex CLI.
-// Tokens minted through other clients (e.g. pi's login flow) may carry a
-// different originator claim, and the backend can cross-check the header
+// Tokens minted through other clients may carry a different originator claim,
+// and the backend can cross-check the header
 // against the token's mint flow — if the backend rejects requests with an
 // originator mismatch, set this to the value used by the CLI that minted the
 // credential.
@@ -148,7 +154,7 @@ func (c config) sdkOptions(source *provideroauth.Source) []sdkoption.RequestOpti
 	if c.maxRetries != nil {
 		maxRetries = *c.maxRetries
 	}
-	client := providerutil.SafeRetryHTTPClient(c.observedHTTPClient(), maxRetries)
+	client := providerutil.SafeRetryHTTPClient(c.observedHTTPClient(), maxRetries, c.responseRetries)
 	opts := []sdkoption.RequestOption{
 		sdkoption.WithHTTPClient(client),
 		sdkoption.WithMaxRetries(0),
@@ -182,14 +188,12 @@ func (c config) directTransport(source *provideroauth.Source) codexTransport {
 		maxRetries = *c.maxRetries
 	}
 	return codexTransport{
-		endpoint:     codexResponsesEndpoint(c.baseURL),
-		httpClient:   c.observedHTTPClient(),
-		source:       source,
-		originator:   c.originatorValue(),
-		headerFunc:   c.applyCodexHeaders,
-		authFunc:     applyOAuthHeaders(c.originatorValue()),
-		providerName: providerName,
-		maxRetries:   maxRetries,
+		endpoint:   codexResponsesEndpoint(c.baseURL),
+		httpClient: providerutil.SafeRetryHTTPClient(c.observedHTTPClient(), maxRetries, c.responseRetries),
+		source:     source,
+		originator: c.originatorValue(),
+		headerFunc: c.applyCodexHeaders,
+		authFunc:   applyOAuthHeaders(c.originatorValue()),
 	}
 }
 

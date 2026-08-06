@@ -9,6 +9,15 @@ export type Pricing = {
   output_per_mtok?: number;
   cache_read_per_mtok?: number;
   cache_write_per_mtok?: number;
+  tiers?: PricingTier[];
+};
+
+export type PricingTier = {
+  input_tokens_above: number;
+  input_per_mtok?: number;
+  output_per_mtok?: number;
+  cache_read_per_mtok?: number;
+  cache_write_per_mtok?: number;
 };
 
 export type ModelRow = {
@@ -59,6 +68,12 @@ const minimumMaterialMetadataLoss = 3;
 const remoteSourceTimeoutMs = 15_000;
 const remoteSourceMaxBytes = 32 << 20;
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const pricingRateNames = [
+  "input_per_mtok",
+  "output_per_mtok",
+  "cache_read_per_mtok",
+  "cache_write_per_mtok",
+] as const;
 
 type BuildOptions = {
   generatedAt?: string;
@@ -112,7 +127,7 @@ export function buildSnapshot(
     rows.set(key(row), mergeRow(rows.get(key(row)), row));
   }
 
-  const models = [...rows.values()].sort((a, b) => key(a).localeCompare(key(b)));
+  const models = [...rows.values()].map(finalizePricing).sort((a, b) => compareStrings(key(a), key(b)));
   validateOutputProviders(models);
   return {
     generated_at: options.generatedAt ?? new Date().toISOString(),
@@ -171,6 +186,7 @@ const metadataFields = [
   ["pricing.output_per_mtok", (row: ModelRow) => row.pricing?.output_per_mtok !== undefined],
   ["pricing.cache_read_per_mtok", (row: ModelRow) => row.pricing?.cache_read_per_mtok !== undefined],
   ["pricing.cache_write_per_mtok", (row: ModelRow) => row.pricing?.cache_write_per_mtok !== undefined],
+  ["pricing.tiers", (row: ModelRow) => row.pricing?.tiers !== undefined],
   ["supported_efforts", (row: ModelRow) => row.supported_efforts !== undefined],
 ] as const;
 
@@ -294,7 +310,11 @@ function normalizeModelsDevModel(provider: Provider, idHint: string, value: unkn
     max_output_tokens:
       optionalAvailablePositiveNumber(record, ["max_output_tokens", "max_output"]) ??
       optionalAvailablePositiveNumber(limit, ["output", "max_output"]),
-    pricing: pricingFromUpstreamRecord(cost ?? optionalObject(record, "pricing", `models.dev ${provider}/${id}`)),
+    pricing: pricingFromUpstreamRecord(
+      cost ?? optionalObject(record, "pricing", `models.dev ${provider}/${id}`),
+      `models.dev ${provider}/${id}.cost`,
+    ),
+    supported_efforts: reasoningEfforts(record, `models.dev ${provider}/${id}`),
   });
 }
 
@@ -354,7 +374,7 @@ function rowsFromOverrides(input: unknown): ModelRow[] {
 
 function pricingFromRecord(record: JSONRecord | undefined, label: string): Pricing | undefined {
   if (!record) return undefined;
-  return compactPricing({
+  const pricing = compactPricing({
     input_per_mtok: optionalNonNegativeNumber(record, ["input_per_mtok", "input", "prompt"], `${label}.cost`),
     output_per_mtok: optionalNonNegativeNumber(record, ["output_per_mtok", "output", "completion"], `${label}.cost`),
     cache_read_per_mtok: optionalNonNegativeNumber(
@@ -367,10 +387,12 @@ function pricingFromRecord(record: JSONRecord | undefined, label: string): Prici
       ["cache_write_per_mtok", "cache_write", "input_cache_write"],
       `${label}.cost`,
     ),
+    tiers: overridePricingTiers(record, `${label}.pricing`),
   });
+  return pricing;
 }
 
-function pricingFromUpstreamRecord(record: JSONRecord | undefined): Pricing | undefined {
+function pricingFromUpstreamRecord(record: JSONRecord | undefined, label: string): Pricing | undefined {
   if (!record) return undefined;
   return compactPricing({
     input_per_mtok: optionalAvailableNonNegativeNumber(record, ["input_per_mtok", "input", "prompt"]),
@@ -385,7 +407,88 @@ function pricingFromUpstreamRecord(record: JSONRecord | undefined): Pricing | un
       "cache_write",
       "input_cache_write",
     ]),
+    tiers: upstreamContextPricingTiers(record, label),
   });
+}
+
+function upstreamContextPricingTiers(record: JSONRecord, label: string): PricingTier[] | undefined {
+  const value = record.tiers;
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value)) throw new Error(`${label}.tiers must be an array`);
+  const tiers: PricingTier[] = [];
+  for (let index = 0; index < value.length; index++) {
+    const tierLabel = `${label}.tiers[${index}]`;
+    const source = objectValue(value[index], tierLabel);
+    const discriminator = optionalObject(source, "tier", tierLabel);
+    if (optionalString(discriminator ?? {}, "type", `${tierLabel}.tier`) !== "context") continue;
+    const threshold = optionalPositiveNumber(discriminator, ["size"], `${tierLabel}.tier`);
+    if (threshold === undefined || !Number.isSafeInteger(threshold)) {
+      throw new Error(`${tierLabel}.tier.size must be a positive safe integer`);
+    }
+    tiers.push({
+      input_tokens_above: threshold,
+      input_per_mtok: optionalNonNegativeNumber(source, ["input_per_mtok", "input", "prompt"], tierLabel),
+      output_per_mtok: optionalNonNegativeNumber(source, ["output_per_mtok", "output", "completion"], tierLabel),
+      cache_read_per_mtok: optionalNonNegativeNumber(
+        source,
+        ["cache_read_per_mtok", "cache_read", "input_cache_read"],
+        tierLabel,
+      ),
+      cache_write_per_mtok: optionalNonNegativeNumber(
+        source,
+        ["cache_write_per_mtok", "cache_write", "input_cache_write"],
+        tierLabel,
+      ),
+    });
+  }
+  return tiers.length === 0 ? undefined : tiers;
+}
+
+function overridePricingTiers(record: JSONRecord, label: string): PricingTier[] | undefined {
+  const value = record.tiers;
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(`${label}.tiers must be a non-empty array`);
+  }
+  return value.map((entry, index) => {
+    const tierLabel = `${label}.tiers[${index}]`;
+    const source = objectValue(entry, tierLabel);
+    const threshold = optionalPositiveNumber(source, ["input_tokens_above"], tierLabel);
+    if (threshold === undefined || !Number.isSafeInteger(threshold)) {
+      throw new Error(`${tierLabel}.input_tokens_above must be a positive safe integer`);
+    }
+    const tier: PricingTier = { input_tokens_above: threshold };
+    for (const name of pricingRateNames) {
+      const rate = optionalNonNegativeNumber(source, [name], tierLabel);
+      if (rate === undefined) throw new Error(`${tierLabel}.${name} is required`);
+      tier[name] = rate;
+    }
+    return tier;
+  });
+}
+
+function reasoningEfforts(record: JSONRecord, label: string): string[] | undefined {
+  const value = record.reasoning_options;
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value)) throw new Error(`${label}.reasoning_options must be an array`);
+  const found = new Set<string>();
+  for (let index = 0; index < value.length; index++) {
+    const optionLabel = `${label}.reasoning_options[${index}]`;
+    const option = objectValue(value[index], optionLabel);
+    if (optionalString(option, "type", optionLabel) !== "effort") continue;
+    const values = option.values;
+    if (values === undefined || values === null) continue;
+    if (!Array.isArray(values)) throw new Error(`${optionLabel}.values must be an array`);
+    for (const effort of values) {
+      if (effort === null || effort === "default") continue;
+      if (typeof effort !== "string" || !effortScale.includes(effort as (typeof effortScale)[number])) {
+        throw new Error(`${label} has unknown reasoning effort ${JSON.stringify(effort)}`);
+      }
+      found.add(effort);
+    }
+  }
+  const efforts = effortScale.filter((effort) => found.has(effort));
+  return efforts.length === 0 ? undefined : [...efforts];
 }
 
 function pricingFromOpenRouter(record: JSONRecord | undefined): Pricing | undefined {
@@ -415,9 +518,50 @@ function mergePricing(base: Pricing | undefined, override: Pricing | undefined):
   if (!base && !override) return undefined;
   const out: Pricing = base ? { ...base } : {};
   for (const [name, value] of Object.entries(override ?? {})) {
-    if (value !== undefined) (out as Record<string, number>)[name] = value;
+    if (value !== undefined) {
+      if (name === "tiers") out.tiers = structuredClone(value as PricingTier[]);
+      else (out as Record<string, number>)[name] = value as number;
+    }
   }
   return compactPricing(out);
+}
+
+function finalizePricing(row: ModelRow): ModelRow {
+  if (!row.pricing?.tiers) return row;
+  const base = row.pricing;
+  const tiers = base.tiers
+    .map((tier) => {
+      const complete: PricingTier = { input_tokens_above: tier.input_tokens_above };
+      for (const name of pricingRateNames) {
+        const value = tier[name] ?? base[name];
+        if (value === undefined) {
+          throw new Error(`${key(row)} pricing tier ${tier.input_tokens_above} has no ${name} in the tier or base pricing`);
+        }
+        complete[name] = value;
+      }
+      return complete;
+    })
+    .sort((a, b) => a.input_tokens_above - b.input_tokens_above);
+  for (let index = 0; index < tiers.length; index++) {
+    const tier = tiers[index];
+    if (!Number.isSafeInteger(tier.input_tokens_above) || tier.input_tokens_above <= 0) {
+      throw new Error(`${key(row)} pricing tier threshold must be a positive safe integer`);
+    }
+    if (index > 0 && tier.input_tokens_above === tiers[index - 1].input_tokens_above) {
+      throw new Error(`${key(row)} has duplicate pricing tier threshold ${tier.input_tokens_above}`);
+    }
+    for (const name of pricingRateNames) {
+      const value = tier[name];
+      if (value === undefined || !Number.isFinite(value) || value < 0) {
+        throw new Error(`${key(row)} pricing tier ${tier.input_tokens_above} ${name} must be finite and non-negative`);
+      }
+    }
+  }
+  return { ...row, pricing: { ...base, tiers } };
+}
+
+function compareStrings(left: string, right: string): number {
+  return Buffer.compare(Buffer.from(left), Buffer.from(right));
 }
 
 function validateOutputProviders(rows: ModelRow[]): void {
@@ -433,8 +577,11 @@ function validateOutputProviders(rows: ModelRow[]): void {
     }
   }
   for (const row of rows) {
-    for (const [name, value] of Object.entries(row.pricing ?? {})) {
-      if (value < 0) throw new Error(`${key(row)} pricing.${name} must not be negative`);
+    for (const name of pricingRateNames) {
+      const value = row.pricing?.[name];
+      if (value !== undefined && (!Number.isFinite(value) || value < 0)) {
+        throw new Error(`${key(row)} pricing.${name} must be finite and non-negative`);
+      }
     }
   }
 }
@@ -570,12 +717,17 @@ export async function readJSON(source: string, options: ReadJSONOptions = {}): P
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    let completed = false;
     try {
       const response = await (options.fetchImpl ?? fetch)(source, {
         headers: { "user-agent": "go-llm-model-snapshot" },
         signal: controller.signal,
       });
-      if (!response.ok) throw new Error(`${source}: ${response.status} ${response.statusText}`);
+      if (!response.ok) {
+        if (response.body) await response.body.cancel().catch(() => undefined);
+        throw new Error(`${source}: ${response.status} ${response.statusText}`);
+      }
 
       const declaredLength = Number(response.headers.get("content-length"));
       if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
@@ -584,12 +736,15 @@ export async function readJSON(source: string, options: ReadJSONOptions = {}): P
       }
       if (!response.body) throw new Error(`${source}: response body is missing`);
 
-      const reader = response.body.getReader();
+      reader = response.body.getReader();
       const chunks: Uint8Array[] = [];
       let total = 0;
       for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
+        const { done, value } = await readStreamChunk(reader, controller.signal);
+        if (done) {
+          completed = true;
+          break;
+        }
         total += value.byteLength;
         if (total > maxBytes) {
           await reader.cancel().catch(() => undefined);
@@ -602,10 +757,26 @@ export async function readJSON(source: string, options: ReadJSONOptions = {}): P
       if (controller.signal.aborted) throw new Error(`${source}: timed out after ${timeoutMs}ms`, { cause: error });
       throw error;
     } finally {
+      if (reader) {
+        if (!completed) await reader.cancel().catch(() => undefined);
+        reader.releaseLock();
+      }
       clearTimeout(timeout);
     }
   }
   return JSON.parse(await readFile(resolve(source), "utf8"));
+}
+
+function readStreamChunk(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal: AbortSignal,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise((resolveRead, rejectRead) => {
+    const onAbort = () => rejectRead(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    reader.read().then(resolveRead, rejectRead).finally(() => signal.removeEventListener("abort", onAbort));
+  });
 }
 
 async function readSnapshot(path: string): Promise<SnapshotDocument | undefined> {
@@ -632,6 +803,7 @@ async function readSnapshot(path: string): Promise<SnapshotDocument | undefined>
       context_window: optionalPositiveNumber(record, ["context_window"], label),
       max_output_tokens: optionalPositiveNumber(record, ["max_output_tokens"], label),
       pricing: pricingFromRecord(pricing, label),
+      supported_efforts: optionalEffortList(record, "supported_efforts", label),
     });
   });
   return { generated_at: source.generated_at, models };

@@ -46,6 +46,7 @@ type config struct {
 	baseURL          string
 	httpClient       *http.Client
 	maxRetries       *int
+	responseRetries  bool
 	timeout          time.Duration
 	priceTable       llm.PriceTable
 	logger           *slog.Logger
@@ -107,11 +108,18 @@ func WithHTTPClient(client *http.Client) Option {
 	return func(c *config) { c.httpClient = client }
 }
 
-// WithMaxRetries bounds billing-safe retries. Only explicit 429/503/529
-// rejections and transport failures proven to occur before request bytes were
-// sent are replayed. Default: 2 additional attempts.
+// WithMaxRetries bounds automatic transport retries and, when enabled by
+// WithResponseRetries, response retries. Default: 2 additional attempts.
 func WithMaxRetries(n int) Option {
 	return func(c *config) { c.maxRetries = &n }
+}
+
+// WithResponseRetries enables or disables retries of explicit 429/503/529
+// responses. They are disabled by default because model requests are not
+// idempotent. Typed failures proven to occur before request bytes were sent
+// may still be retried within the WithMaxRetries bound.
+func WithResponseRetries(enabled bool) Option {
+	return func(c *config) { c.responseRetries = enabled }
 }
 
 // WithTimeout applies a context deadline to provider calls.
@@ -172,7 +180,7 @@ func (c config) sdkOptions(source *provideroauth.Source) []sdkoption.RequestOpti
 		maxRetries = *c.maxRetries
 	}
 	observed := providerutil.ObservedHTTPClient(c.httpClient, providerName, c.logger, c.wireCapture)
-	client := providerutil.SafeRetryHTTPClient(observed, maxRetries)
+	client := providerutil.SafeRetryHTTPClient(observed, maxRetries, c.responseRetries)
 
 	opts := []sdkoption.RequestOption{
 		sdkoption.WithoutEnvironmentDefaults(),

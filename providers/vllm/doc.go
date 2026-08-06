@@ -47,6 +47,10 @@
 // `reasoning_effort` (vLLM accepts none..high plus the vLLM-specific "max";
 // the unified "xhigh" maps to "high"). Thinking-by-default models (Qwen3.6)
 // honor llm.EffortNone or Options.EnableThinking=false to answer directly.
+// Options.ThinkingTokenBudget can opt into vLLM's deployment-specific
+// `thinking_token_budget` extension; when Request.MaxTokens is set, the
+// provider clamps it to reserve 1,024 tokens for visible output and rejects
+// contradictory thinking-disabled controls.
 //
 // # Server-flag-dependent features
 //

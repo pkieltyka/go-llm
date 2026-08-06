@@ -93,6 +93,13 @@ func (d dialect) ApplyRequest(req *llm.Request, _ *sdk.ChatCompletionNewParams, 
 	if len(options.StopTokenIDs) > 0 {
 		extras["stop_token_ids"] = append([]int(nil), options.StopTokenIDs...)
 	}
+	if options.ThinkingTokenBudget != nil {
+		budget, err := options.thinkingTokenBudget(req)
+		if err != nil {
+			return err
+		}
+		extras["thinking_token_budget"] = budget
+	}
 	if kwargs := options.chatTemplateKwargs(); len(kwargs) > 0 {
 		extras["chat_template_kwargs"] = kwargs
 	}
@@ -104,6 +111,38 @@ func (d dialect) ApplyRequest(req *llm.Request, _ *sdk.ChatCompletionNewParams, 
 		extras["vllm_xargs"] = xargs
 	}
 	return nil
+}
+
+const visibleAnswerTokenReserve = 1024
+
+func (o Options) thinkingTokenBudget(req *llm.Request) (int, error) {
+	budget := *o.ThinkingTokenBudget
+	if budget <= 0 {
+		return 0, fmt.Errorf("%w: vllm: ThinkingTokenBudget must be positive", llm.ErrBadRequest)
+	}
+	if req.Effort == llm.EffortNone {
+		return 0, fmt.Errorf("%w: vllm: ThinkingTokenBudget cannot be combined with EffortNone", llm.ErrBadRequest)
+	}
+	if o.EnableThinking != nil {
+		if !*o.EnableThinking {
+			return 0, fmt.Errorf("%w: vllm: ThinkingTokenBudget requires EnableThinking", llm.ErrBadRequest)
+		}
+	} else if value, ok := o.ChatTemplateKwargs["enable_thinking"]; ok {
+		enabled, ok := value.(bool)
+		if !ok {
+			return 0, fmt.Errorf("%w: vllm: chat_template_kwargs.enable_thinking must be a boolean when ThinkingTokenBudget is set", llm.ErrBadRequest)
+		}
+		if !enabled {
+			return 0, fmt.Errorf("%w: vllm: ThinkingTokenBudget requires enable_thinking=true", llm.ErrBadRequest)
+		}
+	}
+	if req.MaxTokens > 0 {
+		if req.MaxTokens <= visibleAnswerTokenReserve {
+			return 0, fmt.Errorf("%w: vllm: ThinkingTokenBudget with MaxTokens requires more than %d tokens", llm.ErrBadRequest, visibleAnswerTokenReserve)
+		}
+		budget = min(budget, req.MaxTokens-visibleAnswerTokenReserve)
+	}
+	return budget, nil
 }
 
 // structuredOutputsValue validates and builds the structured_outputs wire

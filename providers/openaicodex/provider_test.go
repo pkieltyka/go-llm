@@ -12,7 +12,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	llm "github.com/pkieltyka/go-llm"
 	"github.com/pkieltyka/go-llm/internal/testutil"
@@ -81,6 +80,19 @@ func TestOpenAICodexBuildRequestGolden(t *testing.T) {
 	testutil.AssertJSONEqual(t, got, want)
 	if strings.Contains(got, "foreign") {
 		t.Fatalf("foreign OpenAI reasoning was replayed: %s", got)
+	}
+}
+
+func TestOpenAICodexPromptCacheKeyWireLimit(t *testing.T) {
+	params, err := (&Provider{}).adapter().BuildParams(&llm.Request{
+		Model: "gpt-5.4-mini", SessionID: strings.Repeat("a", 65), Messages: []llm.Message{llm.UserText("hello")},
+	}, false)
+	if err != nil {
+		t.Fatalf("BuildParams returned error: %v", err)
+	}
+	want := `{"prompt_cache_key":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-635361c48bb9eab1","store":false,"include":["reasoning.encrypted_content"],"input":[{"content":[{"text":"hello","type":"input_text"}],"role":"user"}],"model":"gpt-5.4-mini"}`
+	if got := testutil.MustCompactJSON(t, params); got != want {
+		t.Fatalf("wire body = %s, want %s", got, want)
 	}
 }
 
@@ -398,7 +410,7 @@ func writeCodexSSESuccess(w http.ResponseWriter) {
 	_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp_1","model":"gpt-5.4-mini","status":"completed","output":[{"id":"msg_1","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"pong","annotations":[]}]}],"usage":{"input_tokens":1,"input_tokens_details":{"cached_tokens":0},"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":2}}}`+"\n\n")
 }
 
-func newCodexRetryTestProvider(t *testing.T, server *httptest.Server, delays *[]time.Duration, opts ...Option) *Provider {
+func newCodexRetryTestProvider(t *testing.T, server *httptest.Server, opts ...Option) *Provider {
 	t.Helper()
 	access := fakeCodexJWT(t, "acct-1")
 	base := []Option{
@@ -411,10 +423,6 @@ func newCodexRetryTestProvider(t *testing.T, server *httptest.Server, delays *[]
 	if err != nil {
 		t.Fatalf("New returned error: %v", err)
 	}
-	p.transport.sleep = func(ctx context.Context, d time.Duration) error {
-		*delays = append(*delays, d)
-		return nil
-	}
 	return p
 }
 
@@ -423,7 +431,7 @@ func TestOpenAICodexTransportRetries429ThenSucceeds(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		if calls == 1 {
-			w.Header().Set("Retry-After", "3")
+			w.Header().Set("Retry-After-Ms", "1")
 			http.Error(w, `{"error":{"code":"rate_limit_exceeded","message":"slow down","type":"rate_limit_error"}}`, http.StatusTooManyRequests)
 			return
 		}
@@ -431,8 +439,7 @@ func TestOpenAICodexTransportRetries429ThenSucceeds(t *testing.T) {
 	}))
 	defer server.Close()
 
-	var delays []time.Duration
-	p := newCodexRetryTestProvider(t, server, &delays)
+	p := newCodexRetryTestProvider(t, server, WithResponseRetries(true))
 	resp, err := p.Chat(context.Background(), &llm.Request{
 		Model:    "gpt-5.4-mini",
 		Messages: []llm.Message{llm.UserText("ping")},
@@ -442,10 +449,6 @@ func TestOpenAICodexTransportRetries429ThenSucceeds(t *testing.T) {
 	}
 	if resp.Text() != "pong" || calls != 2 {
 		t.Fatalf("text/calls = %q/%d, want pong/2", resp.Text(), calls)
-	}
-	// Retry-After from the 429 must be honored verbatim.
-	if len(delays) != 1 || delays[0] != 3*time.Second {
-		t.Fatalf("retry delays = %+v, want [3s]", delays)
 	}
 }
 
@@ -457,8 +460,7 @@ func TestOpenAICodexTransportNoRetryOn400(t *testing.T) {
 	}))
 	defer server.Close()
 
-	var delays []time.Duration
-	p := newCodexRetryTestProvider(t, server, &delays)
+	p := newCodexRetryTestProvider(t, server)
 	_, err := p.Chat(context.Background(), &llm.Request{
 		Model:    "gpt-5.4-mini",
 		Messages: []llm.Message{llm.UserText("ping")},
@@ -466,8 +468,8 @@ func TestOpenAICodexTransportNoRetryOn400(t *testing.T) {
 	if !errors.Is(err, llm.ErrBadRequest) {
 		t.Fatalf("error = %v, want ErrBadRequest", err)
 	}
-	if calls != 1 || len(delays) != 0 {
-		t.Fatalf("calls/delays = %d/%+v, want single attempt without backoff", calls, delays)
+	if calls != 1 {
+		t.Fatalf("calls = %d, want single attempt without backoff", calls)
 	}
 }
 
@@ -655,8 +657,7 @@ func TestOpenAICodexTransportMaxRetriesBounds(t *testing.T) {
 			}))
 			defer server.Close()
 
-			var delays []time.Duration
-			p := newCodexRetryTestProvider(t, server, &delays, WithMaxRetries(tt.maxRetries))
+			p := newCodexRetryTestProvider(t, server, WithMaxRetries(tt.maxRetries), WithResponseRetries(true))
 			_, err := p.Chat(context.Background(), &llm.Request{
 				Model:    "gpt-5.4-mini",
 				Messages: []llm.Message{llm.UserText("ping")},
@@ -666,9 +667,6 @@ func TestOpenAICodexTransportMaxRetriesBounds(t *testing.T) {
 			}
 			if calls != tt.wantCalls {
 				t.Fatalf("calls = %d, want %d", calls, tt.wantCalls)
-			}
-			if len(delays) != tt.wantCalls-1 {
-				t.Fatalf("delays = %+v, want %d backoff waits", delays, tt.wantCalls-1)
 			}
 		})
 	}

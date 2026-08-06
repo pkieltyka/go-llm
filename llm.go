@@ -41,10 +41,22 @@ type ModelInfo struct {
 	Raw              any
 }
 
-// ModelPricing stores per-million-token prices in USD.
-type ModelPricing struct {
+// ModelPricingTier replaces the base rates for an entire request when its
+// prompt occupancy strictly exceeds InputTokensAbove.
+type ModelPricingTier struct {
+	InputTokensAbove  int64   `json:"input_tokens_above"`
 	InputPerMTok      float64 `json:"input_per_mtok"`
 	OutputPerMTok     float64 `json:"output_per_mtok"`
 	CacheReadPerMTok  float64 `json:"cache_read_per_mtok"`
 	CacheWritePerMTok float64 `json:"cache_write_per_mtok"`
+}
+
+// ModelPricing stores per-million-token prices in USD. Tiers, when present,
+// apply one complete rate set to the entire request based on prompt occupancy.
+type ModelPricing struct {
+	InputPerMTok      float64            `json:"input_per_mtok"`
+	OutputPerMTok     float64            `json:"output_per_mtok"`
+	CacheReadPerMTok  float64            `json:"cache_read_per_mtok"`
+	CacheWritePerMTok float64            `json:"cache_write_per_mtok"`
+	Tiers             []ModelPricingTier `json:"tiers,omitempty"`
 }

@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"iter"
 	"os"
@@ -107,6 +108,86 @@ func TestLiveOpenRouter(t *testing.T) {
 	ctx = RecordingContext(ctx, captures, secrets)
 	runners := openRouterLiveScenarioRunners(reasoningModel, cacheModel, parallelToolsModel, toolsModel, providerCfg.BaseURL)
 	scenarioReport = RunCapabilityScenarios(ctx, t, "openrouter", scenarioProvider, model, runners)
+}
+
+// TestLiveOpenRouterToolResultCache is the narrow acceptance gate for
+// cache-aware content blocks on role:"tool" messages. A successful cache hit
+// proves both that OpenRouter accepts the request shape and that its cache
+// telemetry remains parseable by the preset.
+func TestLiveOpenRouterToolResultCache(t *testing.T) {
+	root, err := RepoRoot(".")
+	if err != nil {
+		t.Fatalf("RepoRoot returned error: %v", err)
+	}
+	cfg, err := LoadConfig(root)
+	if err != nil {
+		t.Fatalf("LoadConfig returned error: %v", err)
+	}
+	providerCfg := cfg.Provider("openrouter", "OPENROUTER_API_KEY")
+	requireLiveProviderConfig(t, "openrouter", providerCfg)
+
+	model := providerCfg.Model
+	if model == "" {
+		model = openRouterCacheModel
+	}
+	captures := &CaptureLog{}
+	opts := []openrouterProvider.Option{
+		openrouterProvider.WithAPIKey(providerCfg.Auth.Key),
+		openrouterProvider.WithMaxRetries(0),
+		openrouterProvider.WithWireCapture(captures.Capture),
+	}
+	if providerCfg.BaseURL != "" {
+		opts = append(opts, openrouterProvider.WithBaseURL(providerCfg.BaseURL))
+	}
+	p, err := openrouterProvider.New(opts...)
+	if err != nil {
+		t.Fatalf("openrouter.New returned error: %v", err)
+	}
+
+	temperature := 0.0
+	req := &llm.Request{
+		Model:       model,
+		MaxTokens:   8,
+		Temperature: &temperature,
+		Messages: []llm.Message{
+			llm.UserText("Use the lookup result, then answer exactly: cached"),
+			llm.AssistantParts(llm.ToolCall("call_cache_1", "lookup", json.RawMessage(`{"q":"cache"}`))),
+			{Role: llm.RoleTool, Parts: []llm.Part{llm.ToolResultPart{
+				ToolCallID: "call_cache_1",
+				Content: []llm.Part{llm.TextPart{
+					Text:  strings.Repeat("Stable tool result cache live sentence. ", 600),
+					Cache: &llm.CacheHint{},
+				}},
+			}}},
+			llm.UserText("Answer now."),
+		},
+		Tools: []llm.Tool{{
+			Name:        "lookup",
+			Description: "Return cached fixture text.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"q":{"type":"string"}},"required":["q"]}`),
+		}},
+		ToolChoice: llm.ToolChoice{Mode: llm.ToolChoiceNone},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	warmup, hit, err := probePromptCache(ctx, "openrouter tool-result", defaultPromptCacheProbePolicy(), func(ctx context.Context) (*llm.Response, error) {
+		return p.Chat(ctx, req)
+	})
+	if err != nil {
+		t.Fatalf("tool-result cache evidence failed: %v (first=%+v last=%+v)", err, responseUsage(warmup), responseUsage(hit))
+	}
+
+	snapshot := captures.Snapshot()
+	if len(snapshot.Captures) == 0 {
+		t.Fatal("tool-result cache probe recorded no wire request")
+	}
+	body := string(snapshot.Captures[0].RequestBody)
+	for _, want := range []string{`"role":"tool"`, `"content":[`, `"cache_control":{"type":"ephemeral"}`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("tool-result cache request missing %s", want)
+		}
+	}
+	t.Logf("tool-result cache accepted: first=%+v hit=%+v", responseUsage(warmup), responseUsage(hit))
 }
 
 func openRouterLiveScenarioRunners(reasoningModel, cacheModel, parallelToolsModel, toolsModel, baseURL string) map[string]ScenarioRun {

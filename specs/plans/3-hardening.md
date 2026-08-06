@@ -1,6 +1,7 @@
 ---
-status: ready
+status: complete
 planned_at: 46436aa
+implemented_at: 2026-08-06
 ---
 
 # Hardening, Model Metadata, and Tooling Plan
@@ -21,15 +22,15 @@ dependencies.
 - [x] Branch baseline: safe provider-error summaries, safe built-in failure
   logging, bounded model-source downloads, shared retry ownership for SDK-backed
   calls, and expanded provider conformance coverage
-- [ ] Phase 1: finish model snapshot safety and deterministic CI coverage
-- [ ] Phase 2: refine operational-error safety and make retry guarantees honest
-- [ ] Phase 3: strict stream termination with an explicit compatibility escape
+- [x] Phase 1: finish model snapshot safety and deterministic CI coverage
+- [x] Phase 2: refine operational-error safety and make retry guarantees honest
+- [x] Phase 3: strict stream termination with an explicit compatibility escape
   hatch
-- [ ] Phase 4: validated model metadata, upstream efforts, and tiered pricing
-- [ ] Phase 5: bounded prompt-cache keys and cacheable tool results
-- [ ] Phase 6: typed vLLM thinking-token budgets
-- [ ] Phase 7: reproducible CLI builds and pinned CI actions
-- [ ] Phase 8: documentation synchronization and full verification
+- [x] Phase 4: validated model metadata, upstream efforts, and tiered pricing
+- [x] Phase 5: bounded prompt-cache keys and cacheable tool results
+- [x] Phase 6: typed vLLM thinking-token budgets
+- [x] Phase 7: reproducible CLI builds and pinned CI actions
+- [x] Phase 8: documentation synchronization and full verification
 
 ## Priority, effort, and dependencies
 
@@ -279,7 +280,7 @@ the public network.
 
 Expected files include:
 
-- `errors.go`, `errors_test.go`, `doc.go`
+- `errors.go`, `errors_test.go`, `observe_test.go`, `doc.go`
 - `retrylog.go`, `retrylog_test.go`
 - `providers/internal/providerutil/retry*.go`, `providerutil.go`, and tests
 - provider construction/options files for Anthropic, OpenAI, Codex, generic
@@ -754,7 +755,7 @@ git diff --exit-code "$PLAN_BASE" -- go.mod go.sum scripts/pnpm-lock.yaml
   git ls-files --others --exclude-standard
 } | sort -u | while IFS= read -r path; do
   case "$path" in
-    .github/workflows/*.yml|.github/workflows/*.yaml|Makefile|README.md|doc.go|errors.go|errors*_test.go|retrylog.go|retrylog_test.go|llm.go|pricing.go|pricing*_test.go|models.json|models_table.go|models*_test.go|efforts_test.go|llmtest/*|providers/*|internal/e2e/*|scripts/package.json|scripts/overrides.json|scripts/snapshot-models-table.ts|scripts/snapshot-models-table.test.ts|scripts/fixtures/*|specs/projects/go-llm/functional_spec.md|specs/projects/go-llm/architecture.md|specs/projects/go-llm/provider_capabilities.md|docs/release.md|specs/plans/3-hardening.md) ;;
+    .github/workflows/*.yml|.github/workflows/*.yaml|Makefile|README.md|doc.go|errors.go|errors*_test.go|observe_test.go|retrylog.go|retrylog_test.go|llm.go|pricing.go|pricing*_test.go|models.json|models_table.go|models*_test.go|efforts_test.go|llmtest/*|providers/*|internal/e2e/*|scripts/package.json|scripts/overrides.json|scripts/snapshot-models-table.ts|scripts/snapshot-models-table.test.ts|scripts/fixtures/*|specs/projects/go-llm/functional_spec.md|specs/projects/go-llm/architecture.md|specs/projects/go-llm/provider_capabilities.md|docs/release.md|specs/plans/3-hardening.md) ;;
     *) echo "out-of-scope path: $path" >&2; exit 1 ;;
   esac
 done
@@ -790,36 +791,36 @@ Do not push or open a PR unless the operator explicitly asks.
 - [x] The branch contains detailed provider errors plus safe summaries/default
   failure logging, bounded model-source downloads, and expanded provider
   conformance coverage.
-- [ ] One shared transport owns provider retries; SDK and direct loops do not
+- [x] One shared transport owns provider retries; SDK and direct loops do not
   stack, and the separate OAuth 401 refresh path remains bounded.
-- [ ] Default retries are limited to typed, provably pre-send failures.
+- [x] Default retries are limited to typed, provably pre-send failures.
   Response-status replay is explicit at-least-once opt-in, never described as a
   billing guarantee, and excessive `Retry-After` never causes an early retry.
-- [ ] Redirected requests, ambiguous errors, and forged matching error strings
+- [x] Redirected requests, ambiguous errors, and forged matching error strings
   are never replayed.
-- [ ] Successful streams always carry a meaningful terminal reason unless an
+- [x] Successful streams always carry a meaningful terminal reason unless an
   explicit provider compatibility flag infers one.
-- [ ] The snapshot guard reads every field it claims to protect, existing remote
+- [x] The snapshot guard reads every field it claims to protect, existing remote
   bounds clean up on all paths, and fixture tests run in deterministic CI.
-- [ ] Embedded model data fails closed on malformed rows, duplicates, invalid
+- [x] Embedded model data fails closed on malformed rows, duplicates, invalid
   metadata, and ordering drift.
-- [ ] Cost estimates select request-wide pricing tiers from total input
+- [x] Cost estimates select request-wide pricing tiers from total input
   occupancy while preserving native provider cost.
-- [ ] Supported reasoning efforts are derived from known upstream effort
+- [x] Supported reasoning efforts are derived from known upstream effort
   metadata with overrides authoritative.
-- [ ] OpenAI/Codex prompt-cache keys are at most 64 runes and collision-resistant
+- [x] OpenAI/Codex prompt-cache keys are at most 64 runes and collision-resistant
   for long application session IDs.
-- [ ] Anthropic preserves cache hints on tool-result text. OpenRouter does so
+- [x] Anthropic preserves cache hints on tool-result text. OpenRouter does so
   only if the focused live/recorded acceptance gate passes; otherwise its preset
   remains disabled for content blocks and the capability docs say so.
-- [ ] vLLM can opt into a bounded reasoning budget that reserves visible-answer
+- [x] vLLM can opt into a bounded reasoning budget that reserves visible-answer
   capacity.
-- [ ] `make build` produces an executable `bin/llm-cli`.
-- [ ] CI runs Go and snapshot tests and every external Action is pinned by the
+- [x] `make build` produces an executable `bin/llm-cli`.
+- [x] CI runs Go and snapshot tests and every external Action is pinned by the
   reviewed immutable SHA.
-- [ ] Go/module dependency upgrades present at `94408a1` remain intact, and
+- [x] Go/module dependency upgrades present at `94408a1` remain intact, and
   `go.mod`, `go.sum`, and `scripts/pnpm-lock.yaml` are unchanged from `46436aa`.
-- [ ] Documentation matches the implemented behavior and all Phase 8 commands
+- [x] Documentation matches the implemented behavior and all Phase 8 commands
   pass.
 
 ## STOP conditions

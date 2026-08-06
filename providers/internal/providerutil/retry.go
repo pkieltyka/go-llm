@@ -23,13 +23,15 @@ const (
 // a request only when replay is safe for a non-idempotent model invocation.
 // The caller's client and transport are never mutated.
 //
-// Safe retries are limited to explicit 429/503/529 rejections and transport
-// failures that prove no HTTP request bytes were sent: a temporary DNS lookup,
-// a failed dial/proxy CONNECT, or a TLS handshake timeout. Ambiguous failures
-// such as EOF, connection reset, broken pipe, and read/write timeouts are
-// returned immediately because the provider may already be processing and
-// billing the request.
-func SafeRetryHTTPClient(client *http.Client, maxRetries int) *http.Client {
+// Transport retries are limited to typed failures that prove no HTTP request
+// bytes were sent: a temporary DNS lookup or a failed dial/proxy CONNECT.
+// Ambiguous failures such as EOF, TLS handshake failures, connection reset,
+// broken pipe, and read/write timeouts are returned immediately because the
+// provider may already be processing and billing the request.
+//
+// When responseRetries is true, explicit 429/503/529 rejections may also be
+// retried. Response retries are disabled by default by every built-in provider.
+func SafeRetryHTTPClient(client *http.Client, maxRetries int, responseRetries bool) *http.Client {
 	if client == nil {
 		client = llm.DefaultHTTPClient()
 	}
@@ -42,16 +44,18 @@ func SafeRetryHTTPClient(client *http.Client, maxRetries int) *http.Client {
 		transport = http.DefaultTransport
 	}
 	copied.Transport = &safeRetryTransport{
-		next:       transport,
-		maxRetries: maxRetries,
+		next:            transport,
+		maxRetries:      maxRetries,
+		responseRetries: responseRetries,
 	}
 	return &copied
 }
 
 type safeRetryTransport struct {
-	next       http.RoundTripper
-	maxRetries int
-	sleep      func(context.Context, time.Duration) error
+	next            http.RoundTripper
+	maxRetries      int
+	responseRetries bool
+	sleep           func(context.Context, time.Duration) error
 }
 
 func (t *safeRetryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -64,6 +68,9 @@ func (t *safeRetryTransport) RoundTrip(req *http.Request) (*http.Response, error
 	}
 
 	for attempt := 0; ; attempt++ {
+		if err := req.Context().Err(); err != nil {
+			return nil, err
+		}
 		attemptReq, err := retryAttemptRequest(req, attempt)
 		if err != nil {
 			return nil, err
@@ -82,10 +89,15 @@ func (t *safeRetryTransport) RoundTrip(req *http.Request) (*http.Response, error
 			continue
 		}
 
-		if attempt >= t.maxRetries || !safeRetryStatus(resp.StatusCode) || !requestReplayable(req) {
+		if attempt >= t.maxRetries || req.Response != nil || !t.responseRetries ||
+			!safeRetryStatus(resp.StatusCode) || responseRetryVeto(resp) || !requestReplayable(req) {
 			return resp, nil
 		}
-		delay := retryDelay(attempt+1, llm.RetryAfter(resp))
+		retryAfter := llm.RetryAfter(resp)
+		if retryAfter > safeRetryMaxDelay {
+			return resp, nil
+		}
+		delay := retryDelay(attempt+1, retryAfter)
 		drainAndCloseForRetry(resp.Body)
 		if err := t.wait(req.Context(), delay); err != nil {
 			return nil, err
@@ -130,24 +142,22 @@ func safeRetryStatus(status int) bool {
 	}
 }
 
+func responseRetryVeto(resp *http.Response) bool {
+	return resp != nil && strings.EqualFold(strings.TrimSpace(resp.Header.Get("X-Should-Retry")), "false")
+}
+
 func isProvablyPreSendError(err error) bool {
 	if err == nil {
 		return false
 	}
 	var dnsErr *net.DNSError
 	if errors.As(err, &dnsErr) {
-		return !dnsErr.IsNotFound
+		return !dnsErr.IsNotFound && (dnsErr.IsTimeout || dnsErr.IsTemporary)
 	}
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || isConnectionReset(err) {
 		return false
 	}
 
-	message := strings.ToLower(err.Error())
-	if strings.Contains(message, "connection reset") ||
-		strings.Contains(message, "broken pipe") ||
-		strings.Contains(message, "i/o timeout") && connectError(err) == nil {
-		return false
-	}
 	if opErr := connectError(err); opErr != nil {
 		if opErr.Timeout() {
 			return true
@@ -157,14 +167,8 @@ func isProvablyPreSendError(err error) bool {
 				return true
 			}
 		}
-		switch {
-		case strings.Contains(message, "connection refused"),
-			strings.Contains(message, "network is unreachable"),
-			strings.Contains(message, "no route to host"):
-			return true
-		}
 	}
-	return strings.Contains(message, "tls handshake timeout")
+	return false
 }
 
 func connectError(err error) *net.OpError {
@@ -177,9 +181,6 @@ func connectError(err error) *net.OpError {
 
 func retryDelay(attempt int, retryAfter time.Duration) time.Duration {
 	if retryAfter > 0 {
-		if retryAfter > safeRetryMaxDelay {
-			return safeRetryMaxDelay
-		}
 		return retryAfter
 	}
 	exponent := attempt - 1

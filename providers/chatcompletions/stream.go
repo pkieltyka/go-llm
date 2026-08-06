@@ -52,6 +52,17 @@ func (p *Provider) streamEvents(ctx context.Context, req *llm.Request, params sd
 			}
 			yield(nil, streamErr)
 		}
+		finishCleanly := func() {
+			if !state.sawFinish && !p.compat.InferMissingFinishReason {
+				fail(p.missingFinishReasonError())
+				return
+			}
+			for _, event := range state.finish(!state.sawFinish) {
+				if !yield(event, nil) {
+					return
+				}
+			}
+		}
 		for payload, err := range ssePayloads(resp.Body) {
 			if err != nil {
 				fail(err)
@@ -62,11 +73,7 @@ func (p *Provider) streamEvents(ctx context.Context, req *llm.Request, params sd
 					yield(nil, p.emptyStreamError())
 					return
 				}
-				for _, event := range state.finish() {
-					if !yield(event, nil) {
-						return
-					}
-				}
+				finishCleanly()
 				return
 			}
 			if p.compat.SniffMidStreamErrors {
@@ -95,24 +102,7 @@ func (p *Provider) streamEvents(ctx context.Context, req *llm.Request, params sd
 			yield(nil, p.emptyStreamError())
 			return
 		}
-		if state.sawFinish {
-			for _, event := range state.finish() {
-				if !yield(event, nil) {
-					return
-				}
-			}
-			return
-		}
-		for _, event := range state.settleReasoningRaw() {
-			if !yield(event, nil) {
-				return
-			}
-		}
-		for _, event := range state.rescuePartialTools() {
-			if !yield(event, nil) {
-				return
-			}
-		}
+		finishCleanly()
 	}
 }
 
@@ -153,6 +143,14 @@ func (p *Provider) emptyStreamError() error {
 	return &llm.ProviderError{
 		Provider: p.Name(),
 		Message:  "provider returned an empty stream",
+		Kind:     llm.ErrServer,
+	}
+}
+
+func (p *Provider) missingFinishReasonError() error {
+	return &llm.ProviderError{
+		Provider: p.Name(),
+		Message:  "provider stream ended without a finish reason",
 		Kind:     llm.ErrServer,
 	}
 }
@@ -617,22 +615,29 @@ func (s *streamState) rescuePartialTools() []llm.Event {
 	return events
 }
 
-func (s *streamState) finish() []llm.Event {
+func (s *streamState) finish(inferMissing bool) []llm.Event {
 	if !s.started {
 		return nil
 	}
-	return s.finishEvents()
+	return s.finishEvents(inferMissing)
 }
 
-func (s *streamState) finishEvents() []llm.Event {
+func (s *streamState) finishEvents(inferMissing bool) []llm.Event {
 	events := s.completedReasoningRawEvents()
 	events = append(events, s.finishPendingTools()...)
 	usage := llm.Usage{}
 	if s.usage != nil {
 		usage = s.provider.dialect.MapUsage(s.model, *s.usage, s.provider.priceTable)
 	}
+	stopReason := s.provider.normalizeToolUseStop(s.provider.dialect.MapStopReason(s.finishReason), s.toolCallsEmitted)
+	if inferMissing {
+		stopReason = llm.StopReasonEndTurn
+		if s.toolCallsEmitted {
+			stopReason = llm.StopReasonToolUse
+		}
+	}
 	events = append(events, llm.MessageEnd{
-		StopReason:    s.provider.normalizeToolUseStop(s.provider.dialect.MapStopReason(s.finishReason), s.toolCallsEmitted),
+		StopReason:    stopReason,
 		StopReasonRaw: s.finishReason,
 		Usage:         usage,
 		Raw:           s.messageEndRaw(),
