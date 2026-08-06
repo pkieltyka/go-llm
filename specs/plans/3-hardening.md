@@ -192,7 +192,9 @@ Out of scope:
    behavior. No test may reach the public network.
 4. Add the script fixture suite to CI. Use Node `26.7.0`, add
    `"packageManager": "pnpm@11.20.0"` as the local/CI source of truth, and use
-   the exact setup Action versions recorded in Phase 7. Run
+   the exact setup Action versions recorded in Phase 7. Explicitly allow only
+   the required `esbuild` dependency build in `scripts/pnpm-workspace.yaml`; do
+   not enable dependency build scripts globally. Run
    `pnpm --dir scripts install --frozen-lockfile`, then run
    `pnpm --dir scripts test`. Do not run network-backed `make models` in ordinary
    CI.
