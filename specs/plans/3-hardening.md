@@ -29,7 +29,7 @@ dependencies.
 - [x] Phase 4: validated model metadata, upstream efforts, and tiered pricing
 - [x] Phase 5: bounded prompt-cache keys and cacheable tool results
 - [x] Phase 6: typed vLLM thinking-token budgets
-- [x] Phase 7: reproducible CLI builds and pinned CI actions
+- [x] Phase 7: reproducible CLI builds and tagged CI actions
 - [x] Phase 8: documentation synchronization and full verification
 
 ## Priority, effort, and dependencies
@@ -190,7 +190,7 @@ Out of scope:
 3. Extend the existing injected-fetch tests with non-2xx, missing body,
    malformed JSON, stalled body, cleanup/cancel assertions, and local-file
    behavior. No test may reach the public network.
-4. Add the script fixture suite to CI. Use Node `24.19.0`, add
+4. Add the script fixture suite to CI. Use Node `26.7.0`, add
    `"packageManager": "pnpm@11.20.0"` as the local/CI source of truth, and use
    the exact setup Action versions recorded in Phase 7. Run
    `pnpm --dir scripts install --frozen-lockfile`, then run
@@ -642,7 +642,7 @@ Expected: the field is absent by default; explicit budgets use the exact
 top-level spelling; clamping always leaves 1,024 answer tokens; contradictions
 fail before any request.
 
-## Phase 7: Produce a CLI artifact and pin CI execution
+## Phase 7: Produce a CLI artifact and use reviewed action releases
 
 ### Steps
 
@@ -660,23 +660,20 @@ fail before any request.
 2. Add a CI build/smoke gate that runs `make build`, asserts the artifact is
    executable, and runs both `--help` and `--version` without credentials or
    network access.
-3. Replace every mutable major-version GitHub Action reference in
-   `.github/workflows/*.yml` with the full 40-character commit SHA for the same
-   reviewed release. These official tag resolutions were reviewed on
-   2026-08-05 and are the plan's exact pins:
+3. Use explicit current release tags for every GitHub Action reference in
+   `.github/workflows/*.yml`. These releases were reviewed on 2026-08-06:
 
-   | Action | Immutable reference |
+   | Action | Release tag |
    |---|---|
-   | `actions/checkout` | `d23441a48e516b6c34aea4fa41551a30e30af803` (`v6.1.0`) |
-   | `actions/setup-go` | `b7ad1dad31e06c5925ef5d2fc7ad053ef454303e` (`v7.0.0`) |
-   | `actions/setup-node` | `820762786026740c76f36085b0efc47a31fe5020` (`v7.0.0`) |
-   | `pnpm/action-setup` | `ff378ebe6b225b0680b81c1ad4498ae0d1d3a5e3` (`v6.0.10`) |
-   | `golangci/golangci-lint-action` | `d583c34f0599d37dbac4a198b9c83201be380893` (`v9.3.0`) |
+   | `actions/checkout` | `v7.0.1` |
+   | `actions/setup-go` | `v7.0.0` |
+   | `actions/setup-node` | `v7.0.0` |
+   | `pnpm/action-setup` | `v6.0.10` |
+   | `golangci/golangci-lint-action` | `v9.3.0` |
 
-   Keep the release tag as a trailing comment for readability. Include every
-   action introduced in Phase 1. Dependabot already manages GitHub Actions;
-   retain it and review future SHA updates as action upgrades.
-4. Do not change Go or npm dependency versions while pinning Actions.
+   Include every action introduced in Phase 1. Dependabot already manages
+   GitHub Actions; retain it and review future tagged release upgrades.
+4. Do not change Go or npm dependency versions while updating Action references.
 
 ### Verification
 
@@ -685,25 +682,12 @@ make build
 test -x bin/llm-cli
 ./bin/llm-cli --help >/dev/null
 ./bin/llm-cli --version >/dev/null
-find .github/workflows -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) -print0 | xargs -0 awk '
-  /uses:/ {
-    ref=$0
-    sub(/^.*uses:[[:space:]]*/, "", ref)
-    sub(/[[:space:]]+#.*$/, "", ref)
-    if (ref ~ /^\.\//) next
-    n=split(ref, parts, "@")
-    if (n != 2 || length(parts[2]) != 40 || parts[2] ~ /[^0-9a-f]/) {
-      print "mutable or invalid action reference: " ref
-      bad=1
-    }
-  }
-  END { exit bad }
-'
+test -z "$(rg -n 'uses:[[:space:]].*@[0-9a-f]{40}([[:space:]]|$)' .github/workflows || true)"
 git diff --exit-code 46436aa05b651ccc636b0bc8da7830270ff9337c -- go.mod go.sum scripts/pnpm-lock.yaml
 ```
 
-Expected: `bin/llm-cli` exists and runs; no workflow action uses a mutable major
-tag; dependency manifests are unchanged.
+Expected: `bin/llm-cli` exists and runs; workflow actions use the reviewed
+explicit release tags; dependency manifests are unchanged.
 
 ## Phase 8: Synchronize documentation and run all gates
 
@@ -724,7 +708,7 @@ it describes, then do a final consistency pass:
 - `specs/projects/go-llm/provider_capabilities.md`: advertise tool-result cache
   hints only for providers with implemented and accepted wire support.
 - `docs/release.md`: script tests as an offline gate, generated-catalog invariant
-  checks, CLI artifact smoke test, immutable Action pins, and conditional live
+  checks, CLI artifact smoke test, reviewed Action tags, and conditional live
   model refresh review.
 
 Run:
@@ -816,8 +800,8 @@ Do not push or open a PR unless the operator explicitly asks.
 - [x] vLLM can opt into a bounded reasoning budget that reserves visible-answer
   capacity.
 - [x] `make build` produces an executable `bin/llm-cli`.
-- [x] CI runs Go and snapshot tests and every external Action is pinned by the
-  reviewed immutable SHA.
+- [x] CI runs Go and snapshot tests and every external Action uses the reviewed
+  explicit release tag.
 - [x] Go/module dependency upgrades present at `94408a1` remain intact, and
   `go.mod`, `go.sum`, and `scripts/pnpm-lock.yaml` are unchanged from `46436aa`.
 - [x] Documentation matches the implemented behavior and all Phase 8 commands

@@ -41,8 +41,8 @@ file still fails the history scan. Keep the credential file at mode `0600`;
 update the narrow fingerprints only when its line layout changes.
 
 CI also runs the frozen snapshot fixture suite and the CLI smoke gate. Every
-external `uses:` entry in `.github/workflows` must remain pinned to a reviewed
-40-character commit SHA; retain the release tag as its trailing comment.
+external `uses:` entry in `.github/workflows` uses an explicit release tag;
+review and advance those tags deliberately when new releases are available.
 
 ## Credentials
 
