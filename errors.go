@@ -27,6 +27,9 @@ var (
 )
 
 // ProviderError carries normalized and provider-specific error details.
+// Message, Metadata, and RawBody originate outside the process and are
+// untrusted: providers may echo prompt content, credentials, or arbitrary
+// payloads in them. Use SafeSummary or SafeError for operational logging.
 type ProviderError struct {
 	Provider   string
 	HTTPStatus int
@@ -36,6 +39,64 @@ type ProviderError struct {
 	Metadata   map[string]any
 	RawBody    []byte
 	Kind       error
+}
+
+// SafeSummary returns a source-free provider error description suitable for
+// logs and metrics. It deliberately excludes Code, Message, Metadata, and
+// RawBody because all four may contain provider-controlled request data.
+func (e *ProviderError) SafeSummary() string {
+	if e == nil {
+		return "<nil>"
+	}
+	prefix := "llm"
+	if e.Provider != "" {
+		prefix += "/" + e.Provider
+	}
+	if e.HTTPStatus != 0 {
+		prefix += fmt.Sprintf(": %d", e.HTTPStatus)
+	} else {
+		prefix += ":"
+	}
+	if kind := safeProviderErrorKind(e.Kind); kind != "" {
+		return prefix + " (" + kind + ")"
+	}
+	return prefix + " (provider error)"
+}
+
+// SafeError formats ProviderError values without provider-controlled content.
+// Non-provider errors are returned verbatim so local validation and programming
+// errors retain their actionable detail.
+func SafeError(err error) string {
+	if err == nil {
+		return "<nil>"
+	}
+	var providerErr *ProviderError
+	if errors.As(err, &providerErr) {
+		return providerErr.SafeSummary()
+	}
+	return err.Error()
+}
+
+func safeProviderErrorKind(kind error) string {
+	for _, candidate := range []error{
+		ErrAuth,
+		ErrPermission,
+		ErrNotFound,
+		ErrBadRequest,
+		ErrRateLimited,
+		ErrInsufficientCredits,
+		ErrOverloaded,
+		ErrServer,
+		ErrTimeout,
+		ErrContentFiltered,
+		ErrContextTooLong,
+		ErrUnsupported,
+	} {
+		if errors.Is(kind, candidate) {
+			return candidate.Error()
+		}
+	}
+	return ""
 }
 
 // Error formats as "llm/<provider>: <status> <code>: <message>", omitting

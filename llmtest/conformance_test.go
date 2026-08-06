@@ -25,14 +25,24 @@ func TestRunConformance(t *testing.T) {
 		return llm.Wrap(p, llm.Middleware{
 			Chat: func(next llm.ChatFunc) llm.ChatFunc {
 				return func(ctx context.Context, req *llm.Request) (*llm.Response, error) {
+					if llmtest.ConformanceScenarioForModel(req.Model) == llmtest.ConformanceCancel {
+						<-ctx.Done()
+						return nil, ctx.Err()
+					}
 					mu.Lock()
 					defer mu.Unlock()
+					parts := []llm.Part{llm.Text("pong")}
+					stopReason := llm.StopReasonEndTurn
+					if llmtest.ConformanceScenarioForModel(req.Model) == llmtest.ConformanceTools {
+						parts = []llm.Part{llm.ToolCall("call_conformance", "conformance_echo", []byte(`{"value":"pong"}`))}
+						stopReason = llm.StopReasonToolUse
+					}
 					p.EnqueueResponse(&llm.Response{
 						ID:         "msg_conformance",
 						Provider:   "llmtest-conformance",
 						Model:      req.Model,
-						Parts:      []llm.Part{llm.Text("pong")},
-						StopReason: llm.StopReasonEndTurn,
+						Parts:      parts,
+						StopReason: stopReason,
 						Usage:      llm.Usage{InputTokens: 1, OutputTokens: 1, TotalTokens: 2},
 					})
 					return next(ctx, req)
@@ -57,6 +67,20 @@ func TestRunConformance(t *testing.T) {
 						return func(yield func(llm.Event, error) bool) {
 							if yield(llm.MessageStart{ID: "msg_conformance", Provider: "llmtest-conformance", Model: req.Model}, nil) {
 								yield(nil, llm.ErrServer)
+							}
+						}
+					case llmtest.ConformanceTools:
+						return func(yield func(llm.Event, error) bool) {
+							for _, event := range []llm.Event{
+								llm.MessageStart{ID: "msg_conformance", Provider: "llmtest-conformance", Model: req.Model},
+								llm.ToolCallStart{Index: 0, ID: "call_conformance", Name: "conformance_echo"},
+								llm.ToolCallDelta{Index: 0, ArgsFragment: `{"value":"pong"}`},
+								llm.ToolCallEnd{Index: 0},
+								llm.MessageEnd{StopReason: llm.StopReasonToolUse, StopReasonRaw: "tool_use", Usage: llm.Usage{InputTokens: 1, OutputTokens: 1, TotalTokens: 2}},
+							} {
+								if !yield(event, nil) {
+									return
+								}
 							}
 						}
 					}

@@ -76,8 +76,9 @@
 // Failures normalize into two layers: sentinel errors (ErrAuth,
 // ErrRateLimited, ErrOverloaded, ErrContextTooLong, ...) matched with
 // errors.Is, and the full provider detail in *ProviderError extracted with
-// errors.As. Capability mismatches fail fast with ErrUnsupported before any
-// network call.
+// errors.As. Provider detail is untrusted; SafeError and
+// ProviderError.SafeSummary provide source-free operational logging.
+// Capability mismatches fail fast with ErrUnsupported before any network call.
 //
 // The llmtest package provides a scriptable fake Provider for offline
 // testing of code built on this interface.

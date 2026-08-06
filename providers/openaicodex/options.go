@@ -144,8 +144,14 @@ func (c config) validate() error {
 }
 
 func (c config) sdkOptions(source *provideroauth.Source) []sdkoption.RequestOption {
+	maxRetries := defaultTransportMaxRetries
+	if c.maxRetries != nil {
+		maxRetries = *c.maxRetries
+	}
+	client := providerutil.SafeRetryHTTPClient(c.observedHTTPClient(), maxRetries)
 	opts := []sdkoption.RequestOption{
-		sdkoption.WithHTTPClient(c.observedHTTPClient()),
+		sdkoption.WithHTTPClient(client),
+		sdkoption.WithMaxRetries(0),
 		sdkoption.WithBaseURL(codexBaseURL(c.baseURL)),
 		sdkoption.WithAdminAPIKey(""),
 		sdkoption.WithHeaderDel(organizationHeader),
@@ -159,9 +165,6 @@ func (c config) sdkOptions(source *provideroauth.Source) []sdkoption.RequestOpti
 			return provideroauth.DoWithAuthRetry(req, provideroauth.MiddlewareNext(next), source, c.applyOAuthHeaders)
 		}),
 	)
-	if c.maxRetries != nil {
-		opts = append(opts, sdkoption.WithMaxRetries(*c.maxRetries))
-	}
 	return opts
 }
 

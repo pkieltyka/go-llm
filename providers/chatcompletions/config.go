@@ -148,7 +148,10 @@ func NewWithDialect(cfg Config) (*Provider, error) {
 		return nil, fmt.Errorf("%w: %s requires a base URL", llm.ErrBadRequest, cfg.Dialect.Name())
 	}
 	compat := cfg.Dialect.Compat()
-	client := sdk.NewClient(sdkOptions(cfg, baseURL)...)
+	maxRetries := compatMaxRetries(cfg.MaxRetries)
+	observed := providerutil.ObservedHTTPClient(cfg.HTTPClient, cfg.Dialect.Name(), cfg.Logger, cfg.WireCapture)
+	httpClient := providerutil.SafeRetryHTTPClient(observed, maxRetries)
+	client := sdk.NewClient(sdkOptions(cfg, baseURL, httpClient)...)
 	headers := providerutil.AmbientCustomHeaders()
 	headers.Del("OpenAI-Organization")
 	headers.Del("OpenAI-Project")
@@ -160,11 +163,10 @@ func NewWithDialect(cfg Config) (*Provider, error) {
 		dialect:    cfg.Dialect,
 		compat:     compat,
 		client:     &client,
-		httpClient: providerutil.ObservedHTTPClient(cfg.HTTPClient, cfg.Dialect.Name(), cfg.Logger, cfg.WireCapture),
+		httpClient: httpClient,
 		apiKey:     cfg.APIKey,
 		apiKeyFunc: cfg.APIKeyFunc,
 		baseURL:    baseURL,
-		maxRetries: compatMaxRetries(cfg.MaxRetries),
 		timeout:    cfg.Timeout,
 		priceTable: cfg.PriceTable,
 		logger:     cfg.Logger,
@@ -179,9 +181,12 @@ func compatMaxRetries(configured *int) int {
 	return *configured
 }
 
-func sdkOptions(cfg Config, baseURL string) []sdkoption.RequestOption {
+func sdkOptions(cfg Config, baseURL string, client *http.Client) []sdkoption.RequestOption {
 	opts := []sdkoption.RequestOption{
-		sdkoption.WithHTTPClient(providerutil.ObservedHTTPClient(cfg.HTTPClient, cfg.Dialect.Name(), cfg.Logger, cfg.WireCapture)),
+		sdkoption.WithHTTPClient(client),
+		// The shared transport owns retry classification for both blocking and
+		// streaming paths; disable the SDK's broader no-response/5xx loop.
+		sdkoption.WithMaxRetries(0),
 		sdkoption.WithBaseURL(baseURL),
 		sdkoption.WithAdminAPIKey(""),
 		// The SDK also injects OpenAI-Organization / OpenAI-Project from
@@ -211,9 +216,6 @@ func sdkOptions(cfg Config, baseURL string) []sdkoption.RequestOption {
 		// An empty key sends no Authorization header at all (keyless
 		// self-hosted servers): the SDK omits the header for empty keys.
 		opts = append(opts, sdkoption.WithAPIKey(cfg.APIKey))
-	}
-	if cfg.MaxRetries != nil {
-		opts = append(opts, sdkoption.WithMaxRetries(*cfg.MaxRetries))
 	}
 	return opts
 }

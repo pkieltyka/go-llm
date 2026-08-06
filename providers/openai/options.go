@@ -74,7 +74,9 @@ func WithHTTPClient(client *http.Client) Option {
 	return func(c *config) { c.httpClient = client }
 }
 
-// WithMaxRetries delegates retry count to the OpenAI SDK.
+// WithMaxRetries bounds billing-safe retries. Only explicit 429/503/529
+// rejections and transport failures proven to occur before request bytes were
+// sent are replayed. Default: 2 additional attempts.
 func WithMaxRetries(n int) Option {
 	return func(c *config) { c.maxRetries = &n }
 }
@@ -123,8 +125,16 @@ func (c config) validate() error {
 }
 
 func (c config) sdkOptions() []sdkoption.RequestOption {
+	maxRetries := 2
+	if c.maxRetries != nil {
+		maxRetries = *c.maxRetries
+	}
+	observed := providerutil.ObservedHTTPClient(c.httpClient, providerName, c.logger, c.wireCapture)
 	opts := []sdkoption.RequestOption{
-		sdkoption.WithHTTPClient(providerutil.ObservedHTTPClient(c.httpClient, providerName, c.logger, c.wireCapture)),
+		sdkoption.WithHTTPClient(providerutil.SafeRetryHTTPClient(observed, maxRetries)),
+		// The shared transport owns retry classification. Leaving SDK retries on
+		// would replay ambiguous no-response errors and stack a second loop.
+		sdkoption.WithMaxRetries(0),
 		sdkoption.WithBaseURL(defaultOpenAIBaseURL),
 		sdkoption.WithAdminAPIKey(""),
 		sdkoption.WithHeaderDel(organizationHeader),
@@ -154,9 +164,6 @@ func (c config) sdkOptions() []sdkoption.RequestOption {
 		)
 	} else {
 		opts = append(opts, sdkoption.WithAPIKey(c.apiKey))
-	}
-	if c.maxRetries != nil {
-		opts = append(opts, sdkoption.WithMaxRetries(*c.maxRetries))
 	}
 	return opts
 }

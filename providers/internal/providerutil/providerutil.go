@@ -118,6 +118,6 @@ func LogFailure(ctx context.Context, logger *slog.Logger, providerName string, r
 		slog.String("provider", providerName),
 		slog.String("model", model),
 		slog.Duration("duration", time.Since(start)),
-		slog.String("error", err.Error()),
+		slog.String("error", llm.SafeError(err)),
 	)
 }

@@ -319,12 +319,16 @@ type ProviderError struct {
 }
 
 func (e *ProviderError) Error() string { /* "llm/openrouter: 429 rate_limited: ..." */ }
+func (e *ProviderError) SafeSummary() string { /* no provider-controlled fields */ }
 func (e *ProviderError) Unwrap() error { return e.Kind } // errors.Is(err, ErrRateLimited)
+func SafeError(err error) string // safe ProviderError logging; local errors unchanged
 ```
 
 Both layers in one type: `errors.Is` matches the sentinel via `Unwrap`;
 `errors.As` extracts `*ProviderError` for provider detail. Context errors
-(`context.Canceled`, `DeadlineExceeded`) pass through unwrapped.
+(`context.Canceled`, `DeadlineExceeded`) pass through unwrapped. Provider
+`Code`, `Message`, `Metadata`, and `RawBody` are untrusted and never enter the
+built-in operational logger; it formats them through `SafeError`.
 
 `ErrUnsupported` is produced by pre-flight validation (§6) and always wrapped
 with the capability name: `fmt.Errorf("%w: pdf-input (provider)", ErrUnsupported)`.
@@ -793,17 +797,15 @@ delivers **mid-stream failures as HTTP-200 chunks** (`finish_reason:
 `ProviderError`s with metadata rather than surfacing as SDK decode
 artifacts; (2) **comment keep-alives** (`: OPENROUTER PROCESSING`) are
 skipped explicitly per the SSE spec instead of depending on unverified SDK
-decoder behavior; (3) **retry control** — the SDK's retry layer cannot
-guarantee billing-safe semantics for streams, so the adapter owns a bounded
-pre-stream retry loop (same `WithMaxRetries` count) covering two classes:
-408/429/5xx rejections, decided purely on the response status line before
-any stream bytes are consumed, **plus transport errors where no HTTP
-response was received at all** (connection refused/reset, DNS failure — no
-status line exists to consult; parity with `openai-go`'s blocking-path
-retry class). A 2xx response is never retried; see §3.4. Blocking `Chat`
-still goes through `openai-go`. This mirrors the codex direct-transport
-decision in §3.2A, with one deliberate difference: the codex transport is
-status-line-only and does not retry transport errors.
+decoder behavior; (3) **retry control** — SDK retry loops are disabled and a
+shared HTTP transport policy covers blocking and streaming calls uniformly.
+The policy retries only explicit 429/503/529 rejections and failures proven
+to happen before HTTP request bytes were sent (temporary DNS,
+dial/proxy-connect failure, TLS handshake timeout). It never replays
+ambiguous EOF/reset/broken-pipe/read-timeout failures or other 5xx responses:
+a non-idempotent completion may already be running and billable upstream.
+A 2xx response is returned before any stream bytes are consumed and is never
+retried; see §3.4. Blocking `Chat` still uses openai-go for wire mapping.
 
 ### 3.4 Construction & configuration
 
@@ -819,7 +821,7 @@ func New(opts ...Option) (*Provider, error)
 WithAPIKey(string)        // provider env fallback where supported; explicit for self-hosted
 WithBaseURL(string)
 WithHTTPClient(*http.Client) // default: llm.DefaultHTTPClient() (below)
-WithMaxRetries(int)       // default 2, delegated to the SDK's retry layer
+WithMaxRetries(int)       // default 2, shared billing-safe transport policy
 WithTimeout(time.Duration)
 WithAPIKeyFunc(func(context.Context) (string, error)) // rotating/expiring creds; wins over WithAPIKey
 WithPriceTable(llm.PriceTable)   // cost estimation override
@@ -829,20 +831,13 @@ WithDefaultMaxTokens(int)        // anthropic only
 ```
 
 No global mutable request state; constructors return errors (e.g. missing API
-key) rather than panicking. Retries live in the SDK layer for every
-SDK-mediated call — go-llm never stacks a second retry loop on top of one. Two
-direct-transport paths own their (single) retry loop instead, both bounded
-by the same `WithMaxRetries` count and both **billing-safe** — the retry
-decision is made before any stream bytes are consumed, and a 2xx response
-is never retried. They differ in the retry class: the codex streaming
-transport (§3.2A) is **status-line-only** — 429/503/529 rejections; a
-transport error (no response received) is never retried. The
-chatcompletions streaming path (§3.3) retries 408/429/5xx pre-stream
-rejections **and transport errors where no HTTP response exists**
-(connection refused/reset, DNS failure — there is no status line to
-consult), matching `openai-go`'s blocking-path retry class so streamed and
-blocking calls behave alike; context cancellation/deadline is never
-retried.
+key) rather than panicking. SDK retry loops are forced to zero and one shared
+transport wrapper owns the bounded `WithMaxRetries` policy for SDK-backed and
+direct Chat Completions calls. Only 429/503/529 and provably pre-send
+transport failures are replayed. Redirected POST failures, context
+cancellation/deadline, ambiguous post-send transport failures, and all other
+statuses return immediately. The Codex subscription streaming transport
+(§3.2A) retains its narrower status-line-only 429/503/529 loop.
 
 **Default HTTP client** (`httpclient.go`, core, stdlib-only — FS §17):
 

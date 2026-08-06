@@ -107,7 +107,9 @@ func WithHTTPClient(client *http.Client) Option {
 	return func(c *config) { c.httpClient = client }
 }
 
-// WithMaxRetries delegates retry count to the Anthropic SDK.
+// WithMaxRetries bounds billing-safe retries. Only explicit 429/503/529
+// rejections and transport failures proven to occur before request bytes were
+// sent are replayed. Default: 2 additional attempts.
 func WithMaxRetries(n int) Option {
 	return func(c *config) { c.maxRetries = &n }
 }
@@ -165,11 +167,19 @@ func (c config) validate() error {
 }
 
 func (c config) sdkOptions(source *provideroauth.Source) []sdkoption.RequestOption {
-	client := providerutil.ObservedHTTPClient(c.httpClient, providerName, c.logger, c.wireCapture)
+	maxRetries := 2
+	if c.maxRetries != nil {
+		maxRetries = *c.maxRetries
+	}
+	observed := providerutil.ObservedHTTPClient(c.httpClient, providerName, c.logger, c.wireCapture)
+	client := providerutil.SafeRetryHTTPClient(observed, maxRetries)
 
 	opts := []sdkoption.RequestOption{
 		sdkoption.WithoutEnvironmentDefaults(),
 		sdkoption.WithHTTPClient(client),
+		// The shared transport owns retry classification. Leaving SDK retries on
+		// would replay ambiguous no-response errors and stack a second loop.
+		sdkoption.WithMaxRetries(0),
 	}
 	if c.baseURL != "" {
 		opts = append(opts, sdkoption.WithBaseURL(c.baseURL))
@@ -193,9 +203,6 @@ func (c config) sdkOptions(source *provideroauth.Source) []sdkoption.RequestOpti
 		}))
 	} else {
 		opts = append(opts, sdkoption.WithAPIKey(c.apiKey))
-	}
-	if c.maxRetries != nil {
-		opts = append(opts, sdkoption.WithMaxRetries(*c.maxRetries))
 	}
 	return opts
 }

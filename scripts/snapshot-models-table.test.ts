@@ -10,6 +10,7 @@ import {
   buildSnapshot,
   mergeRow,
   persistSnapshot,
+  readJSON,
   type SnapshotDocument,
   type SourceMinimums,
 } from "./snapshot-models-table.ts";
@@ -228,5 +229,35 @@ test("writes atomically and preserves the destination on rejected deltas", async
   assert.deepEqual(
     (await readdir(directory)).filter((name) => name.includes(".tmp-")),
     [],
+  );
+});
+
+test("remote JSON reads are bounded, timed out, and parsed after a complete read", async () => {
+  const source = "https://models.test/api.json";
+  const validFetch = async () => new Response(`{"models":["ok"]}`, { status: 200 });
+  assert.deepEqual(await readJSON(source, { fetchImpl: validFetch as typeof fetch, maxBytes: 64, timeoutMs: 100 }), {
+    models: ["ok"],
+  });
+
+  const declaredOversize = async () =>
+    new Response("{}", { status: 200, headers: { "content-length": "65" } });
+  await assert.rejects(
+    () => readJSON(source, { fetchImpl: declaredOversize as typeof fetch, maxBytes: 64, timeoutMs: 100 }),
+    /exceeds 64 byte limit/,
+  );
+
+  const streamedOversize = async () => new Response("x".repeat(65), { status: 200 });
+  await assert.rejects(
+    () => readJSON(source, { fetchImpl: streamedOversize as typeof fetch, maxBytes: 64, timeoutMs: 100 }),
+    /exceeds 64 byte limit/,
+  );
+
+  const stalledFetch = ((_input: RequestInfo | URL, init?: RequestInit) =>
+    new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+    })) as typeof fetch;
+  await assert.rejects(
+    () => readJSON(source, { fetchImpl: stalledFetch, maxBytes: 64, timeoutMs: 5 }),
+    /timed out after 5ms/,
   );
 });

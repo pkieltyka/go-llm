@@ -780,6 +780,11 @@ Two layers, always:
    OpenRouter numeric codes),
    `Message`, `RetryAfter`, `Metadata`, and the raw body.
 
+`Code`, `Message`, `Metadata`, and `RawBody` are provider-controlled and may
+echo request content. They remain available for programmatic diagnosis, while
+operational logs use `ProviderError.SafeSummary()` / `llm.SafeError(err)`,
+which include only the adapter identity, HTTP status, and normalized sentinel.
+
 **Canonical HTTP-status mapping** (binding on every provider engine — one
 shared classifier in `providerutil` enforces it, so identical statuses
 yield identical sentinels across providers):
@@ -835,9 +840,15 @@ stream") — never a silent empty success.
   - Every call returns a fresh `*http.Client`; clients share only a private,
     lazily initialized transport and its connection pool. Mutating client
     fields therefore cannot change another caller's client.
-- Retries: delegated to the wrapped SDKs where available; the shared
-  adapter retries 408/429/5xx and connection errors with exponential
-  backoff, honoring `Retry-After`. Default max retries: 2 (SDK convention).
+- Retries: one shared transport policy covers blocking and streaming calls;
+  wrapped SDK retry loops are disabled so policies never stack. Because model
+  invocation POSTs are non-idempotent, retries are limited to explicit
+  429/503/529 rejections and transport failures that prove no HTTP request
+  bytes were sent (temporary DNS, dial/proxy-connect failure, TLS handshake
+  timeout). Ambiguous EOF/reset/broken-pipe/read-timeout failures and other
+  5xx responses are never replayed because the provider may already be doing
+  billable work. Backoff honors `Retry-After` and is context-cancelable.
+  Default max retries: 2.
 - All calls take `context.Context`; no global mutable request state. The
   write-once part registry, lazily parsed model table, and shared private
   default transport are the only process-wide infrastructure.
@@ -905,7 +916,7 @@ beneath the SDK that hands the callback the exact HTTP exchange per
 attempt: method, URL, redacted request headers, request body, status,
 response headers, buffered response body (SSE streams included), timing,
 and transport error. Sensitive headers (`Authorization`, `x-api-key`,
-cookies) are **always redacted** — not optional. Each SDK retry attempt
+  cookies) are **always redacted** — not optional. Each transport attempt
 is captured separately. `llm.WireCaptureToLogger(l)` adapts a logger into
 a capture fn (full payloads at `Debug`) for instant trace mode. Bodies may
 contain user data — storage/retention is the application's

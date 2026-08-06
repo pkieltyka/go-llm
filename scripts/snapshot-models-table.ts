@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { chmod, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
@@ -31,6 +32,12 @@ export type SourceMinimums = {
   openRouter: number;
 };
 
+export type ReadJSONOptions = {
+  timeoutMs?: number;
+  maxBytes?: number;
+  fetchImpl?: typeof fetch;
+};
+
 type Provider = (typeof currentProviders)[number];
 type JSONRecord = Record<string, unknown>;
 
@@ -49,6 +56,8 @@ const minimumMaterialIdentityLoss = 2;
 const maximumMetadataLossRatio = 0.5;
 const minimumMaterialFieldLoss = 2;
 const minimumMaterialMetadataLoss = 3;
+const remoteSourceTimeoutMs = 15_000;
+const remoteSourceMaxBytes = 32 << 20;
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 type BuildOptions = {
@@ -552,11 +561,49 @@ function optionalNumber(
   return undefined;
 }
 
-async function readJSON(source: string): Promise<unknown> {
+export async function readJSON(source: string, options: ReadJSONOptions = {}): Promise<unknown> {
   if (/^https?:\/\//.test(source)) {
-    const response = await fetch(source, { headers: { "user-agent": "go-llm-model-snapshot" } });
-    if (!response.ok) throw new Error(`${source}: ${response.status} ${response.statusText}`);
-    return response.json();
+    const timeoutMs = options.timeoutMs ?? remoteSourceTimeoutMs;
+    const maxBytes = options.maxBytes ?? remoteSourceMaxBytes;
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new Error("remote JSON timeout must be a positive integer");
+    if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) throw new Error("remote JSON byte limit must be a positive integer");
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await (options.fetchImpl ?? fetch)(source, {
+        headers: { "user-agent": "go-llm-model-snapshot" },
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(`${source}: ${response.status} ${response.statusText}`);
+
+      const declaredLength = Number(response.headers.get("content-length"));
+      if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+        if (response.body) await response.body.cancel().catch(() => undefined);
+        throw new Error(`${source}: response exceeds ${maxBytes} byte limit`);
+      }
+      if (!response.body) throw new Error(`${source}: response body is missing`);
+
+      const reader = response.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let total = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > maxBytes) {
+          await reader.cancel().catch(() => undefined);
+          throw new Error(`${source}: response exceeds ${maxBytes} byte limit`);
+        }
+        chunks.push(value);
+      }
+      return JSON.parse(Buffer.concat(chunks, total).toString("utf8"));
+    } catch (error) {
+      if (controller.signal.aborted) throw new Error(`${source}: timed out after ${timeoutMs}ms`, { cause: error });
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
   return JSON.parse(await readFile(resolve(source), "utf8"));
 }

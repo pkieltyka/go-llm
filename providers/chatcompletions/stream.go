@@ -5,14 +5,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"iter"
 	"maps"
 	"net/http"
 	"slices"
 	"strings"
-	"time"
 
 	sdk "github.com/openai/openai-go/v3"
 	llm "github.com/pkieltyka/go-llm"
@@ -160,36 +158,11 @@ func (p *Provider) emptyStreamError() error {
 }
 
 func (p *Provider) openStream(ctx context.Context, req *llm.Request, body []byte) (*http.Response, error) {
-	var lastErr error
-	for attempt := 0; attempt <= p.maxRetries; attempt++ {
-		if attempt > 0 {
-			if err := waitBeforeRetry(ctx, lastErr, attempt); err != nil {
-				return nil, err
-			}
-		}
-		resp, err := p.doStreamRequest(ctx, req, body)
-		if err != nil {
-			lastErr = p.mapError(err)
-			if !streamRetryableError(ctx, err) || attempt == p.maxRetries {
-				return nil, lastErr
-			}
-			continue
-		}
-		if retryableStreamStatus(resp.StatusCode) {
-			lastErr = p.mapHTTPResponseError(resp)
-			resp.Body.Close()
-			if attempt == p.maxRetries {
-				return nil, lastErr
-			}
-			continue
-		}
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			defer resp.Body.Close()
-			return nil, p.mapHTTPResponseError(resp)
-		}
-		return resp, nil
+	resp, err := p.doStreamRequest(ctx, req, body)
+	if err != nil {
+		return nil, p.mapError(err)
 	}
-	return nil, lastErr
+	return resp, nil
 }
 
 func (p *Provider) doStreamRequest(ctx context.Context, req *llm.Request, body []byte) (*http.Response, error) {
@@ -212,52 +185,6 @@ func (p *Provider) doStreamRequest(ctx context.Context, req *llm.Request, body [
 	}
 	applyHeaders(httpReq.Header, p.requestHeaders(req))
 	return p.httpClient.Do(httpReq)
-}
-
-func waitBeforeRetry(ctx context.Context, err error, attempt int) error {
-	delay := streamRetryBackoff(attempt)
-	var providerErr *llm.ProviderError
-	if errors.As(err, &providerErr) && providerErr.RetryAfter > 0 {
-		delay = providerErr.RetryAfter
-	}
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-	}
-	return nil
-}
-
-func streamRetryBackoff(attempt int) time.Duration {
-	if attempt < 1 {
-		attempt = 1
-	}
-	delay := 100 * time.Millisecond
-	for range min(attempt-1, 5) {
-		delay *= 2
-	}
-	jitter := time.Duration((attempt*37)%100) * time.Millisecond
-	delay += jitter
-	if delay > 2*time.Second {
-		return 2 * time.Second
-	}
-	return delay
-}
-
-func streamRetryableError(ctx context.Context, err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
-		return false
-	}
-	return true
-}
-
-func retryableStreamStatus(status int) bool {
-	return status == http.StatusRequestTimeout || status == http.StatusTooManyRequests || status >= 500
 }
 
 // withStreamEnabled splices "stream": true into the marshaled params.

@@ -2,6 +2,7 @@ package llm
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -45,5 +46,38 @@ func TestProviderErrorStringSkipsCodeEqualToStatus(t *testing.T) {
 	noStatus := &ProviderError{Provider: "zai", Code: "1210", Message: "business error", Kind: ErrBadRequest}
 	if got, want := noStatus.Error(), "llm/zai: 1210: business error"; got != want {
 		t.Fatalf("code without status lost: got %q, want %q", got, want)
+	}
+}
+
+func TestProviderErrorSafeSummaryExcludesUntrustedFields(t *testing.T) {
+	err := &ProviderError{
+		Provider:   "openai",
+		HTTPStatus: 400,
+		Code:       "secret-code",
+		Message:    "echoed prompt and bearer token",
+		Metadata:   map[string]any{"token": "secret-metadata"},
+		RawBody:    []byte("secret-body"),
+		Kind:       ErrBadRequest,
+	}
+	got := err.SafeSummary()
+	if want := "llm/openai: 400 (llm: bad request)"; got != want {
+		t.Fatalf("SafeSummary() = %q, want %q", got, want)
+	}
+	for _, secret := range []string{"secret-code", "echoed prompt", "bearer token", "secret-metadata", "secret-body"} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("SafeSummary() = %q contains %q", got, secret)
+		}
+	}
+}
+
+func TestSafeErrorFindsWrappedProviderErrorAndPreservesLocalErrors(t *testing.T) {
+	providerErr := &ProviderError{Provider: "anthropic", Message: "sensitive", Kind: ErrOverloaded}
+	wrapped := fmt.Errorf("request failed with echoed input: %w", providerErr)
+	if got, want := SafeError(wrapped), "llm/anthropic: (llm: overloaded)"; got != want {
+		t.Fatalf("SafeError(provider) = %q, want %q", got, want)
+	}
+	local := errors.New("local validation detail")
+	if got := SafeError(local); got != local.Error() {
+		t.Fatalf("SafeError(local) = %q, want %q", got, local.Error())
 	}
 }

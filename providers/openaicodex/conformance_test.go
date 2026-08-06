@@ -29,6 +29,9 @@ func TestOpenAICodexConformance(t *testing.T) {
 			case llmtest.ConformanceTruncated:
 				writeCodexSSEStart(w)
 				return
+			case llmtest.ConformanceTools:
+				writeCodexSSETools(w)
+				return
 			}
 			writeCodexSSESuccess(w)
 		}))
@@ -53,4 +56,12 @@ func TestOpenAICodexConformance(t *testing.T) {
 func writeCodexSSEStart(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	_, _ = io.WriteString(w, `data: {"type":"response.created","response":{"id":"resp_1","model":"gpt-5.4-mini","status":"in_progress","output":[]}}`+"\n\n")
+}
+
+func writeCodexSSETools(w http.ResponseWriter) {
+	writeCodexSSEStart(w)
+	_, _ = io.WriteString(w, `data: {"type":"response.output_item.added","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_conformance","name":"conformance_echo","arguments":"","status":"in_progress"}}`+"\n\n")
+	_, _ = io.WriteString(w, `data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"value\":\"pong\"}"}`+"\n\n")
+	_, _ = io.WriteString(w, `data: {"type":"response.output_item.done","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_conformance","name":"conformance_echo","arguments":"{\"value\":\"pong\"}","status":"completed"}}`+"\n\n")
+	_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp_1","model":"gpt-5.4-mini","status":"completed","output":[{"id":"fc_1","type":"function_call","call_id":"call_conformance","name":"conformance_echo","arguments":"{\"value\":\"pong\"}","status":"completed"}],"usage":{"input_tokens":1,"input_tokens_details":{"cached_tokens":0},"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":2}}}`+"\n\n")
 }

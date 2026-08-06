@@ -1,24 +1,72 @@
 package chatcompletions
 
 import (
+	"context"
+	"errors"
+	"io"
+	"net"
+	"net/http"
 	"strings"
 	"testing"
-	"time"
+
+	llm "github.com/pkieltyka/go-llm"
 )
 
-func TestStreamRetryBackoffIsBoundedAndIncreasing(t *testing.T) {
-	first := streamRetryBackoff(1)
-	second := streamRetryBackoff(2)
-	later := streamRetryBackoff(99)
-	if first <= 0 {
-		t.Fatalf("first backoff = %s, want positive", first)
+func TestConfiguredRetriesDoNotReplayAmbiguousFailures(t *testing.T) {
+	for _, failure := range []struct {
+		name      string
+		roundTrip func(*http.Request) (*http.Response, error)
+	}{
+		{
+			name: "post-send connection reset",
+			roundTrip: func(*http.Request) (*http.Response, error) {
+				return nil, &net.OpError{Op: "read", Net: "tcp", Err: errors.New("connection reset by peer")}
+			},
+		},
+		{
+			name: "ambiguous 500",
+			roundTrip: func(req *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusInternalServerError,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"failed after send","type":"server_error"}}`)),
+					Request:    req,
+				}, nil
+			},
+		},
+	} {
+		for _, path := range []string{"chat", "stream"} {
+			t.Run(failure.name+"/"+path, func(t *testing.T) {
+				calls := 0
+				client := &http.Client{Transport: streamTestRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+					calls++
+					return failure.roundTrip(req)
+				})}
+				provider, err := New("https://provider.test/v1", WithAPIKey("test"), WithHTTPClient(client), WithMaxRetries(2))
+				if err != nil {
+					t.Fatalf("New returned error: %v", err)
+				}
+				req := &llm.Request{Model: "test-model", Messages: []llm.Message{llm.UserText("ping")}}
+				if path == "chat" {
+					_, err = provider.Chat(context.Background(), req)
+				} else {
+					_, err = llm.Collect(provider.ChatStream(context.Background(), req))
+				}
+				if !errors.Is(err, llm.ErrServer) {
+					t.Fatalf("error = %v, want ErrServer", err)
+				}
+				if calls != 1 {
+					t.Fatalf("calls = %d, want exactly one non-replayed request", calls)
+				}
+			})
+		}
 	}
-	if second <= first {
-		t.Fatalf("second backoff = %s, want > first %s", second, first)
-	}
-	if later != 2*time.Second {
-		t.Fatalf("capped backoff = %s, want 2s", later)
-	}
+}
+
+type streamTestRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn streamTestRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
 }
 
 func TestWithStreamEnabledPreservesGiantIntegers(t *testing.T) {
