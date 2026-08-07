@@ -18,7 +18,7 @@
 // chatcompletions engine. Concrete providers expose advanced escape hatches,
 // and typed extension options travel through Request.ProviderOptions.
 // Subscription credentials minted by existing CLIs are consumed and
-// auto-refreshed; LoadAuthFile reads the pi-compatible credential format.
+// auto-refreshed; LoadAuthFile reads the documented credential union.
 // Refreshable credentials require a context-aware persistence callback, and
 // renewed credentials publish only after durable persistence succeeds.
 //
@@ -76,8 +76,10 @@
 // Failures normalize into two layers: sentinel errors (ErrAuth,
 // ErrRateLimited, ErrOverloaded, ErrContextTooLong, ...) matched with
 // errors.Is, and the full provider detail in *ProviderError extracted with
-// errors.As. Capability mismatches fail fast with ErrUnsupported before any
-// network call.
+// errors.As. Provider detail is untrusted; SafeError and
+// ProviderError.SafeSummary omit untrusted ProviderError detail fields for
+// operational logging. SafeError returns non-provider errors verbatim.
+// Capability mismatches fail fast with ErrUnsupported before any network call.
 //
 // The llmtest package provides a scriptable fake Provider for offline
 // testing of code built on this interface.

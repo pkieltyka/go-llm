@@ -51,6 +51,44 @@ func TestStreamContractRejectsEmptyAndTruncatedEOF(t *testing.T) {
 	}
 }
 
+func TestStreamContractRejectsMessageEndWithoutStopReasonBeforeYield(t *testing.T) {
+	stream := StreamContract("test", testutil.EventSeq(
+		llm.MessageStart{Provider: "test", Model: "model"},
+		llm.TextDelta{Index: 0, Text: "partial"},
+		llm.MessageEnd{},
+	))
+	var events []llm.Event
+	var gotErr error
+	for event, err := range stream {
+		if err != nil {
+			gotErr = err
+			continue
+		}
+		events = append(events, event)
+	}
+	if !errors.Is(gotErr, llm.ErrServer) {
+		t.Fatalf("error = %v, want ErrServer", gotErr)
+	}
+	if len(events) != 2 {
+		t.Fatalf("events = %#v, want start and partial text only", events)
+	}
+	if _, ok := events[len(events)-1].(llm.MessageEnd); ok {
+		t.Fatalf("invalid MessageEnd was yielded: %#v", events)
+	}
+	partialSeq := func(yield func(llm.Event, error) bool) {
+		for _, event := range events {
+			if !yield(event, nil) {
+				return
+			}
+		}
+		yield(nil, gotErr)
+	}
+	resp, err := llm.Collect(partialSeq)
+	if !errors.Is(err, llm.ErrServer) || resp == nil || resp.Text() != "partial" {
+		t.Fatalf("partial response/error = %#v/%v", resp, err)
+	}
+}
+
 func TestStreamContractEarlyBreakDoesNotReportTruncation(t *testing.T) {
 	upstreamStopped := false
 	seq := func(yield func(llm.Event, error) bool) {

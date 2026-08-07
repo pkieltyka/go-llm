@@ -98,13 +98,18 @@ func WithHTTPClient(client *http.Client) Option {
 	return func(o *options) { o.config.HTTPClient = client }
 }
 
-// WithMaxRetries bounds retry attempts. Blocking calls delegate the count to
-// the OpenAI SDK's retry layer; streaming calls use the adapter's direct SSE
-// transport, which applies the same bound to billing-safe pre-stream
-// rejections only (retry decisions are made on the response status line
-// before any stream bytes are consumed — ARCH §3.3/§3.4).
+// WithMaxRetries bounds automatic transport retries and, when enabled by
+// WithResponseRetries, response retries. Default: 2 additional attempts.
 func WithMaxRetries(n int) Option {
 	return func(o *options) { o.config.MaxRetries = &n }
+}
+
+// WithResponseRetries enables or disables retries of explicit 429/503/529
+// responses. They are disabled by default because model requests are not
+// idempotent. Typed failures proven to occur before request bytes were sent
+// may still be retried within the WithMaxRetries bound.
+func WithResponseRetries(enabled bool) Option {
+	return func(o *options) { o.config.ResponseRetries = enabled }
 }
 
 // WithTimeout applies a context deadline to provider calls.

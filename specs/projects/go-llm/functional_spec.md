@@ -27,7 +27,7 @@ verified with Go 1.26.5 or newer. Streaming uses standard iterators (`iter`).
 | OpenAI | Wraps official `openai-go` (direct) | **Responses API** — OpenAI's recommended surface for new projects; enables reasoning continuity + content (see provider_capabilities.md) |
 | OpenAI Codex | `providers/openaicodex` — shares the Responses mapping with `providers/openai` | **ChatGPT Plus/Pro subscription** via OAuth — `chatgpt.com/backend-api/codex` (§17C) |
 | OpenRouter | Shared OpenAI-compatible adapter (via `openai-go`), preset base URL + auth + typed extensions | `https://openrouter.ai/api/v1` |
-| vLLM | `providers/vllm` — preset over the public `chatcompletions` engine; **host-first construction** (self-hosted: `http://host:8000/v1`, key optional via `--api-key` bearer), era-aware (modern v0.12+ default, `WithLegacyEra()`) | Live-tested. Includes fuzzy model resolution and concrete-provider `/tokenize`, `/detokenize`, and `/tokenizer_info` extensions. Full upstream research: `vllm_research.md` |
+| vLLM | `providers/vllm` — current-stable v0.26.0 preset over the public `chatcompletions` engine; **host-first construction** (self-hosted: `http://host:8000/v1`, key optional via `--api-key` bearer) | Live-tested. Includes fuzzy model resolution and concrete-provider `/tokenize`, `/detokenize`, and `/tokenizer_info` extensions. Full upstream research: `vllm_research.md` |
 | Ollama | `providers/ollama` — data-only preset over the public `chatcompletions` engine (`http://localhost:11434/v1` convention) | Offline conformance-tested; not in the credentialed live matrix |
 | Custom | Public `Provider` interface — anyone can implement their own; or `chatcompletions.New(baseURL, opts...)` for any OpenAI-compatible server, with quirks declared via the `Compat` struct | |
 
@@ -47,7 +47,8 @@ Decisions:
   returns reasoning content and discards reasoning between tool-call
   turns). Stateless operation: the adapter sets `store: false` and
   round-trips encrypted reasoning items. Chat Completions remains fully
-  supported upstream; legacy-only knobs are reachable via the raw client.
+  supported upstream; Chat Completions-only knobs are reachable via the raw
+  client.
 - OpenRouter, vLLM, and Ollama are presets over one public
   OpenAI-compatible, chat-completions-shaped engine. OpenRouter and vLLM add
   typed provider options and response mappings; Ollama is a data-only preset.
@@ -269,8 +270,7 @@ adapter and its OpenRouter, vLLM, and Ollama presets.
   `*Response`. A text-only consumer adapter, `llm.StreamText`, filters a
   stream to plain text deltas (`iter.Seq2[string, error]`); its
   `WithDebounce(window)` option batches deltas on a time window to
-  rate-limit UI re-renders (adopted from fugue-labs/gollem, collapsed to
-  one function + options).
+  rate-limit UI re-renders.
 - **Per-provider streaming nuances** — normalizing these is a core adapter
   responsibility:
 
@@ -280,21 +280,21 @@ adapter and its OpenRouter, vLLM, and Ollama presets.
 | OpenAI (Responses) | SSE **semantic typed events** (`response.output_text.delta`, `response.function_call_arguments.delta`, `response.reasoning_summary_text.delta`, `response.output_item.added/done`, `response.completed`, …) | Deltas keyed by output-item/content index (no `choices[].delta`); reasoning summary deltas → `ReasoningDelta`; usage arrives on `response.completed`; `response.failed`/`error` events → normalized in-stream error |
 | CC-shaped adapter (OpenRouter, vLLM, Ollama, custom) | SSE `chat.completion.chunk` + `data: [DONE]` | Choice index 0 only; tool-call deltas indexed via `delta.tool_calls[].index`; `stream_options.include_usage` set where a dialect requires it; usage-only tails and comment keep-alives tolerated |
 | OpenRouter (dialect specifics) | as CC-shaped row | SSE **comment keep-alives** (`: OPENROUTER PROCESSING`) must be skipped; **mid-stream errors** arrive as an HTTP-200 chunk with `finish_reason: "error"` + `error{}` object → normalized in-stream error; usage+cost auto-included in final chunk; `reasoning`/`reasoning_details` on deltas |
-| vLLM (dialect specifics) | as CC-shaped row | Reads modern `reasoning` and legacy `reasoning_content`; choice-less error events normalize in-stream; forced tool calls ending with wire `stop` normalize to `tool_use` |
+| vLLM (dialect specifics) | as CC-shaped row | Reads `reasoning`; choice-less nested error events normalize in-stream; forced tool calls ending with wire `stop` normalize to `tool_use` |
 
 - Usage always surfaces on the `MessageEnd` event regardless of where the
   provider reports it.
 - **Every fully consumed successful stream terminates with exactly one
   `MessageEnd`** (enforced by a shared stream-contract wrapper across all
-  engines). Failed or canceled streams terminate with their error instead. A
-  provider's own completion signal is authoritative: Anthropic's
-  `message_stop` yields a `MessageEnd` even without a preceding
-  `message_delta` (empty `StopReason` in that case — the server signaled
-  completion, so this is not an error).
-  A stream that drains to clean EOF *without* any terminal signal is a
-  truncation → `ProviderError` wrapping `ErrServer`, never a silent success;
-  a 2xx stream with zero content events is likewise `ErrServer`. Consumer
-  early-break (abandoning the iterator) is preserved and is not an error.
+  engines), and its normalized `StopReason` is non-empty. Failed or canceled
+  streams terminate with their error instead. Anthropic requires a
+  stop-bearing `message_delta` before `message_stop`. Chat Completions
+  requires a choice-0 `finish_reason`; a narrowly configured
+  `InferMissingFinishReason` compatibility flag may infer `tool_use` or
+  `end_turn` only at clean `[DONE]`/EOF while leaving the raw reason empty.
+  Missing terminal state, an empty 2xx stream, or an empty `MessageEnd`
+  normalizes to a partial-stream `ProviderError` wrapping `ErrServer`.
+  Consumer early-break is preserved and is not an error.
 - Cancellation: context cancellation closes the stream and releases the
   connection. (Note: on OpenRouter, upstream billing stops on disconnect
   only for providers that support cancellation — informational, not
@@ -340,14 +340,16 @@ adapter and its OpenRouter, vLLM, and Ollama presets.
   Anthropic maps them to native tool_result content blocks; the OpenAI
   Responses adapters (openai, openai-codex) map them to the
   `function_call_output` content-array form (`input_text` / `input_image` /
-  `input_file`; text-only results keep the plain string form). The
-  chat-completions wire (OpenRouter) genuinely accepts only string content
-  for tool messages, so non-text tool-result parts return `ErrUnsupported`
-  there.
+  `input_file`; text-only results keep the plain string form). Chat
+  Completions uses string content by default. Its explicit
+  `ToolMessageContentBlocks` compatibility mode preserves text boundaries
+  and `CacheHint` values as `cache_control` blocks; the OpenRouter preset
+  enables this live-verified form. Image/file tool-result parts remain
+  `ErrUnsupported` on the Chat Completions surface.
 - **Malformed tool calls never fail the turn and are never silently
-  swallowed** (adopted from zero's production design — models and
-  providers occasionally emit unusable calls: missing id/name,
-  unparseable/truncated arguments, duplicate ids). Adapters must:
+  swallowed**. Models and providers occasionally emit unusable calls:
+  missing id/name, unparseable/truncated arguments, or duplicate ids.
+  Adapters must:
   (1) **rescue** what's rescuable — synthesize ids for missing/duplicate
   ones, buffer argument deltas until id+name arrive; (2) when a call is
   truly unusable, **drop it visibly** — a `ToolCallDropped` stream event
@@ -396,8 +398,8 @@ Two levels, capability-flagged separately:
 JSON-mode marker. Requesting a level a provider lacks → `ErrUnsupported`.
 Adapters **adapt schemas to provider dialects fail-open**: strict-mode
 sanitization (e.g. OpenAI strict rejects `format`/`pattern`) degrades to
-`strict: false` rather than failing the request (oh-my-pi's
-production-proven behavior); the same applies to `Tool.InputSchema`.
+`strict: false` rather than failing the request; the same applies to
+`Tool.InputSchema`.
 OpenRouter note: schema support varies by upstream provider; the OpenRouter
 extension offers `provider.require_parameters` to route only to providers
 honoring it.
@@ -410,9 +412,8 @@ unmarshals the response into `T`.
   1. **native** — `json-schema` capability: schema enforced server-side;
   2. **forced-tool extraction** — provider has tools + forced tool choice:
      the schema is bound as a single synthetic tool, tool choice forced,
-     and the arguments parsed as the result. The convergent "most
-     reliable" pattern across eino and fugue-labs/gollem; useful e.g. on
-     OpenRouter when the upstream model lacks schema support;
+     and the arguments parsed as the result; useful e.g. on OpenRouter when
+     the upstream model lacks schema support;
   3. **json-mode + guidance** — JSON mode plus schema guidance appended to
      the system prompt with client-side validation.
 - Optional bounded retry (`WithParseRetries(n)`, default 0): on
@@ -463,7 +464,7 @@ nearest supported native level; the table is documented in code):
 | `low` | `low` | `low` | `low` | `low` |
 | `medium` | `medium` | `medium` | `medium` | `medium` |
 | `high` | `high` | `high` | `high` | `high` |
-| `xhigh` | `xhigh` where accepted, otherwise `high` | `xhigh` | `xhigh` | `high` (nearest) |
+| `xhigh` | `xhigh` where accepted, otherwise `high` | `xhigh` | `xhigh` | `xhigh` |
 | `max` | `max` where accepted, otherwise `high` | `xhigh` (nearest) | `max` | `max` (native) |
 | `none` | thinking disabled/omitted | `none` | `enabled: false` | `none` |
 
@@ -486,7 +487,10 @@ affinity across providers — set it once per logical conversation/agent run:
 
 Capability flag: `session-affinity` (present when the mapping has a real
 effect). The field is always safe to set — providers without a mapping
-ignore it.
+ignore it. OpenAI and Codex preserve IDs up to 64 runes exactly; longer IDs
+become a 47-rune prefix plus `-` and a 16-character SHA-256 suffix only at
+the Responses wire boundary. Stored history and OpenRouter `session_id`
+remain unchanged.
 
 ## 10. Conversation History Helper
 
@@ -532,8 +536,7 @@ ordinary JSON interop because the standard library compacts and HTML-escapes
 
 ## 10B. Middleware
 
-A single, minimal interceptor seam (validated by convergent designs in
-eino and gollem):
+A single, minimal interceptor seam:
 
 - `Middleware` provides optional wrappers for `Chat` and `ChatStream`
   (wrapping a stream iterator is a plain function decoration — no teeing
@@ -606,8 +609,7 @@ Every response (and `MessageEnd` stream event) carries a normalized `Usage`:
 - Raw provider usage accessible underneath
 
 **Normalization invariant** (binding on every adapter — providers disagree
-natively, so this is where cross-adapter drift is prevented; inspired by
-zero's `NormalizeUsage` contract):
+natively, so this is where cross-adapter drift is prevented):
 
 - `InputTokens` **excludes** cache tokens; `CacheReadTokens` +
   `CacheWriteTokens` are disjoint additions (total prompt occupancy =
@@ -630,10 +632,14 @@ Cost sourcing:
    response) — used verbatim, `CostSource: "native"`.
 2. **Estimated** (`CostSource: "estimated"`) — an optional, user-overridable price table
    (per provider/model: USD per MTok input/output/cache-read/cache-write).
+   Pricing may include ascending input-occupancy tiers. The highest threshold
+   strictly exceeded by `InputTokens + CacheReadTokens + CacheWriteTokens`
+   supplies all rates for the entire request; exact equality stays on the
+   lower tier. Invalid caller-supplied tiers are ignored. Native cost always
+   wins.
    The shipped table is a **trimmed JSON snapshot of the
    community-maintained models.dev database** plus a hand-maintained
-   overrides file (pi's production experience: upstream metadata needs a
-   patch table), refreshed by a dev-time script, embedded via `go:embed`,
+   overrides file, refreshed by a dev-time script, embedded via `go:embed`,
    parsed lazily on first use, and stamped with a generation date. The
    library never fetches model data at runtime. Estimates are marked as
    estimates via `Usage.CostSource`. No table entry → `CostUSD` nil (and
@@ -715,17 +721,17 @@ conflict. Current extension surface:
 **vLLM** (`vllm.Options`):
 - Extra sampling (`TopK`, `MinP`, `RepetitionPenalty`, `StopTokenIDs`),
   `ChatTemplateKwargs` (incl. the `EnableThinking` sugar for Qwen-style
-  toggles), `XArgs` (`vllm_xargs` engine passthrough). Era selection via
-  `vllm.WithLegacyEra()` (pre-v0.12 servers: `reasoning_content` replay).
+  toggles), `ThinkingTokenBudget`, and `XArgs` (`vllm_xargs` engine
+  passthrough). The budget emits `thinking_token_budget` only when explicitly
+  set, must be positive and compatible with effective thinking enablement,
+  and reserves 1,024 visible-answer tokens when `MaxTokens` is set.
 - `StructuredOutputs` (native `structured_outputs` constraint modes,
-  v0.12+): exactly one of `Regex`, `Choice`, `Grammar`, `StructuralTag`
+  current vLLM): exactly one of `Regex`, `Choice`, `Grammar`, `StructuralTag`
   (raw JSON), plus `WhitespacePattern`; JSON-schema output stays on the
   unified `ResponseFormat` (era-portable spelling). Conflicts fail loud at
   build: set together with `ResponseFormat` → `ErrBadRequest` (one
-  constraint system per request; unified owns the slot), set under
-  `WithLegacyEra()` → `ErrUnsupported` (modern servers silently ignore the
-  removed `guided_*` spelling, so no fallback is emitted), zero/multiple
-  modes → `ErrBadRequest`.
+  constraint system per request; unified owns the slot), zero/multiple modes
+  → `ErrBadRequest`.
 - Tokenizer extension methods (escape hatch on the concrete provider, not
   `llm.Provider`): `Tokenize(ctx, *llm.Request)` → `TokenizeResult{Count,
   MaxModelLen, Tokens}` (exact chat-template-aware prompt accounting via
@@ -750,7 +756,7 @@ service tiers), raw SDK access via `Client()`.
 **OpenAI** (`openai.Options`): Responses-specific `Store`,
 `PreviousResponseID`, `ConversationID`/`Conversation`, `Include`,
 `Background`, `HostedTools`, `Verbosity`, `Metadata`, `ServiceTier`,
-`SafetyIdentifier`, and `PromptCacheRetention`. These use library-owned or
+`SafetyIdentifier`, and `PromptCacheOptions`. These use library-owned or
 standard-library types; `HostedTools` is a slice of validated JSON objects so
 future hosted-tool shapes do not expose SDK unions. `Client()` remains an
 advanced vendor-typed escape hatch.
@@ -762,6 +768,9 @@ advanced vendor-typed escape hatch.
   (Anthropic `cache_control`; OpenRouter passes `cache_control` through to
   Anthropic-family models). Providers with automatic caching such as OpenAI
   ignore the hint.
+- Anthropic preserves hints on text nested inside tool results. OpenRouter
+  emits cache-aware role-tool text blocks only when a nested hint exists;
+  no-hint tool messages keep the traditional concatenated string wire form.
 - Cache effectiveness is always observable via `Usage.CacheReadTokens` /
   `CacheWriteTokens`.
 
@@ -779,6 +788,14 @@ Two layers, always:
    `Provider`, `HTTPStatus`, `Code` (string — handles OpenAI error types and
    OpenRouter numeric codes),
    `Message`, `RetryAfter`, `Metadata`, and the raw body.
+
+`Code`, `Message`, `Metadata`, and `RawBody` are provider-controlled and may
+echo request content. They remain available for programmatic diagnosis, while
+operational logs use `ProviderError.SafeSummary()` / `llm.SafeError(err)`,
+which include only a valid bounded ASCII adapter identity, HTTP status, and
+normalized sentinel. The label is omitted when it is not `[A-Za-z0-9._-]` or
+exceeds 64 bytes. `SafeError` deliberately returns non-provider errors
+verbatim; it is not a general-purpose secret scrubber.
 
 **Canonical HTTP-status mapping** (binding on every provider engine — one
 shared classifier in `providerutil` enforces it, so identical statuses
@@ -819,8 +836,7 @@ stream") — never a silent empty success.
   `WithBaseURL`, `WithHTTPClient`, `WithMaxRetries`, `WithTimeout`.
 - **`llm.DefaultHTTPClient()`** — go-llm ships its own default HTTP
   client, tuned for LLM workloads, used by every provider constructor
-  when `WithHTTPClient` is not passed (adopted from zero's production
-  transport hardening):
+  when `WithHTTPClient` is not passed:
   - `Client.Timeout: 0` — **never** a whole-response timeout (it would
     kill SSE streams mid-body; the footgun naive custom clients hit);
     time-to-first-byte is bounded by `ResponseHeaderTimeout` (120s), and
@@ -830,27 +846,33 @@ stream") — never a silent empty success.
     concurrent fan-out against a single API host).
   - **darwin**: `DisableKeepAlives: true` — works around the documented
     macOS stale-connection hang after sleep/wake/network changes (cost:
-    per-request HTTP/1.1 + handshake; worth it per zero's production
-    data). Overridable like everything else.
+    per-request HTTP/1.1 + handshake). Overridable like everything else.
   - Every call returns a fresh `*http.Client`; clients share only a private,
     lazily initialized transport and its connection pool. Mutating client
     fields therefore cannot change another caller's client.
-- Retries: delegated to the wrapped SDKs where available; the shared
-  adapter retries 408/429/5xx and connection errors with exponential
-  backoff, honoring `Retry-After`. Default max retries: 2 (SDK convention).
+- Retries: one shared transport policy covers blocking and streaming calls;
+  wrapped SDK retry loops are disabled so policies never stack. By default,
+  only replayable requests with typed proof that no HTTP bytes were sent
+  (temporary DNS, dial, or proxy-connect failures) are retried. Ambiguous
+  EOF/reset/broken-pipe/read/write-timeout and TLS errors are not replayed.
+  `WithResponseRetries(true)` separately opts into at-least-once replay of
+  429/503/529 responses; it is not billing-safe. Redirects and
+  `X-Should-Retry: false` veto replay. Backoff is context-aware; a provider
+  delay over 30 seconds returns the original response untouched for normal
+  error mapping. Default maximum: 2 additional attempts per auth epoch.
 - All calls take `context.Context`; no global mutable request state. The
   write-once part registry, lazily parsed model table, and shared private
   default transport are the only process-wide infrastructure.
 - go-llm **never reads configuration files implicitly** — credentials
   come from explicit options or environment variables. For applications
   that keep provider credentials in a file, one explicit opt-in loader is
-  provided: **`llm.LoadAuthFile(path)`**, parsing the **pi-compatible
-  credential format** — a map of provider-id → credential union
+  provided: **`llm.LoadAuthFile(path)`**, parsing the documented credential
+  format — a map of provider-id → credential union
   discriminated by `type`: `{"type": "api_key", "key": "..."}` or
   `{"type": "oauth", "access": "...", "refresh": "...", "expires": <ms>,
-  "accountId": "..."}` — accepted either bare (pi's `~/.pi/agent/auth.json`
-  parses verbatim) or nested under a `"providers"` wrapper (as the e2e
-  harness's `gollm-test.json` does; architecture §9). The caller passes
+  "accountId": "..."}` — accepted either bare or nested under a
+  `"providers"` wrapper (as the e2e harness's `gollm-test.json` does;
+  architecture §9). The caller passes
   loaded credentials to constructors (`WithAPIKey` / `WithAPIKeyFunc` /
   `WithOAuth`); `oauth` credentials serve the subscription auth paths
   (§17C), where providers handle refresh and hand renewed credentials
@@ -905,7 +927,7 @@ beneath the SDK that hands the callback the exact HTTP exchange per
 attempt: method, URL, redacted request headers, request body, status,
 response headers, buffered response body (SSE streams included), timing,
 and transport error. Sensitive headers (`Authorization`, `x-api-key`,
-cookies) are **always redacted** — not optional. Each SDK retry attempt
+  cookies) are **always redacted** — not optional. Each transport attempt
 is captured separately. `llm.WireCaptureToLogger(l)` adapts a logger into
 a capture fn (full payloads at `Debug`) for instant trace mode. Bodies may
 contain user data — storage/retention is the application's
@@ -916,11 +938,11 @@ vocabulary — `WireCapture`, `NewWireTap`, `WithWireCapture`,
 ## 17C. Subscription Auth (OAuth)
 
 In scope (promoted from the deferred list): **consuming** subscription
-credentials minted by existing CLIs (pi, claude, codex). go-llm does not
+credentials minted by compatible existing CLIs. go-llm does not
 implement interactive login flows in v1 (PKCE/device-code minting stays
 deferred; natural future home: `llm-cli auth login`).
 
-- **Credential shape**: the `oauth` variant of the pi-compatible format
+- **Credential shape**: the `oauth` variant of the documented auth format
   (§17): `{access, refresh?, expires?, accountId?}`.
 - **Provider option**: subscription-capable providers accept
   `WithOAuth(cred, persist)` where `persist` is
@@ -943,18 +965,14 @@ deferred; natural future home: `llm-cli auth login`).
   per the reference implementations the request path must send
   `anthropic-beta: claude-code-20250219,oauth-2025-04-20`, the
   `claude-cli` user-agent + `x-app: cli` headers, and the Claude Code
-  identity line as the first system block (verified against pi's Anthropic
-  OAuth implementation). Must be **live-verified with a real
+  identity line as the first system block. Must be **live-verified with a real
   subscription credential** before this mode is considered done.
 - **`openai-codex` (ChatGPT Plus/Pro)** — a separate provider (id
-  `openai-codex`, pi-compatible naming; zero calls it "chatgpt"): the
+  `openai-codex`): the
   Responses wire shape against `chatgpt.com/backend-api/codex`, extra
   headers (`chatgpt-account-id` resolved per request from the stored
   credential, `originator`), refresh via OpenAI's OAuth token endpoint.
   Capabilities mirror `providers/openai`.
-- Reference implementations: pi `packages/ai/src/utils/oauth/*`, zero's
-  codex client — exact endpoints and public client ids are verified from
-  those sources at implementation time, not hardcoded here.
 
 ## 18. Edge Cases & Behaviors
 
@@ -997,7 +1015,7 @@ Usage shape (single-shot, stateless, streams to stdout by default):
 llm-cli -p anthropic -m claude-opus-4-8 "explain me this error: ..."
 echo "long doc" | llm-cli -p openai -m gpt-5.5 -s "summarize stdin"
 llm-cli -p openrouter -m z-ai/glm-4.7 --effort high --json "..."
-llm-cli -p openai-codex --auth-file ~/.pi/agent/auth.json -m gpt-5.4 "..."
+llm-cli -p openai-codex --auth-file ~/.config/llm/auth.json -m gpt-5.4 "..."
 llm-cli models -p openrouter
 ```
 
@@ -1037,3 +1055,5 @@ llm-cli models -p openrouter
 - **Constraints**: stdlib `flag` only (no CLI-framework dependency in the
   module), errors to stderr with the normalized error text, exit code 0
   on success / 1 on error, streaming output unbuffered.
+- `make build` compiles all packages and writes an executable
+  `bin/llm-cli`; CI runs credential-free `--help` and `--version` smoke tests.

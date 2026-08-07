@@ -31,6 +31,12 @@ func TestOpenRouterConformance(t *testing.T) {
 					return
 				case llmtest.ConformanceTruncated:
 					return
+				case llmtest.ConformanceTools:
+					_, _ = io.WriteString(w, `data: {"id":"gen_1","model":"openai/gpt-test","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_conformance","type":"function","function":{"name":"conformance_echo","arguments":"{\"value\":\"pong\"}"}}]}}]}`+"\n\n")
+					_, _ = io.WriteString(w, `data: {"id":"gen_1","model":"openai/gpt-test","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`+"\n\n")
+					_, _ = io.WriteString(w, `data: {"id":"gen_1","model":"openai/gpt-test","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2,"cost":0.00001}}`+"\n\n")
+					_, _ = io.WriteString(w, "data: [DONE]\n\n")
+					return
 				}
 				_, _ = io.WriteString(w, `data: {"id":"gen_1","model":"openai/gpt-test","choices":[{"index":0,"delta":{"content":"po"}}]}`+"\n\n")
 				_, _ = io.WriteString(w, `data: {"id":"gen_1","model":"openai/gpt-test","choices":[{"index":0,"delta":{"content":"ng"},"finish_reason":"stop"}]}`+"\n\n")
@@ -38,7 +44,15 @@ func TestOpenRouterConformance(t *testing.T) {
 				_, _ = io.WriteString(w, "data: [DONE]\n\n")
 				return
 			}
+			if scenario == llmtest.ConformanceCancel {
+				<-r.Context().Done()
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
+			if scenario == llmtest.ConformanceTools {
+				_, _ = io.WriteString(w, `{"id":"gen_1","model":"openai/gpt-test","choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"index":0,"id":"call_conformance","type":"function","function":{"name":"conformance_echo","arguments":"{\"value\":\"pong\"}"}}]}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2,"cost":0.00001}}`)
+				return
+			}
 			_, _ = io.WriteString(w, `{"id":"gen_1","model":"openai/gpt-test","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"pong"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2,"cost":0.00001}}`)
 		}))
 		t.Cleanup(server.Close)

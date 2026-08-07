@@ -12,27 +12,49 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7.0.1
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@v7.0.0
         with:
           go-version: "1.26.5"
           cache: true
 
+      - uses: pnpm/action-setup@v6.0.10
+        with:
+          package_json_file: scripts/package.json
+
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: "26.7.0"
+          cache: pnpm
+          cache-dependency-path: scripts/pnpm-lock.yaml
+
       - name: Download modules
         run: go mod download
+
+      - name: Build and smoke-test CLI
+        run: |
+          make build
+          test -x bin/llm-cli
+          ./bin/llm-cli --help >/dev/null
+          ./bin/llm-cli --version >/dev/null
 
       - name: Vet
         run: go vet ./...
 
       - name: Lint
-        uses: golangci/golangci-lint-action@v9
+        uses: golangci/golangci-lint-action@v9.3.0
         with:
           version: v2.12.2
           args: --default=none --enable=govet --enable=ineffassign --enable=unused ./...
 
       - name: Race tests
         run: go test -race ./...
+
+      - name: Snapshot fixture tests
+        run: |
+          pnpm --dir scripts install --frozen-lockfile
+          pnpm --dir scripts test
 
       - name: Compile live-tag tests without credentials
         run: |

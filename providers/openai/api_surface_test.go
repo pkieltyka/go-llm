@@ -15,14 +15,14 @@ var publicStore = false
 // This literal is a compile-time consumer check: ordinary request options use
 // only go-llm, openai package, and standard-library types.
 var publicOptions = openai.Options{
-	Store:                &publicStore,
-	Conversation:         &openai.Conversation{ID: "conv_1"},
-	Include:              []openai.Include{openai.IncludeMessageOutputTextLogprobs},
-	HostedTools:          []json.RawMessage{json.RawMessage(`{"type":"web_search"}`)},
-	Verbosity:            openai.VerbosityLow,
-	Metadata:             openai.Metadata{"purpose": "test"},
-	ServiceTier:          openai.ServiceTierDefault,
-	PromptCacheRetention: openai.PromptCacheRetention24h,
+	Store:              &publicStore,
+	Conversation:       &openai.Conversation{ID: "conv_1"},
+	Include:            []openai.Include{openai.IncludeMessageOutputTextLogprobs},
+	HostedTools:        []json.RawMessage{json.RawMessage(`{"type":"web_search"}`)},
+	Verbosity:          openai.VerbosityLow,
+	Metadata:           openai.Metadata{"purpose": "test"},
+	ServiceTier:        openai.ServiceTierDefault,
+	PromptCacheOptions: &openai.PromptCacheOptions{TTL: openai.PromptCacheTTL30m},
 }
 
 var _ llm.ProviderOptions = publicOptions

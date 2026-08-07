@@ -63,6 +63,19 @@ type Compat struct {
 	// never dropped.
 	StreamIncludeUsage bool
 
+	// InferMissingFinishReason permits otherwise clean streams to finish when
+	// choice zero never supplies finish_reason. At [DONE] or clean EOF, the
+	// adapter infers tool_use when a valid tool call completed and end_turn
+	// otherwise. StopReasonRaw remains empty. The strict default rejects the
+	// stream as a provider error.
+	InferMissingFinishReason bool
+
+	// ToolMessageContentBlocks permits role:"tool" content arrays when a
+	// tool-result TextPart carries a CacheHint. The default remains the broadly
+	// compatible concatenated string form; enable this only for providers known
+	// to accept Anthropic-style text blocks with cache_control on tool results.
+	ToolMessageContentBlocks bool
+
 	// MapEffort translates the unified Effort into top-level wire request
 	// fields (nil result: send nothing). When MapEffort itself is nil the
 	// adapter sends {"reasoning_effort": "<level>"} — the spelling shared by
@@ -74,17 +87,15 @@ type Compat struct {
 	// ReasoningReplayField, when non-empty, names the assistant-message field
 	// used to replay same-provider plain-text reasoning (ReasoningPart.Text
 	// with a matching Provider and no Raw payload) back to the server — e.g.
-	// "reasoning" for modern vLLM, "reasoning_content" for pre-rename
-	// servers. Raw reasoning_details payloads always replay as
+	// "reasoning" for vLLM. Raw reasoning_details payloads always replay as
 	// reasoning_details regardless of this field. Empty (the default) drops
 	// plain-text reasoning on replay, matching servers whose chat templates
 	// discard prior thinking anyway.
 	ReasoningReplayField string
 
 	// SniffMidStreamErrors treats choice-less SSE data events that carry an
-	// error payload — nested {"error":{...}} or legacy flat
-	// {"object":"error",...} — as normalized in-stream errors. vLLM emits
-	// these after HTTP 200 when generation fails mid-stream; without the
+	// nested {"error":{...}} payload as a normalized in-stream error. vLLM
+	// emits these after HTTP 200 when generation fails mid-stream; without the
 	// sniff such events would be silently absorbed as extras.
 	SniffMidStreamErrors bool
 
@@ -118,10 +129,13 @@ type Config struct {
 	BaseURL     string
 	HTTPClient  *http.Client
 	MaxRetries  *int
-	Timeout     time.Duration
-	PriceTable  llm.PriceTable
-	Logger      *slog.Logger
-	WireCapture func(llm.WireCapture)
+	// ResponseRetries opts into retrying explicit 429/503/529 responses.
+	// It is false by default because model invocations are not idempotent.
+	ResponseRetries bool
+	Timeout         time.Duration
+	PriceTable      llm.PriceTable
+	Logger          *slog.Logger
+	WireCapture     func(llm.WireCapture)
 }
 
 // NewWithDialect constructs a provider from a full Dialect implementation.
@@ -148,7 +162,10 @@ func NewWithDialect(cfg Config) (*Provider, error) {
 		return nil, fmt.Errorf("%w: %s requires a base URL", llm.ErrBadRequest, cfg.Dialect.Name())
 	}
 	compat := cfg.Dialect.Compat()
-	client := sdk.NewClient(sdkOptions(cfg, baseURL)...)
+	maxRetries := compatMaxRetries(cfg.MaxRetries)
+	observed := providerutil.ObservedHTTPClient(cfg.HTTPClient, cfg.Dialect.Name(), cfg.Logger, cfg.WireCapture)
+	httpClient := providerutil.SafeRetryHTTPClient(observed, maxRetries, cfg.ResponseRetries)
+	client := sdk.NewClient(sdkOptions(cfg, baseURL, httpClient)...)
 	headers := providerutil.AmbientCustomHeaders()
 	headers.Del("OpenAI-Organization")
 	headers.Del("OpenAI-Project")
@@ -160,11 +177,10 @@ func NewWithDialect(cfg Config) (*Provider, error) {
 		dialect:    cfg.Dialect,
 		compat:     compat,
 		client:     &client,
-		httpClient: providerutil.ObservedHTTPClient(cfg.HTTPClient, cfg.Dialect.Name(), cfg.Logger, cfg.WireCapture),
+		httpClient: httpClient,
 		apiKey:     cfg.APIKey,
 		apiKeyFunc: cfg.APIKeyFunc,
 		baseURL:    baseURL,
-		maxRetries: compatMaxRetries(cfg.MaxRetries),
 		timeout:    cfg.Timeout,
 		priceTable: cfg.PriceTable,
 		logger:     cfg.Logger,
@@ -179,9 +195,12 @@ func compatMaxRetries(configured *int) int {
 	return *configured
 }
 
-func sdkOptions(cfg Config, baseURL string) []sdkoption.RequestOption {
+func sdkOptions(cfg Config, baseURL string, client *http.Client) []sdkoption.RequestOption {
 	opts := []sdkoption.RequestOption{
-		sdkoption.WithHTTPClient(providerutil.ObservedHTTPClient(cfg.HTTPClient, cfg.Dialect.Name(), cfg.Logger, cfg.WireCapture)),
+		sdkoption.WithHTTPClient(client),
+		// The shared transport owns retry classification for both blocking and
+		// streaming paths; disable the SDK's broader no-response/5xx loop.
+		sdkoption.WithMaxRetries(0),
 		sdkoption.WithBaseURL(baseURL),
 		sdkoption.WithAdminAPIKey(""),
 		// The SDK also injects OpenAI-Organization / OpenAI-Project from
@@ -211,9 +230,6 @@ func sdkOptions(cfg Config, baseURL string) []sdkoption.RequestOption {
 		// An empty key sends no Authorization header at all (keyless
 		// self-hosted servers): the SDK omits the header for empty keys.
 		opts = append(opts, sdkoption.WithAPIKey(cfg.APIKey))
-	}
-	if cfg.MaxRetries != nil {
-		opts = append(opts, sdkoption.WithMaxRetries(*cfg.MaxRetries))
 	}
 	return opts
 }

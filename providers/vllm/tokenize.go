@@ -42,8 +42,7 @@ func (r TokenizeResult) ContextUsage() llm.ContextUsage {
 //
 // Request.Effort is mirrored the way vLLM's chat handler applies it
 // server-side: a non-empty Effort injects chat_template_kwargs.enable_thinking
-// (false for EffortNone, true otherwise; live-verified token-count parity on
-// a 0.23/0.24-family host). An explicit enable_thinking in
+// (false for EffortNone, true otherwise). An explicit enable_thinking in
 // Options.ChatTemplateKwargs or Options.EnableThinking wins.
 func (p *Provider) Tokenize(ctx context.Context, req *llm.Request) (TokenizeResult, error) {
 	params, err := p.inner.BuildParams(req, false)
@@ -110,8 +109,7 @@ func (p *Provider) Detokenize(ctx context.Context, tokens []int) (string, error)
 // because the schema varies by server version (the upstream model is
 // extra="allow" passthrough of the tokenizer config). The endpoint is gated
 // behind a server flag on current builds (--enable-tokenizer-info-endpoint);
-// hosts without it return llm.ErrNotFound — observed on a 0.23/0.24-family
-// host whose /tokenize and /detokenize worked.
+// hosts without it return llm.ErrNotFound.
 func (p *Provider) TokenizerInfo(ctx context.Context) (json.RawMessage, error) {
 	var out json.RawMessage
 	if err := p.inner.DoJSONURL(ctx, http.MethodGet, p.serverRoot+"/tokenizer_info", nil, &out); err != nil {

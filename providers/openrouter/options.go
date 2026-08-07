@@ -40,18 +40,19 @@ func (Options) ForProvider() string { return providerName }
 type Option func(*config)
 
 type config struct {
-	apiKey      string
-	apiKeySet   bool
-	apiKeyFunc  func(context.Context) (string, error)
-	baseURL     string
-	httpClient  *http.Client
-	maxRetries  *int
-	timeout     time.Duration
-	priceTable  llm.PriceTable
-	logger      *slog.Logger
-	wireCapture func(llm.WireCapture)
-	httpReferer string
-	xTitle      string
+	apiKey          string
+	apiKeySet       bool
+	apiKeyFunc      func(context.Context) (string, error)
+	baseURL         string
+	httpClient      *http.Client
+	maxRetries      *int
+	responseRetries bool
+	timeout         time.Duration
+	priceTable      llm.PriceTable
+	logger          *slog.Logger
+	wireCapture     func(llm.WireCapture)
+	httpReferer     string
+	xTitle          string
 }
 
 func defaultConfig() config {
@@ -92,13 +93,18 @@ func WithHTTPClient(client *http.Client) Option {
 	return func(c *config) { c.httpClient = client }
 }
 
-// WithMaxRetries bounds retry attempts. Blocking calls delegate the count to
-// the OpenAI SDK's retry layer; streaming calls use the adapter's direct SSE
-// transport, which applies the same bound to billing-safe pre-stream
-// rejections only (retry decisions are made on the response status line
-// before any stream bytes are consumed — ARCH §3.3/§3.4).
+// WithMaxRetries bounds automatic transport retries and, when enabled by
+// WithResponseRetries, response retries. Default: 2 additional attempts.
 func WithMaxRetries(n int) Option {
 	return func(c *config) { c.maxRetries = &n }
+}
+
+// WithResponseRetries enables or disables retries of explicit 429/503/529
+// responses. They are disabled by default because model requests are not
+// idempotent. Typed failures proven to occur before request bytes were sent
+// may still be retried within the WithMaxRetries bound.
+func WithResponseRetries(enabled bool) Option {
+	return func(c *config) { c.responseRetries = enabled }
 }
 
 // WithTimeout applies a context deadline to provider calls.
@@ -144,15 +150,16 @@ func (c config) chatcompletionsConfig() (chatcompletions.Config, error) {
 		headers.Set("X-Title", c.xTitle)
 	}
 	return chatcompletions.Config{
-		Dialect:     dialect{headers: headers},
-		APIKey:      c.apiKey,
-		APIKeyFunc:  c.apiKeyFunc,
-		BaseURL:     c.baseURL,
-		HTTPClient:  c.httpClient,
-		MaxRetries:  c.maxRetries,
-		Timeout:     c.timeout,
-		PriceTable:  c.priceTable,
-		Logger:      c.logger,
-		WireCapture: c.wireCapture,
+		Dialect:         dialect{headers: headers},
+		APIKey:          c.apiKey,
+		APIKeyFunc:      c.apiKeyFunc,
+		BaseURL:         c.baseURL,
+		HTTPClient:      c.httpClient,
+		MaxRetries:      c.maxRetries,
+		ResponseRetries: c.responseRetries,
+		Timeout:         c.timeout,
+		PriceTable:      c.priceTable,
+		Logger:          c.logger,
+		WireCapture:     c.wireCapture,
 	}, nil
 }

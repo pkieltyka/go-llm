@@ -5,14 +5,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"iter"
 	"maps"
 	"net/http"
 	"slices"
 	"strings"
-	"time"
 
 	sdk "github.com/openai/openai-go/v3"
 	llm "github.com/pkieltyka/go-llm"
@@ -54,6 +52,17 @@ func (p *Provider) streamEvents(ctx context.Context, req *llm.Request, params sd
 			}
 			yield(nil, streamErr)
 		}
+		finishCleanly := func() {
+			if !state.sawFinish && !p.compat.InferMissingFinishReason {
+				fail(p.missingFinishReasonError())
+				return
+			}
+			for _, event := range state.finish(!state.sawFinish) {
+				if !yield(event, nil) {
+					return
+				}
+			}
+		}
 		for payload, err := range ssePayloads(resp.Body) {
 			if err != nil {
 				fail(err)
@@ -64,11 +73,7 @@ func (p *Provider) streamEvents(ctx context.Context, req *llm.Request, params sd
 					yield(nil, p.emptyStreamError())
 					return
 				}
-				for _, event := range state.finish() {
-					if !yield(event, nil) {
-						return
-					}
-				}
+				finishCleanly()
 				return
 			}
 			if p.compat.SniffMidStreamErrors {
@@ -97,41 +102,19 @@ func (p *Provider) streamEvents(ctx context.Context, req *llm.Request, params sd
 			yield(nil, p.emptyStreamError())
 			return
 		}
-		if state.sawFinish {
-			for _, event := range state.finish() {
-				if !yield(event, nil) {
-					return
-				}
-			}
-			return
-		}
-		for _, event := range state.settleReasoningRaw() {
-			if !yield(event, nil) {
-				return
-			}
-		}
-		for _, event := range state.rescuePartialTools() {
-			if !yield(event, nil) {
-				return
-			}
-		}
+		finishCleanly()
 	}
 }
 
 // sniffStreamError detects choice-less SSE data events that carry an error
 // payload — vLLM emits these after HTTP 200 when generation fails mid-stream
-// (Compat.SniffMidStreamErrors). Both the nested {"error":{...}} and the
-// legacy flat {"object":"error","message":...,"code":N} shapes are
-// recognized; events that carry a "choices" key (even an empty array, like
-// trailing usage chunks) are never treated as errors here — in-choice errors
-// stay with mapChunk.
+// (Compat.SniffMidStreamErrors). Events that carry a "choices" key (even an
+// empty array, like trailing usage chunks) are never treated as errors here —
+// in-choice errors stay with mapChunk.
 func (p *Provider) sniffStreamError(payload []byte) error {
 	var probe struct {
-		Object  string          `json:"object"`
 		Choices json.RawMessage `json:"choices"`
 		Error   *rawError       `json:"error"`
-		Message string          `json:"message"`
-		Code    any             `json:"code"`
 	}
 	if err := json.Unmarshal(payload, &probe); err != nil {
 		return nil // let the chunk decoder report malformed payloads
@@ -141,9 +124,6 @@ func (p *Provider) sniffStreamError(payload []byte) error {
 	}
 	if probe.Error != nil && (probe.Error.Message != "" || probe.Error.Code != nil) {
 		return p.mapChunkError(probe.Error, payload)
-	}
-	if probe.Object == "error" {
-		return p.mapChunkError(&rawError{Code: probe.Code, Message: probe.Message}, payload)
 	}
 	return nil
 }
@@ -159,37 +139,20 @@ func (p *Provider) emptyStreamError() error {
 	}
 }
 
-func (p *Provider) openStream(ctx context.Context, req *llm.Request, body []byte) (*http.Response, error) {
-	var lastErr error
-	for attempt := 0; attempt <= p.maxRetries; attempt++ {
-		if attempt > 0 {
-			if err := waitBeforeRetry(ctx, lastErr, attempt); err != nil {
-				return nil, err
-			}
-		}
-		resp, err := p.doStreamRequest(ctx, req, body)
-		if err != nil {
-			lastErr = p.mapError(err)
-			if !streamRetryableError(ctx, err) || attempt == p.maxRetries {
-				return nil, lastErr
-			}
-			continue
-		}
-		if retryableStreamStatus(resp.StatusCode) {
-			lastErr = p.mapHTTPResponseError(resp)
-			resp.Body.Close()
-			if attempt == p.maxRetries {
-				return nil, lastErr
-			}
-			continue
-		}
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			defer resp.Body.Close()
-			return nil, p.mapHTTPResponseError(resp)
-		}
-		return resp, nil
+func (p *Provider) missingFinishReasonError() error {
+	return &llm.ProviderError{
+		Provider: p.Name(),
+		Message:  "provider stream ended without a finish reason",
+		Kind:     llm.ErrServer,
 	}
-	return nil, lastErr
+}
+
+func (p *Provider) openStream(ctx context.Context, req *llm.Request, body []byte) (*http.Response, error) {
+	resp, err := p.doStreamRequest(ctx, req, body)
+	if err != nil {
+		return nil, p.mapError(err)
+	}
+	return resp, nil
 }
 
 func (p *Provider) doStreamRequest(ctx context.Context, req *llm.Request, body []byte) (*http.Response, error) {
@@ -212,52 +175,6 @@ func (p *Provider) doStreamRequest(ctx context.Context, req *llm.Request, body [
 	}
 	applyHeaders(httpReq.Header, p.requestHeaders(req))
 	return p.httpClient.Do(httpReq)
-}
-
-func waitBeforeRetry(ctx context.Context, err error, attempt int) error {
-	delay := streamRetryBackoff(attempt)
-	var providerErr *llm.ProviderError
-	if errors.As(err, &providerErr) && providerErr.RetryAfter > 0 {
-		delay = providerErr.RetryAfter
-	}
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-	}
-	return nil
-}
-
-func streamRetryBackoff(attempt int) time.Duration {
-	if attempt < 1 {
-		attempt = 1
-	}
-	delay := 100 * time.Millisecond
-	for range min(attempt-1, 5) {
-		delay *= 2
-	}
-	jitter := time.Duration((attempt*37)%100) * time.Millisecond
-	delay += jitter
-	if delay > 2*time.Second {
-		return 2 * time.Second
-	}
-	return delay
-}
-
-func streamRetryableError(ctx context.Context, err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
-		return false
-	}
-	return true
-}
-
-func retryableStreamStatus(status int) bool {
-	return status == http.StatusRequestTimeout || status == http.StatusTooManyRequests || status >= 500
 }
 
 // withStreamEnabled splices "stream": true into the marshaled params.
@@ -426,7 +343,7 @@ func (s *streamState) mapChunk(chunk rawChatCompletion, raw []byte) ([]llm.Event
 func choiceHasOutputDelta(delta rawMessage) bool {
 	return delta.Content != "" ||
 		delta.Refusal != "" ||
-		delta.reasoningText() != "" ||
+		delta.Reasoning != "" ||
 		len(delta.ReasoningDetails) > 0 ||
 		len(delta.ToolCalls) > 0
 }
@@ -519,7 +436,7 @@ func joinRawArray(elements []json.RawMessage) json.RawMessage {
 
 func (s *streamState) mapDelta(choice rawChoice) []llm.Event {
 	var events []llm.Event
-	if text := choice.Delta.reasoningText(); text != "" {
+	if text := choice.Delta.Reasoning; text != "" {
 		reasoningIndex := s.reasoningIndex()
 		s.reasoningTextBlocks[reasoningIndex] = struct{}{}
 		events = append(events, llm.ReasoningDelta{Index: reasoningIndex, Text: text})
@@ -690,22 +607,29 @@ func (s *streamState) rescuePartialTools() []llm.Event {
 	return events
 }
 
-func (s *streamState) finish() []llm.Event {
+func (s *streamState) finish(inferMissing bool) []llm.Event {
 	if !s.started {
 		return nil
 	}
-	return s.finishEvents()
+	return s.finishEvents(inferMissing)
 }
 
-func (s *streamState) finishEvents() []llm.Event {
+func (s *streamState) finishEvents(inferMissing bool) []llm.Event {
 	events := s.completedReasoningRawEvents()
 	events = append(events, s.finishPendingTools()...)
 	usage := llm.Usage{}
 	if s.usage != nil {
 		usage = s.provider.dialect.MapUsage(s.model, *s.usage, s.provider.priceTable)
 	}
+	stopReason := s.provider.normalizeToolUseStop(s.provider.dialect.MapStopReason(s.finishReason), s.toolCallsEmitted)
+	if inferMissing {
+		stopReason = llm.StopReasonEndTurn
+		if s.toolCallsEmitted {
+			stopReason = llm.StopReasonToolUse
+		}
+	}
 	events = append(events, llm.MessageEnd{
-		StopReason:    s.provider.normalizeToolUseStop(s.provider.dialect.MapStopReason(s.finishReason), s.toolCallsEmitted),
+		StopReason:    stopReason,
 		StopReasonRaw: s.finishReason,
 		Usage:         usage,
 		Raw:           s.messageEndRaw(),

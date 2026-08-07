@@ -50,9 +50,7 @@ var entropyTokenPattern = regexp.MustCompile(`[A-Za-z0-9_+=]{32,}`)
 var standardBase64TokenPattern = regexp.MustCompile(`[A-Za-z0-9+/]{30,}={0,2}`)
 var base64URLTokenPattern = regexp.MustCompile(`[A-Za-z0-9_-]{32,}`)
 var hexSecretPattern = regexp.MustCompile(`(?i)\b[0-9a-f]{32,}\b`)
-var legacyMockPattern = regexp.MustCompile(`^MOCK-([A-Z0-9]+(?:-[A-Z0-9]+)*)-([A-F0-9]{12})$`)
 var sequentialMockPattern = regexp.MustCompile(`^MOCK-([A-Z0-9]+(?:-[A-Z0-9]+)*)-([1-9][0-9]*)$`)
-var legacyMockFixturePattern = regexp.MustCompile(`MOCK-[A-Z0-9]+(?:-[A-Z0-9]+)*-[A-F0-9]{12}`)
 var mockTokenPattern = regexp.MustCompile(`MOCK-[A-Za-z0-9_-]+`)
 
 var credentialFieldNames = map[string]struct{}{
@@ -501,9 +499,6 @@ func (r *fixtureRedactor) mockValue(field, value string) string {
 	if value == "[REDACTED]" {
 		return value
 	}
-	if parts := legacyMockPattern.FindStringSubmatch(value); len(parts) == 3 {
-		return r.sequentialMock(strings.ToUpper(parts[1]), "legacy\x00"+value)
-	}
 	if parts := sequentialMockPattern.FindStringSubmatch(value); len(parts) == 3 {
 		kind := strings.ToUpper(parts[1])
 		sequence, err := strconv.Atoi(parts[2])
@@ -513,8 +508,7 @@ func (r *fixtureRedactor) mockValue(field, value string) string {
 		return value
 	}
 	if strings.HasPrefix(value, "MOCK-") {
-		kind := mockKind(field, "")
-		return r.sequentialMock(kind, kind+"\x00"+value)
+		return value
 	}
 	kind := mockKind(field, value)
 	return r.sequentialMock(kind, kind+"\x00"+value)
@@ -951,9 +945,6 @@ func ValidateFixtureBytes(path string, data []byte, secrets ...string) error {
 		if secret != "" && bytes.Contains(data, []byte(secret)) {
 			return fmt.Errorf("%s contains a known secret", path)
 		}
-	}
-	if legacy := legacyMockFixturePattern.Find(data); legacy != nil {
-		return fmt.Errorf("%s contains legacy hashed mock identifier %q", path, legacy)
 	}
 	for _, mock := range mockTokenPattern.FindAll(data, -1) {
 		if !sequentialMockPattern.Match(mock) {

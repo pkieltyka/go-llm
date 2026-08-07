@@ -11,6 +11,8 @@ Run the same commands after any fixture or model snapshot refresh:
 go version
 go mod tidy
 go mod verify
+pnpm --dir scripts install --frozen-lockfile
+pnpm --dir scripts test
 test -z "$(gofmt -l $(git ls-files '*.go'))"
 git diff --check
 go vet ./...
@@ -23,6 +25,10 @@ go test -shuffle=on -count=10 ./...
 go test -count=1 -tags=live -run '^TestLiveRunnerManifests$' ./internal/e2e
 go test -count=1 -tags=live -run '^$' ./...
 go run golang.org/x/vuln/cmd/govulncheck@v1.5.0 ./...
+make build
+test -x bin/llm-cli
+./bin/llm-cli --help >/dev/null
+./bin/llm-cli --version >/dev/null
 go test -count=1 ./internal/e2e -run '^TestRecordedFixturesAreRedacted$'
 gitleaks detect --source . --no-git --redact --no-banner
 gitleaks detect --source . --redact --no-banner
@@ -33,6 +39,10 @@ from the ignored local `gollm-test.json` by their no-git fingerprints. Git
 history findings include a commit hash in the fingerprint, so committing that
 file still fails the history scan. Keep the credential file at mode `0600`;
 update the narrow fingerprints only when its line layout changes.
+
+CI also runs the frozen snapshot fixture suite and the CLI smoke gate. Every
+external `uses:` entry in `.github/workflows` uses an explicit release tag;
+review and advance those tags deliberately when new releases are available.
 
 ## Credentials
 
@@ -67,6 +77,13 @@ positive prompt-cache evidence where claimed, model listing, and
 cross-provider canonical-history handoff. vLLM resolves the configured model
 preference against `/v1/models`, so a preference such as `qwen` can select a
 deployment-qualified Qwen model.
+
+When OpenRouter's cache-aware role-tool wire shape changes, also run and retain
+the focused acceptance evidence:
+
+```sh
+go test -count=1 -tags=live -v -run '^TestLiveOpenRouterToolResultCache$' ./internal/e2e
+```
 
 Missing credentials may skip; rejected configured credentials may not. Keep
 the complete verbose output as release evidence.
@@ -104,8 +121,10 @@ pnpm --dir scripts test
 
 The script validates the models.dev object-map and OpenRouter `data[]`
 sources, provider presence and minimum counts, positive limits, nonnegative
-pricing, identity loss, and material metadata loss. It merges deterministically
-without replacing known values with `undefined`, writes `models.json`
+base/tier pricing, reasoning-effort metadata, identity loss, and material
+metadata loss. The embedded parser additionally rejects unknown fields,
+duplicates, ordering drift, invalid timestamps, and trailing documents. It
+merges deterministically without replacing known values with `undefined`, writes `models.json`
 atomically, and refuses destructive changes unless `--allow-destructive` is
 explicitly supplied after review. ZAI is not in the current snapshot provider
 set.

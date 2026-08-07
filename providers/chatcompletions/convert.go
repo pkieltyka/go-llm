@@ -231,18 +231,42 @@ func (p *Provider) buildToolMessages(message llm.Message) ([]sdk.ChatCompletionM
 		if !ok {
 			return nil, fmt.Errorf("%w: %s tool messages must contain ToolResultPart", llm.ErrBadRequest, p.Name())
 		}
-		// The chat-completions wire genuinely accepts only string content for
-		// role:"tool" messages, so images/files in tool results stay
-		// ErrUnsupported here — unlike the Responses adapter, which maps them
-		// to its content-array output form.
-		text, err := providerutil.ToolResultText(result, p.Name())
+		content, err := p.toolResultContent(result)
 		if err != nil {
 			return nil, err
 		}
-		msg := jsonObject{"role": "tool", "tool_call_id": result.ToolCallID, "content": text}
+		msg := jsonObject{"role": "tool", "tool_call_id": result.ToolCallID, "content": content}
 		messages = append(messages, sdkparam.Override[sdk.ChatCompletionMessageParamUnion](msg))
 	}
 	return messages, nil
+}
+
+func (p *Provider) toolResultContent(result llm.ToolResultPart) (any, error) {
+	if !p.compat.ToolMessageContentBlocks || !toolResultHasCacheHint(result) {
+		return providerutil.ToolResultText(result, p.Name())
+	}
+
+	content := make([]any, 0, len(result.Content))
+	for _, nested := range result.Content {
+		switch part := providerutil.DerefPart(nested).(type) {
+		case llm.TextPart:
+			content = append(content, textBlock(part.Text, part.Cache))
+		case llm.UnknownPart:
+			continue
+		default:
+			return nil, fmt.Errorf("%w: %s tool result cannot send part %T", llm.ErrUnsupported, p.Name(), nested)
+		}
+	}
+	return content, nil
+}
+
+func toolResultHasCacheHint(result llm.ToolResultPart) bool {
+	for _, nested := range result.Content {
+		if part, ok := providerutil.DerefPart(nested).(llm.TextPart); ok && part.Cache != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *Provider) inputBlocks(part llm.Part) ([]any, error) {
@@ -269,10 +293,8 @@ func textBlock(text string, cache *llm.CacheHint) jsonObject {
 
 // cacheControlValue maps the unified CacheHint onto the Anthropic-style
 // cache_control block that OpenRouter forwards upstream (FS §15). The
-// passthrough accepts Anthropic's optional TTL — cross-checked against pi's
-// openai-completions cacheControl, which sends {"type":"ephemeral",
-// "ttl":"1h"} through OpenRouter for long retention — so, mirroring the
-// anthropic adapter's mapping, hints above five minutes request the one-hour
+// passthrough accepts Anthropic's optional TTL, so, mirroring the Anthropic
+// adapter's mapping, hints above five minutes request the one-hour
 // tier and anything else relies on the upstream default (5m); no hint data
 // is silently dropped.
 func cacheControlValue(cache *llm.CacheHint) map[string]any {

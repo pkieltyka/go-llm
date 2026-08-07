@@ -12,13 +12,14 @@ import (
 )
 
 type streamState struct {
-	provider *Provider
-	model    string
-	usage    llm.Usage
-	tools    map[int]*streamToolCall
-	thinking map[int]*streamThinkingBlock
-	seenIDs  map[string]struct{}
-	terminal llm.MessageEnd
+	provider        *Provider
+	model           string
+	usage           llm.Usage
+	tools           map[int]*streamToolCall
+	thinking        map[int]*streamThinkingBlock
+	seenIDs         map[string]struct{}
+	terminal        llm.MessageEnd
+	sawTerminalStop bool
 }
 
 type streamToolCall struct {
@@ -64,13 +65,26 @@ func (s *streamState) mapEvent(event sdk.MessageStreamEventUnion) ([]llm.Event, 
 	case "message_delta":
 		usage := s.provider.mergeStreamUsage(s.model, s.usage, event.Usage)
 		s.usage = usage
-		s.terminal = llm.MessageEnd{
-			StopReason:    mapStopReason(string(event.Delta.StopReason)),
-			StopReasonRaw: string(event.Delta.StopReason),
-			Usage:         usage,
+		rawStop := string(event.Delta.StopReason)
+		if rawStop != "" {
+			s.sawTerminalStop = true
+			s.terminal = llm.MessageEnd{
+				StopReason:    mapStopReason(rawStop),
+				StopReasonRaw: rawStop,
+				Usage:         usage,
+			}
+		} else {
+			s.terminal.Usage = usage
 		}
 		return nil, nil
 	case "message_stop":
+		if !s.sawTerminalStop {
+			return nil, &llm.ProviderError{
+				Provider: providerName,
+				Message:  "provider emitted message_stop without a stop reason",
+				Kind:     llm.ErrServer,
+			}
+		}
 		end := s.terminal
 		end.Usage = s.usage
 		events, err := s.finalizeOpenBlocks()

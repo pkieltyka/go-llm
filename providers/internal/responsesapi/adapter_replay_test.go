@@ -96,6 +96,66 @@ func TestBuildParamsRichRequest(t *testing.T) {
 	}
 }
 
+func TestBuildParamsNormalizesPromptCacheKey(t *testing.T) {
+	adapter := replayAdapter()
+	tests := []struct {
+		name string
+		key  string
+		want string
+	}{
+		{name: "empty", key: "", want: ""},
+		{name: "63 runes", key: strings.Repeat("a", 63), want: strings.Repeat("a", 63)},
+		{name: "64 runes", key: strings.Repeat("a", 64), want: strings.Repeat("a", 64)},
+		{name: "65 runes", key: strings.Repeat("a", 65), want: strings.Repeat("a", 47) + "-635361c48bb9eab1"},
+		{name: "multibyte", key: strings.Repeat("界", 65), want: strings.Repeat("界", 47) + "-5de5f7651837784a"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			params, err := adapter.BuildParams(&llm.Request{
+				Model: "replay-model", SessionID: tt.key, Messages: []llm.Message{llm.UserText("hi")},
+			}, false)
+			if err != nil {
+				t.Fatalf("BuildParams returned error: %v", err)
+			}
+			wire := marshalWire(t, params)
+			if tt.want == "" {
+				if strings.Contains(wire, `"prompt_cache_key"`) {
+					t.Fatalf("empty key unexpectedly emitted: %s", wire)
+				}
+				return
+			}
+			if !strings.Contains(wire, `"prompt_cache_key":"`+tt.want+`"`) {
+				t.Fatalf("wire = %s, want prompt_cache_key %q", wire, tt.want)
+			}
+			if got := []rune(tt.want); len(got) > 64 {
+				t.Fatalf("normalized key has %d runes, want at most 64", len(got))
+			}
+		})
+	}
+}
+
+func TestBuildParamsPromptCacheKeyIsDeterministicAndDistinguishesSuffixes(t *testing.T) {
+	adapter := replayAdapter()
+	build := func(key string) string {
+		t.Helper()
+		params, err := adapter.BuildParams(&llm.Request{
+			Model: "replay-model", SessionID: key, Messages: []llm.Message{llm.UserText("hi")},
+		}, false)
+		if err != nil {
+			t.Fatalf("BuildParams returned error: %v", err)
+		}
+		return marshalWire(t, params)
+	}
+	first := strings.Repeat("x", 64) + "first"
+	second := strings.Repeat("x", 64) + "second"
+	if got, again := build(first), build(first); got != again {
+		t.Fatalf("same key produced different wire values:\n%s\n%s", got, again)
+	}
+	if got, other := build(first), build(second); got == other {
+		t.Fatalf("keys with a common prefix produced identical wire values: %s", got)
+	}
+}
+
 func TestBuildParamsEffortAndToolChoiceModes(t *testing.T) {
 	adapter := replayAdapter()
 	for effort, want := range map[llm.Effort]string{

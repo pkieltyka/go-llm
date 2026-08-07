@@ -48,17 +48,6 @@ const (
 	ServiceTierPriority ServiceTier = "priority"
 )
 
-// PromptCacheRetention selects how long OpenAI retains prompt cache entries.
-// OpenAI has deprecated the underlying field in favor of prompt_cache_options
-// (see PromptCacheOptions); the two have different semantics and are mutually
-// exclusive on a request.
-type PromptCacheRetention string
-
-const (
-	PromptCacheRetentionInMemory PromptCacheRetention = "in_memory"
-	PromptCacheRetention24h      PromptCacheRetention = "24h"
-)
-
 // PromptCacheMode controls whether OpenAI creates an implicit prompt-cache
 // breakpoint. With implicit (OpenAI's default), one implicit breakpoint is
 // created and up to the latest three explicit breakpoints are written; with
@@ -81,8 +70,6 @@ const PromptCacheTTL30m PromptCacheTTL = "30m"
 // PromptCacheOptions configures prompt_cache_options (documented for
 // gpt-5.6-and-later models; the server owns model acceptance, so no
 // client-side model gate is applied). TTL expresses a MINIMUM cache
-// lifetime — a different semantic from the deprecated PromptCacheRetention,
-// so the two are mutually exclusive and never translated into one another.
 // At least one field must be set; zero-value fields are omitted from the
 // wire and OpenAI applies its defaults (implicit, 30m).
 type PromptCacheOptions struct {
@@ -130,11 +117,8 @@ type Options struct {
 	ServiceTier ServiceTier
 	// SafetyIdentifier is a stable, preferably hashed end-user identifier.
 	SafetyIdentifier string
-	// PromptCacheRetention controls extended prompt-cache retention.
-	// Deprecated upstream; mutually exclusive with PromptCacheOptions.
-	PromptCacheRetention PromptCacheRetention
 	// PromptCacheOptions configures prompt-cache mode and minimum TTL
-	// (gpt-5.6+). Mutually exclusive with PromptCacheRetention.
+	// (gpt-5.6+).
 	PromptCacheOptions *PromptCacheOptions
 }
 
@@ -199,13 +183,7 @@ func applyOptions(options *Options, params *responses.ResponseNewParams) error {
 	if options.SafetyIdentifier != "" {
 		params.SafetyIdentifier = sdk.String(options.SafetyIdentifier)
 	}
-	if options.PromptCacheRetention != "" {
-		params.PromptCacheRetention = responses.ResponseNewParamsPromptCacheRetention(options.PromptCacheRetention)
-	}
 	if options.PromptCacheOptions != nil {
-		if options.PromptCacheRetention != "" {
-			return fmt.Errorf("%w: OpenAI PromptCacheRetention and PromptCacheOptions are mutually exclusive (retention is deprecated upstream; TTL is a minimum lifetime, not a retention period)", llm.ErrBadRequest)
-		}
 		cache := *options.PromptCacheOptions
 		if cache == (PromptCacheOptions{}) {
 			return fmt.Errorf("%w: OpenAI PromptCacheOptions requires Mode and/or TTL", llm.ErrBadRequest)

@@ -5,11 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"iter"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/openai/openai-go/v3/packages/ssestream"
 	"github.com/openai/openai-go/v3/responses"
@@ -18,32 +16,21 @@ import (
 	"github.com/pkieltyka/go-llm/providers/internal/providerutil"
 )
 
-const (
-	// defaultTransportMaxRetries matches the OpenAI SDK's default of two
-	// additional attempts. WithMaxRetries overrides it.
-	defaultTransportMaxRetries = 2
-	transportRetryBaseDelay    = 500 * time.Millisecond
-	transportRetryMaxDelay     = 30 * time.Second
-)
+// defaultTransportMaxRetries matches the OpenAI SDK's default of two
+// additional attempts. WithMaxRetries overrides it.
+const defaultTransportMaxRetries = 2
 
 type codexTransport struct {
-	endpoint     string
-	httpClient   *http.Client
-	source       *provideroauth.Source
-	originator   string
-	headerFunc   func(*http.Request)
-	authFunc     provideroauth.ApplyHeadersFunc
-	providerName string
-	maxRetries   int
-	// sleep overrides retry backoff waiting in tests; nil uses a real timer.
-	sleep func(context.Context, time.Duration) error
+	endpoint   string
+	httpClient *http.Client
+	source     *provideroauth.Source
+	originator string
+	headerFunc func(*http.Request)
+	authFunc   provideroauth.ApplyHeadersFunc
 }
 
-// postStream issues the streaming request with bounded, billing-safe retries.
-// Only 429/503/529 rejections are retried: those statuses mean the request
-// was never accepted, so a retry cannot double-bill. The retry decision is
-// made purely on the response status line — a 2xx response is returned
-// untouched before any stream bytes are consumed, and is never retried.
+// postStream issues a streaming request. The configured shared HTTP transport
+// owns all retry classification and bounds before any stream bytes are read.
 func (t codexTransport) postStream(ctx context.Context, body []byte, lite bool) (*http.Response, error) {
 	if strings.TrimSpace(t.endpoint) == "" {
 		return nil, fmt.Errorf("%w: missing OpenAI Codex endpoint", llm.ErrBadRequest)
@@ -51,26 +38,7 @@ func (t codexTransport) postStream(ctx context.Context, body []byte, lite bool) 
 	if t.source == nil {
 		return nil, fmt.Errorf("%w: missing OpenAI Codex OAuth source", llm.ErrAuth)
 	}
-	for attempt := 0; ; attempt++ {
-		resp, err := t.doAttempt(ctx, body, lite)
-		if err != nil {
-			return nil, err
-		}
-		if resp == nil || attempt >= t.maxRetries || !retryableCodexStatus(resp.StatusCode) {
-			return resp, nil
-		}
-		delay := llm.RetryAfter(resp)
-		drainAndClose(resp.Body)
-		if delay <= 0 {
-			delay = transportRetryBaseDelay << attempt
-		}
-		if delay > transportRetryMaxDelay {
-			delay = transportRetryMaxDelay
-		}
-		if err := t.wait(ctx, delay); err != nil {
-			return nil, err
-		}
-	}
+	return t.doAttempt(ctx, body, lite)
 }
 
 func (t codexTransport) doAttempt(ctx context.Context, body []byte, lite bool) (*http.Response, error) {
@@ -89,45 +57,6 @@ func (t codexTransport) doAttempt(ctx context.Context, body []byte, lite bool) (
 		client = llm.DefaultHTTPClient()
 	}
 	return provideroauth.DoWithAuthRetry(req, client.Do, t.source, t.applyAuth)
-}
-
-// retryableCodexStatus reports whether a status is safe to retry: the codex
-// backend rejected the request before doing any work (rate limit or
-// overload), so no tokens were billed and no stream was started.
-func retryableCodexStatus(status int) bool {
-	switch status {
-	case http.StatusTooManyRequests, http.StatusServiceUnavailable, 529:
-		return true
-	default:
-		return false
-	}
-}
-
-func (t codexTransport) wait(ctx context.Context, d time.Duration) error {
-	if t.sleep != nil {
-		return t.sleep(ctx, d)
-	}
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
-}
-
-// drainAndClose releases the connection for reuse before a retry. Unlike the
-// unlimited twin in providers/internal/provideroauth (which drains small
-// token-endpoint error envelopes), this one caps the drain at 1MB: the bodies
-// discarded here are rejected streaming responses that could be arbitrarily
-// large. The difference is intentional.
-func drainAndClose(body io.ReadCloser) {
-	if body == nil {
-		return
-	}
-	_, _ = io.Copy(io.Discard, io.LimitReader(body, 1<<20))
-	_ = body.Close()
 }
 
 func (t codexTransport) applyHeaders(req *http.Request) {
@@ -153,10 +82,9 @@ func (t codexTransport) applyAuth(req *http.Request, cred llm.AuthCredential) {
 //
 // Dropped fields (keep this list in sync with the godoc on New):
 //   - max_output_tokens — the subscription backend controls the output
-//     budget itself; pi's openai-codex-responses.ts never sends it.
-//   - top_p — not part of pi's codex request surface.
-//   - temperature — pi's request builder forwards it when a caller sets it,
-//     but the live backend hard-rejects it (400 "Unsupported parameter:
+//     budget itself.
+//   - top_p — not part of the subscription backend request surface.
+//   - temperature — the live backend hard-rejects it (400 "Unsupported parameter:
 //     temperature" observed 2026-07-03 against the pinned gpt-5.x models),
 //     so it is dropped rather than failing every tuned request.
 func codexStreamingBody(params responses.ResponseNewParams) ([]byte, error) {

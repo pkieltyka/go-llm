@@ -528,16 +528,6 @@ func TestFixtureRejectsForgedMockTokens(t *testing.T) {
 	if err := ValidateFixtureBytes("sequential-mock", fixture(`{"request_id":"MOCK-REQ-1"}`)); err != nil {
 		t.Fatalf("canonical sequential placeholder was rejected: %v", err)
 	}
-	redacted := RedactCapture(llm.WireCapture{
-		Provider:     "test",
-		Method:       http.MethodPost,
-		URL:          "https://api.example.test/chat",
-		Status:       http.StatusOK,
-		ResponseBody: []byte(`{"request_id":"MOCK-random-token-with-hyphens"}`),
-	})
-	if strings.Contains(redacted.ResponseBody, "random-token") || !strings.Contains(redacted.ResponseBody, "MOCK-REQUEST-ID-1") {
-		t.Fatalf("forged mock was not migrated: %s", redacted.ResponseBody)
-	}
 }
 
 func TestRedactCaptureRedactsPercentEncodedURLPathSecret(t *testing.T) {
@@ -597,35 +587,6 @@ func TestRedactCaptureAssignsMocksDeterministicallyAcrossMaps(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("deterministic redaction %q missing %q", got, want)
 		}
-	}
-}
-
-func TestRedactRecordedExchangeMigratesLegacyMockIDsSequentially(t *testing.T) {
-	redactor := newFixtureRedactor()
-	exchange := RecordedExchange{
-		Provider: "test",
-		Method:   http.MethodPost,
-		URL:      "https://api.example.test/chat?request_id=MOCK-REQ-ABCDEF012345",
-		Status:   http.StatusOK,
-		ResponseBody: `{"id":"MOCK-CHATCMPL-111111AAAAAA","response_id":"MOCK-CHATCMPL-111111AAAAAA",` +
-			`"item_id":"MOCK-CHATCMPL-222222BBBBBB"}`,
-	}
-	got := redactor.redactExchange(exchange)
-	joined := got.URL + "\n" + got.ResponseBody
-	for _, want := range []string{"MOCK-REQ-1", "MOCK-CHATCMPL-1", "MOCK-CHATCMPL-2"} {
-		if !strings.Contains(joined, want) {
-			t.Fatalf("migrated exchange missing %q: %s", want, joined)
-		}
-	}
-	if strings.Contains(joined, "ABCDEF012345") || strings.Contains(joined, "111111AAAAAA") || strings.Contains(joined, "222222BBBBBB") {
-		t.Fatalf("legacy mock hash survived migration: %s", joined)
-	}
-	if strings.Count(joined, "MOCK-CHATCMPL-1") != 2 {
-		t.Fatalf("legacy correlation was not preserved: %s", joined)
-	}
-	idempotent := newFixtureRedactor().redactExchange(got)
-	if idempotent.URL != got.URL || idempotent.ResponseBody != got.ResponseBody {
-		t.Fatalf("sequential migration was not idempotent:\nfirst: %+v\nsecond: %+v", got, idempotent)
 	}
 }
 

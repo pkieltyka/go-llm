@@ -33,6 +33,16 @@ func TestOpenAIConformance(t *testing.T) {
 					return
 				case llmtest.ConformanceTruncated:
 					return
+				case llmtest.ConformanceTools:
+					_, _ = io.WriteString(w, `event: response.output_item.added`+"\n")
+					_, _ = io.WriteString(w, `data: {"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_conformance","name":"conformance_echo","arguments":"","status":"in_progress"}}`+"\n\n")
+					_, _ = io.WriteString(w, `event: response.function_call_arguments.delta`+"\n")
+					_, _ = io.WriteString(w, `data: {"type":"response.function_call_arguments.delta","sequence_number":2,"item_id":"fc_1","output_index":0,"delta":"{\"value\":\"pong\"}"}`+"\n\n")
+					_, _ = io.WriteString(w, `event: response.output_item.done`+"\n")
+					_, _ = io.WriteString(w, `data: {"type":"response.output_item.done","sequence_number":3,"output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_conformance","name":"conformance_echo","arguments":"{\"value\":\"pong\"}","status":"completed"}}`+"\n\n")
+					_, _ = io.WriteString(w, `event: response.completed`+"\n")
+					_, _ = io.WriteString(w, `data: {"type":"response.completed","sequence_number":4,"response":{"id":"resp_1","model":"gpt-test","status":"completed","output":[{"id":"fc_1","type":"function_call","call_id":"call_conformance","name":"conformance_echo","arguments":"{\"value\":\"pong\"}","status":"completed"}],"usage":{"input_tokens":1,"input_tokens_details":{"cached_tokens":0},"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":2}}}`+"\n\n")
+					return
 				}
 				_, _ = io.WriteString(w, `event: response.output_text.delta`+"\n")
 				_, _ = io.WriteString(w, `data: {"type":"response.output_text.delta","sequence_number":1,"item_id":"msg_1","output_index":0,"content_index":0,"delta":"pong","logprobs":[]}`+"\n\n")
@@ -40,7 +50,15 @@ func TestOpenAIConformance(t *testing.T) {
 				_, _ = io.WriteString(w, `data: {"type":"response.completed","sequence_number":2,"response":{"id":"resp_1","model":"gpt-test","status":"completed","output":[{"id":"msg_1","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"pong","annotations":[]}]}],"usage":{"input_tokens":1,"input_tokens_details":{"cached_tokens":0},"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":2}}}`+"\n\n")
 				return
 			}
+			if scenario == llmtest.ConformanceCancel {
+				<-r.Context().Done()
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
+			if scenario == llmtest.ConformanceTools {
+				_, _ = io.WriteString(w, `{"id":"resp_1","model":"gpt-test","status":"completed","output":[{"id":"fc_1","type":"function_call","call_id":"call_conformance","name":"conformance_echo","arguments":"{\"value\":\"pong\"}","status":"completed"}],"usage":{"input_tokens":1,"input_tokens_details":{"cached_tokens":0},"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":2}}`)
+				return
+			}
 			_, _ = io.WriteString(w, `{"id":"resp_1","model":"gpt-test","status":"completed","output":[{"id":"msg_1","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"pong","annotations":[]}]}],"usage":{"input_tokens":1,"input_tokens_details":{"cached_tokens":0},"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":2}}`)
 		}))
 		t.Cleanup(server.Close)

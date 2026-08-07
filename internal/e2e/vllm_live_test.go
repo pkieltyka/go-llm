@@ -23,9 +23,9 @@ import (
 // with --enable-auto-tool-choice and a reasoning parser, serving a
 // thinking-by-default model (Qwen3.6): unset Effort defaults to none via
 // go-llm middleware so terse scenarios stay within their token budgets, and
-// — a live finding on vLLM 0.24.0 — constrained tool choice (named/required/
-// strict) 500s while thinking is enabled, so the same default keeps the tool
-// scenarios on the working path. Reasoning scenarios set Effort explicitly.
+// constrained tool choice and structured outputs are exercised with thinking
+// disabled unless the scenario explicitly tests reasoning. Reasoning
+// scenarios set Effort explicitly.
 func TestLiveVLLM(t *testing.T) {
 	root, err := RepoRoot(".")
 	if err != nil {
@@ -379,10 +379,9 @@ func liveVLLMTokenizeScenario(ctx context.Context, t *testing.T, p *vllmProvider
 }
 
 // liveVLLMStructuredChoiceScenario constrains decoding to a fixed choice set
-// via the native structured_outputs param. Effort is pinned to none: the
-// live finding on this host (0.23/0.24-family, qwen3 reasoning parser) is
-// that constraint modes corrupt output while thinking is active (a choice
-// probe returned "greengreen"), while thinking-off returns an exact member.
+// via the native structured_outputs param. Effort is pinned to none so the
+// constraint applies only to the visible answer; constraining reasoning
+// requires --structured-outputs-config.enable_in_reasoning=True server-side.
 func liveVLLMStructuredChoiceScenario(ctx context.Context, t *testing.T, p llm.Provider, model string) {
 	t.Helper()
 	choices := []string{"red", "green", "blue"}

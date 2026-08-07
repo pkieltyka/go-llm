@@ -105,12 +105,11 @@ func (p *Provider) partsFromChoice(root jsonObject, choice rawChoice) ([]llm.Par
 // defaultParts is the standard chat-completions message mapping used when a
 // dialect's ExtractParts defers (returns nil, nil, nil). ReasoningPart.Raw
 // holds the wire reasoning_details ARRAY verbatim, tagged with the dialect's
-// provider name for same-provider replay. Reasoning text tolerates both the
-// current `reasoning` and legacy `reasoning_content` field spellings.
+// provider name for same-provider replay.
 func defaultParts(provider string, message rawMessage) ([]llm.Part, []llm.DroppedToolCall, error) {
 	var parts []llm.Part
-	if reasoning := message.reasoningText(); reasoning != "" || len(message.ReasoningDetails) > 0 {
-		parts = append(parts, llm.ReasoningPart{Text: reasoning, Raw: append([]byte(nil), message.ReasoningDetails...), Provider: provider})
+	if message.Reasoning != "" || len(message.ReasoningDetails) > 0 {
+		parts = append(parts, llm.ReasoningPart{Text: message.Reasoning, Raw: append([]byte(nil), message.ReasoningDetails...), Provider: provider})
 	}
 	if message.Content != "" {
 		parts = append(parts, llm.Text(message.Content))

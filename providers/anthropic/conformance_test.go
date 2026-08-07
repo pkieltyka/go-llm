@@ -37,6 +37,26 @@ func TestAnthropicConformance(t *testing.T) {
 				case llmtest.ConformanceTruncated:
 					_, _ = io.WriteString(w, start)
 					return
+				case llmtest.ConformanceTools:
+					_, _ = io.WriteString(w, start+strings.Join([]string{
+						`event: content_block_start`,
+						`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_conformance","name":"conformance_echo","input":{}}}`,
+						``,
+						`event: content_block_delta`,
+						`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"value\":\"pong\"}"}}`,
+						``,
+						`event: content_block_stop`,
+						`data: {"type":"content_block_stop","index":0}`,
+						``,
+						`event: message_delta`,
+						`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":1}}`,
+						``,
+						`event: message_stop`,
+						`data: {"type":"message_stop"}`,
+						``,
+						``,
+					}, "\n"))
+					return
 				}
 				_, _ = io.WriteString(w, start+strings.Join([]string{
 					`event: content_block_start`,
@@ -58,7 +78,15 @@ func TestAnthropicConformance(t *testing.T) {
 				}, "\n"))
 				return
 			}
+			if scenario == llmtest.ConformanceCancel {
+				<-r.Context().Done()
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
+			if scenario == llmtest.ConformanceTools {
+				_, _ = io.WriteString(w, `{"id":"msg_1","type":"message","role":"assistant","model":"claude-test","content":[{"type":"tool_use","id":"call_conformance","name":"conformance_echo","input":{"value":"pong"}}],"stop_reason":"tool_use","usage":{"input_tokens":1,"output_tokens":1}}`)
+				return
+			}
 			_, _ = io.WriteString(w, `{"id":"msg_1","type":"message","role":"assistant","model":"claude-test","content":[{"type":"text","text":"pong"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
 		}))
 		t.Cleanup(server.Close)

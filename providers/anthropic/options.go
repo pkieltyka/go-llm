@@ -46,6 +46,7 @@ type config struct {
 	baseURL          string
 	httpClient       *http.Client
 	maxRetries       *int
+	responseRetries  bool
 	timeout          time.Duration
 	priceTable       llm.PriceTable
 	logger           *slog.Logger
@@ -107,9 +108,18 @@ func WithHTTPClient(client *http.Client) Option {
 	return func(c *config) { c.httpClient = client }
 }
 
-// WithMaxRetries delegates retry count to the Anthropic SDK.
+// WithMaxRetries bounds automatic transport retries and, when enabled by
+// WithResponseRetries, response retries. Default: 2 additional attempts.
 func WithMaxRetries(n int) Option {
 	return func(c *config) { c.maxRetries = &n }
+}
+
+// WithResponseRetries enables or disables retries of explicit 429/503/529
+// responses. They are disabled by default because model requests are not
+// idempotent. Typed failures proven to occur before request bytes were sent
+// may still be retried within the WithMaxRetries bound.
+func WithResponseRetries(enabled bool) Option {
+	return func(c *config) { c.responseRetries = enabled }
 }
 
 // WithTimeout applies a context deadline to provider calls.
@@ -165,11 +175,19 @@ func (c config) validate() error {
 }
 
 func (c config) sdkOptions(source *provideroauth.Source) []sdkoption.RequestOption {
-	client := providerutil.ObservedHTTPClient(c.httpClient, providerName, c.logger, c.wireCapture)
+	maxRetries := 2
+	if c.maxRetries != nil {
+		maxRetries = *c.maxRetries
+	}
+	observed := providerutil.ObservedHTTPClient(c.httpClient, providerName, c.logger, c.wireCapture)
+	client := providerutil.SafeRetryHTTPClient(observed, maxRetries, c.responseRetries)
 
 	opts := []sdkoption.RequestOption{
 		sdkoption.WithoutEnvironmentDefaults(),
 		sdkoption.WithHTTPClient(client),
+		// The shared transport owns retry classification. Leaving SDK retries on
+		// would replay ambiguous no-response errors and stack a second loop.
+		sdkoption.WithMaxRetries(0),
 	}
 	if c.baseURL != "" {
 		opts = append(opts, sdkoption.WithBaseURL(c.baseURL))
@@ -193,9 +211,6 @@ func (c config) sdkOptions(source *provideroauth.Source) []sdkoption.RequestOpti
 		}))
 	} else {
 		opts = append(opts, sdkoption.WithAPIKey(c.apiKey))
-	}
-	if c.maxRetries != nil {
-		opts = append(opts, sdkoption.WithMaxRetries(*c.maxRetries))
 	}
 	return opts
 }

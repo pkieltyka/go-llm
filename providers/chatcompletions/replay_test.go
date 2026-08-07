@@ -27,6 +27,13 @@ import (
 type replayDialect struct{}
 
 type choiceExtrasDialect struct{ replayDialect }
+type inferMissingFinishDialect struct{ replayDialect }
+
+func (inferMissingFinishDialect) Compat() chatcompletions.Compat {
+	compat := replayDialect{}.Compat()
+	compat.InferMissingFinishReason = true
+	return compat
+}
 
 func (choiceExtrasDialect) ExtractExtras(_ chatcompletions.JSONObject, choice chatcompletions.RawChoice) any {
 	return choice.Raw
@@ -284,6 +291,70 @@ func TestStreamTruncatedEOFPreservesPartialResponse(t *testing.T) {
 		t.Fatalf("Collect error = %v, want ErrServer", err)
 	}
 	if resp == nil || resp.Text() != "partial" {
+		t.Fatalf("partial response = %+v", resp)
+	}
+}
+
+func TestStreamMissingFinishReasonStrictAndCompatible(t *testing.T) {
+	textChunk := `data: {"id":"c1","model":"m","choices":[{"index":0,"delta":{"content":"partial"}}]}` + "\n\n"
+	usageTail := `data: {"id":"c1","model":"m","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}` + "\n\n"
+	for _, terminator := range []struct {
+		name string
+		body string
+	}{
+		{name: "done", body: textChunk + usageTail + "data: [DONE]\n\n"},
+		{name: "eof", body: textChunk + usageTail},
+	} {
+		t.Run("strict/"+terminator.name, func(t *testing.T) {
+			p := newExchangeProvider(t, replayDialect{}, streamExchange(terminator.body))
+			resp, err := llm.Collect(p.ChatStream(context.Background(), &llm.Request{Model: "m", Messages: []llm.Message{llm.UserText("hi")}}))
+			if !errors.Is(err, llm.ErrServer) {
+				t.Fatalf("Collect error = %v, want ErrServer", err)
+			}
+			if resp == nil || resp.Text() != "partial" || resp.StopReason != "" {
+				t.Fatalf("partial response = %+v", resp)
+			}
+		})
+
+		t.Run("compatible/"+terminator.name, func(t *testing.T) {
+			p := newExchangeProvider(t, inferMissingFinishDialect{}, streamExchange(terminator.body))
+			resp, err := llm.Collect(p.ChatStream(context.Background(), &llm.Request{Model: "m", Messages: []llm.Message{llm.UserText("hi")}}))
+			if err != nil {
+				t.Fatalf("Collect returned error: %v", err)
+			}
+			if resp.Text() != "partial" || resp.StopReason != llm.StopReasonEndTurn || resp.StopReasonRaw != "" {
+				t.Fatalf("compatible response = %+v", resp)
+			}
+			if resp.Usage.TotalTokens != 2 {
+				t.Fatalf("usage-only tail was lost: %+v", resp.Usage)
+			}
+		})
+	}
+}
+
+func TestStreamMissingFinishReasonInfersToolUse(t *testing.T) {
+	body := `data: {"id":"c1","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"q\":\"go\"}"}}]}}]}` + "\n\n" +
+		"data: [DONE]\n\n"
+	p := newExchangeProvider(t, inferMissingFinishDialect{}, streamExchange(body))
+	resp, err := llm.Collect(p.ChatStream(context.Background(), &llm.Request{Model: "m", Messages: []llm.Message{llm.UserText("hi")}}))
+	if err != nil {
+		t.Fatalf("Collect returned error: %v", err)
+	}
+	calls := resp.ToolCalls()
+	if len(calls) != 1 || calls[0].ID != "call_1" || resp.StopReason != llm.StopReasonToolUse || resp.StopReasonRaw != "" {
+		t.Fatalf("compatible tool response = %+v", resp)
+	}
+}
+
+func TestStreamMissingFinishReasonCompatibilityDoesNotHideMalformedTermination(t *testing.T) {
+	body := `data: {"id":"c1","model":"m","choices":[{"index":0,"delta":{"content":"partial"}}]}` + "\n\n" +
+		"data: {\n\n"
+	p := newExchangeProvider(t, inferMissingFinishDialect{}, streamExchange(body))
+	resp, err := llm.Collect(p.ChatStream(context.Background(), &llm.Request{Model: "m", Messages: []llm.Message{llm.UserText("hi")}}))
+	if !errors.Is(err, llm.ErrServer) {
+		t.Fatalf("Collect error = %v, want ErrServer", err)
+	}
+	if resp == nil || resp.Text() != "partial" || resp.StopReason != "" {
 		t.Fatalf("partial response = %+v", resp)
 	}
 }

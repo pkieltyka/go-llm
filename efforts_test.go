@@ -11,6 +11,7 @@ func TestSupportedEffortsForModel(t *testing.T) {
 	gpt5 := []llm.Effort{llm.EffortMinimal, llm.EffortLow, llm.EffortMedium, llm.EffortHigh}
 	trio := []llm.Effort{llm.EffortLow, llm.EffortMedium, llm.EffortHigh}
 	full := []llm.Effort{llm.EffortNone, llm.EffortMinimal, llm.EffortLow, llm.EffortMedium, llm.EffortHigh, llm.EffortXHigh, llm.EffortMax}
+	aggregator := []llm.Effort{llm.EffortNone, llm.EffortLow, llm.EffortMedium, llm.EffortHigh, llm.EffortXHigh, llm.EffortMax}
 
 	cases := []struct {
 		name     string
@@ -23,7 +24,7 @@ func TestSupportedEffortsForModel(t *testing.T) {
 		{"curated codex id", "openai", "gpt-5.1-codex-max", trio},
 		{"curated o-series", "openai", "o4-mini", trio},
 		{"curated anthropic full dial", "anthropic", "claude-sonnet-4-5", full},
-		{"aggregator via canonical fallback", "openrouter", "openai/gpt-5.6-luna", gpt5},
+		{"aggregator source metadata", "openrouter", "openai/gpt-5.6-luna", aggregator},
 		{"inferred o-series absent from table", "openai", "o3-ultra", trio},
 		{"inferred with vendor slash prefix", "somegateway", "openai/o4-mega", trio},
 		{"inferred with provider colon prefix", "somegateway", "openai:gpt-5.9", gpt5},

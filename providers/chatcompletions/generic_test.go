@@ -249,42 +249,38 @@ func TestGenericNewAPIKeyFunc(t *testing.T) {
 
 // TestGenericNewCompatSniff exercises Compat.SniffMidStreamErrors through the
 // public constructor: a choice-less error data event maps to a normalized
-// in-stream error for both the flat legacy and nested shapes.
+// in-stream error.
 func TestGenericNewCompatSniff(t *testing.T) {
-	for name, payload := range map[string]string{
-		"flat":   `{"object":"error","message":"engine died","code":503}`,
-		"nested": `{"error":{"message":"engine died","type":"ServiceUnavailable","code":503}}`,
-	} {
-		t.Run(name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "text/event-stream")
-				_, _ = io.WriteString(w, `data: {"id":"c1","model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"par"},"finish_reason":null}]}`+"\n\n")
-				_, _ = io.WriteString(w, "data: "+payload+"\n\n")
-			}))
-			t.Cleanup(server.Close)
-			p, err := chatcompletions.New(server.URL,
-				chatcompletions.WithCompat(chatcompletions.Compat{SniffMidStreamErrors: true}),
-				chatcompletions.WithHTTPClient(server.Client()),
-				chatcompletions.WithMaxRetries(0),
-			)
-			if err != nil {
-				t.Fatalf("New returned error: %v", err)
-			}
-			resp, err := llm.Collect(p.ChatStream(context.Background(), &llm.Request{
-				Model:    "m",
-				Messages: []llm.Message{llm.UserText("hi")},
-			}))
-			// The status-like code 503 classifies through the canonical
-			// status table (ErrOverloaded), matching the vLLM dialect's
-			// long-standing treatment of numeric in-stream codes.
-			if !errors.Is(err, llm.ErrOverloaded) {
-				t.Fatalf("sniffed error = %v, want ErrOverloaded", err)
-			}
-			if resp == nil || resp.Text() != "par" {
-				t.Fatalf("partial response = %+v", resp)
-			}
-		})
-	}
+	payload := `{"error":{"message":"engine died","type":"ServiceUnavailable","code":503}}`
+	t.Run("nested", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, `data: {"id":"c1","model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"par"},"finish_reason":null}]}`+"\n\n")
+			_, _ = io.WriteString(w, "data: "+payload+"\n\n")
+		}))
+		t.Cleanup(server.Close)
+		p, err := chatcompletions.New(server.URL,
+			chatcompletions.WithCompat(chatcompletions.Compat{SniffMidStreamErrors: true}),
+			chatcompletions.WithHTTPClient(server.Client()),
+			chatcompletions.WithMaxRetries(0),
+		)
+		if err != nil {
+			t.Fatalf("New returned error: %v", err)
+		}
+		resp, err := llm.Collect(p.ChatStream(context.Background(), &llm.Request{
+			Model:    "m",
+			Messages: []llm.Message{llm.UserText("hi")},
+		}))
+		// The status-like code 503 classifies through the canonical
+		// status table (ErrOverloaded), matching the vLLM dialect's
+		// long-standing treatment of numeric in-stream codes.
+		if !errors.Is(err, llm.ErrOverloaded) {
+			t.Fatalf("sniffed error = %v, want ErrOverloaded", err)
+		}
+		if resp == nil || resp.Text() != "par" {
+			t.Fatalf("partial response = %+v", resp)
+		}
+	})
 }
 
 func TestGenericNewRequiresBaseURL(t *testing.T) {

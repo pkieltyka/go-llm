@@ -32,7 +32,6 @@ func (t *retryLogTransport) RoundTrip(req *http.Request) (*http.Response, error)
 		t.logger.WarnContext(req.Context(), "llm provider retryable response",
 			"provider", t.provider,
 			"status", resp.StatusCode,
-			"retry_after", retryAfterHeader(resp),
 			"retry_after_duration", RetryAfter(resp),
 			"attempt", retryAttemptOrdinal(req),
 		)
@@ -47,16 +46,6 @@ func retryLogStatus(status int) bool {
 	default:
 		return false
 	}
-}
-
-func retryAfterHeader(resp *http.Response) string {
-	if resp == nil {
-		return ""
-	}
-	if value := resp.Header.Get("Retry-After-Ms"); value != "" {
-		return value
-	}
-	return resp.Header.Get("Retry-After")
 }
 
 // RetryAfter parses provider retry-after headers into a duration.

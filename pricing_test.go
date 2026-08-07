@@ -1,6 +1,7 @@
 package llm_test
 
 import (
+	"math"
 	"sync"
 	"testing"
 
@@ -38,6 +39,85 @@ func TestLookupModelInfoFallbacks(t *testing.T) {
 	}
 	if llm.PriceTableDate() == "" {
 		t.Fatalf("PriceTableDate returned empty string")
+	}
+}
+
+func TestEstimateCostSelectsHighestStrictlyExceededPricingTier(t *testing.T) {
+	pricing := llm.ModelPricing{
+		InputPerMTok:      1,
+		OutputPerMTok:     2,
+		CacheReadPerMTok:  3,
+		CacheWritePerMTok: 4,
+		Tiers: []llm.ModelPricingTier{
+			{InputTokensAbove: 200, InputPerMTok: 20, OutputPerMTok: 21, CacheReadPerMTok: 22, CacheWritePerMTok: 23},
+			{InputTokensAbove: 100, InputPerMTok: 10, OutputPerMTok: 11, CacheReadPerMTok: 12, CacheWritePerMTok: 13},
+		},
+	}
+	for _, tt := range []struct {
+		name  string
+		usage llm.Usage
+		want  float64
+	}{
+		{
+			name:  "base",
+			usage: llm.Usage{InputTokens: 99, OutputTokens: 1_000_000},
+			want:  2.000099,
+		},
+		{
+			name:  "exact threshold stays lower",
+			usage: llm.Usage{InputTokens: 40, CacheReadTokens: 30, CacheWriteTokens: 30, OutputTokens: 1_000_000},
+			want:  2.00025,
+		},
+		{
+			name:  "cache occupancy crosses first tier",
+			usage: llm.Usage{InputTokens: 40, CacheReadTokens: 31, CacheWriteTokens: 30, OutputTokens: 1_000_000},
+			want:  11.001162,
+		},
+		{
+			name:  "highest matching unsorted tier",
+			usage: llm.Usage{InputTokens: 201, OutputTokens: 1_000_000},
+			want:  21.00402,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := llm.EstimateCost(tt.usage, pricing)
+			if got.CostUSD == nil || math.Abs(*got.CostUSD-tt.want) > 1e-12 {
+				t.Fatalf("cost = %v, want %.12f", got.CostUSD, tt.want)
+			}
+		})
+	}
+}
+
+func TestEstimateCostIgnoresInvalidCallerPricingTiers(t *testing.T) {
+	pricing := llm.ModelPricing{
+		InputPerMTok: 1,
+		Tiers: []llm.ModelPricingTier{
+			{InputTokensAbove: 100, InputPerMTok: 5},
+			{InputTokensAbove: 200, InputPerMTok: -1},
+			{InputTokensAbove: 300, InputPerMTok: math.NaN()},
+			{InputTokensAbove: 400, InputPerMTok: 9, OutputPerMTok: 9, CacheReadPerMTok: 9, CacheWritePerMTok: 9},
+		},
+	}
+	got := llm.EstimateCost(llm.Usage{InputTokens: 500}, pricing)
+	if got.CostUSD == nil || *got.CostUSD != 0.0045 {
+		t.Fatalf("cost = %v, want highest valid tier cost 0.0045", got.CostUSD)
+	}
+
+	table := llm.PriceTable{"provider/model": pricing}
+	got = llm.EstimateCostWithTable(table, "provider", "model-2026", llm.Usage{InputTokens: 500})
+	if got.CostUSD == nil || *got.CostUSD != 0.0045 {
+		t.Fatalf("table cost = %v, want 0.0045", got.CostUSD)
+	}
+
+	baseOnly := llm.EstimateCost(llm.Usage{InputTokens: 500}, llm.ModelPricing{
+		InputPerMTok: 1,
+		Tiers: []llm.ModelPricingTier{
+			{InputTokensAbove: -1, InputPerMTok: 8},
+			{InputTokensAbove: 100, InputPerMTok: math.Inf(1)},
+		},
+	})
+	if baseOnly.CostUSD == nil || *baseOnly.CostUSD != 0.0005 {
+		t.Fatalf("invalid-tier fallback cost = %v, want base cost 0.0005", baseOnly.CostUSD)
 	}
 }
 
@@ -103,10 +183,10 @@ func TestUsageContextUsage(t *testing.T) {
 	}
 }
 
-// Pins the embedded-table expectations Phase 3a relies on (no snapshot
-// regeneration): the gpt-5.6 family rows exist with cache-write rates, dated
-// snapshots resolve by prefix, and cache-write tokens cost at the
-// cache-write rate rather than the input rate.
+// Pins the embedded-table expectations Phase 3a relies on: the gpt-5.6 family
+// rows exist with cache-write rates, dated snapshots resolve by prefix, and
+// cache-write tokens cost at the selected cache-write rate rather than the
+// input rate.
 func TestEmbeddedTableGPT56CacheWritePricing(t *testing.T) {
 	info, ok := llm.LookupModelInfo("openai", "gpt-5.6")
 	if !ok || info.Pricing == nil {
@@ -125,8 +205,12 @@ func TestEmbeddedTableGPT56CacheWritePricing(t *testing.T) {
 	}
 
 	costed := llm.EstimateCost(llm.Usage{CacheWriteTokens: 1_000_000}, *info.Pricing)
-	if costed.CostUSD == nil || *costed.CostUSD != info.Pricing.CacheWritePerMTok {
-		t.Fatalf("cache-write-only cost = %v, want %v", costed.CostUSD, info.Pricing.CacheWritePerMTok)
+	wantRate := info.Pricing.CacheWritePerMTok
+	if len(info.Pricing.Tiers) > 0 {
+		wantRate = info.Pricing.Tiers[len(info.Pricing.Tiers)-1].CacheWritePerMTok
+	}
+	if costed.CostUSD == nil || *costed.CostUSD != wantRate {
+		t.Fatalf("cache-write-only cost = %v, want %v", costed.CostUSD, wantRate)
 	}
 	if costed.CostSource != llm.CostSourceEstimated {
 		t.Fatalf("cost source = %q, want estimated", costed.CostSource)

@@ -1,6 +1,7 @@
 package responsesapi
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -86,7 +87,7 @@ func (a Adapter) buildParamsAfterValidation(req *llm.Request) (responses.Respons
 	// OpenAI-compatible gateways reject unknown fields with 400, so never
 	// add it to the Chat Completions engine without a provider-kind gate.
 	if req.SessionID != "" {
-		params.PromptCacheKey = sdk.String(req.SessionID)
+		params.PromptCacheKey = sdk.String(normalizePromptCacheKey(req.SessionID))
 	}
 	if len(req.Tools) > 0 {
 		params.Tools, err = buildTools(req.Tools, a.ProviderName)
@@ -118,6 +119,18 @@ func (a Adapter) buildParamsAfterValidation(req *llm.Request) (responses.Respons
 	}
 	params.Include = normalizeIncludes(params.Include, responsesRequestIsStateless(params))
 	return params, nil
+}
+
+// normalizePromptCacheKey preserves short session IDs exactly and gives long
+// IDs a stable, collision-resistant suffix while staying within the Responses
+// API's 64-character limit. The limit is defined in characters, not bytes.
+func normalizePromptCacheKey(key string) string {
+	runes := []rune(key)
+	if len(runes) <= 64 {
+		return key
+	}
+	sum := sha256.Sum256([]byte(key))
+	return string(runes[:47]) + "-" + fmt.Sprintf("%x", sum[:8])
 }
 
 func responsesRequestIsStateless(params responses.ResponseNewParams) bool {

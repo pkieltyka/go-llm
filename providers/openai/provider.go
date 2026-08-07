@@ -80,6 +80,7 @@ func (p *Provider) Models(ctx context.Context) ([]llm.ModelInfo, error) {
 			info.MaxOutputTokens = embedded.MaxOutputTokens
 			if embedded.Pricing != nil {
 				pricing := *embedded.Pricing
+				pricing.Tiers = append([]llm.ModelPricingTier(nil), embedded.Pricing.Tiers...)
 				info.Pricing = &pricing
 			}
 			info.SupportedEfforts = embedded.SupportedEfforts

@@ -48,7 +48,7 @@ func TestNewProviderSelectionAndCredentials(t *testing.T) {
 		{name: "openrouter missing key", cfg: providerConfig{name: "openrouter"}, wantErr: llm.ErrAuth},
 		// The --api-key flag doubles as the OAuth access token for the codex
 		// subscription backend (flags.go documents the overload).
-		{name: "codex api key compatibility access token", cfg: providerConfig{name: "openai-codex", apiKey: "oauth-access-token"}, wantName: "openai-codex"},
+		{name: "codex api key flag as access token", cfg: providerConfig{name: "openai-codex", apiKey: "oauth-access-token"}, wantName: "openai-codex"},
 		{name: "codex env access token", cfg: providerConfig{name: "openai-codex"}, env: map[string]string{"OPENAI_CODEX_ACCESS_TOKEN": "env-access-token"}, wantName: "openai-codex"},
 		{name: "codex missing credential", cfg: providerConfig{name: "openai-codex"}, wantErr: llm.ErrAuth},
 		{name: "zai deferred", cfg: providerConfig{name: "zai", apiKey: "key"}, wantErr: llm.ErrUnsupported},
@@ -165,7 +165,7 @@ func TestCodexAuthPrecedenceConfiguresRequests(t *testing.T) {
 	}{
 		{name: "auth file wins", authFile: authPath, envToken: "env-token", apiKey: "argv-token", wantToken: "file-token", wantAccount: "file-account"},
 		{name: "environment wins", envToken: "env-token", apiKey: "argv-token", wantToken: "env-token"},
-		{name: "api key compatibility fallback", apiKey: "argv-token", wantToken: "argv-token"},
+		{name: "api key flag supplies access token", apiKey: "argv-token", wantToken: "argv-token"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

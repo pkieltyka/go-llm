@@ -20,7 +20,7 @@ func TestProvider(t *testing.T) {
 	p := New(
 		WithName("fake"),
 		WithCapabilities(llm.CapabilityStreaming),
-		WithModels(llm.ModelInfo{ID: "model-a", Pricing: &llm.ModelPricing{InputPerMTok: 1}, Raw: map[string]any{"nested": []any{map[string]any{"value": "original"}}}}),
+		WithModels(llm.ModelInfo{ID: "model-a", Pricing: &llm.ModelPricing{InputPerMTok: 1, Tiers: []llm.ModelPricingTier{{InputTokensAbove: 100, InputPerMTok: 2}}}, Raw: map[string]any{"nested": []any{map[string]any{"value": "original"}}}}),
 	)
 	p.EnqueueResponse(&llm.Response{
 		Provider: "fake",
@@ -45,9 +45,10 @@ func TestProvider(t *testing.T) {
 		t.Fatalf("Models = %+v, %v", models, err)
 	}
 	models[0].Pricing.InputPerMTok = 99
+	models[0].Pricing.Tiers[0].InputPerMTok = 99
 	models[0].Raw.(map[string]any)["nested"].([]any)[0].(map[string]any)["value"] = "mutated"
 	models, _ = p.Models(context.Background())
-	if models[0].Pricing.InputPerMTok != 1 {
+	if models[0].Pricing.InputPerMTok != 1 || models[0].Pricing.Tiers[0].InputPerMTok != 2 {
 		t.Fatalf("Models did not return defensive pricing copy")
 	}
 	if got := models[0].Raw.(map[string]any)["nested"].([]any)[0].(map[string]any)["value"]; got != "original" {

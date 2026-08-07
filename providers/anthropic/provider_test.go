@@ -155,6 +155,24 @@ func TestAnthropicBuildRequestGolden(t *testing.T) {
 	testutil.AssertJSONEqual(t, got, want)
 }
 
+func TestAnthropicToolResultPreservesTextCacheHints(t *testing.T) {
+	blocks, err := buildContentBlocks([]llm.Part{llm.ToolResultPart{
+		ToolCallID: "call_1",
+		Content: []llm.Part{
+			llm.Text("plain"),
+			&llm.TextPart{Text: "cached", Cache: &llm.CacheHint{}},
+			llm.TextPart{Text: "long", Cache: &llm.CacheHint{TTL: time.Hour}},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("buildContentBlocks returned error: %v", err)
+	}
+	want := `[{"tool_use_id":"call_1","is_error":false,"content":[{"text":"plain","type":"text"},{"text":"cached","cache_control":{"ttl":"5m","type":"ephemeral"},"type":"text"},{"text":"long","cache_control":{"ttl":"1h","type":"ephemeral"},"type":"text"}],"type":"tool_result"}]`
+	if got := testutil.MustCompactJSON(t, blocks); got != want {
+		t.Fatalf("tool result blocks = %s, want %s", got, want)
+	}
+}
+
 func TestAnthropicRejectsSystemMessageRole(t *testing.T) {
 	p := &Provider{defaultMaxTokens: 99}
 	_, _, err := p.buildParams(&llm.Request{
@@ -404,6 +422,7 @@ func TestAnthropicStreamMessageStopFinalizesOpenReasoning(t *testing.T) {
 			`{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"think "}}`,
 			`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"more"}}`,
 			`{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig_1"}}`,
+			`{"type":"message_delta","delta":{"stop_reason":"end_turn"}}`,
 			`{"type":"message_stop"}`,
 		}
 		state := newStreamState(&Provider{})
@@ -427,6 +446,7 @@ func TestAnthropicStreamMessageStopFinalizesOpenReasoning(t *testing.T) {
 		rawEvents := []string{
 			`{"type":"message_start","message":{"id":"msg_1","model":"claude-test"}}`,
 			`{"type":"content_block_start","index":2,"content_block":` + contentRaw + `}`,
+			`{"type":"message_delta","delta":{"stop_reason":"end_turn"}}`,
 			`{"type":"message_stop"}`,
 		}
 		state := newStreamState(&Provider{})
@@ -447,6 +467,7 @@ func TestAnthropicStreamMessageStopRejectsMalformedOpenReasoning(t *testing.T) {
 		return anthropicStreamResponse(anthropicSSE(
 			`{"type":"message_start","message":{"id":"msg_1","model":"claude-test"}}`,
 			`{"type":"content_block_start","index":4,"content_block":{"type":"thinking","thinking":"partial"}}`,
+			`{"type":"message_delta","delta":{"stop_reason":"end_turn"}}`,
 			`{"type":"message_stop"}`,
 		)), nil
 	})
@@ -598,6 +619,7 @@ func TestAnthropicStreamLateToolMetadataPreservesArguments(t *testing.T) {
 	}
 	events = append(events, metadata...)
 	events = append(events, mapOneAnthropicEvent(t, state, `{"type":"content_block_stop","index":7}`)...)
+	events = append(events, mapOneAnthropicEvent(t, state, `{"type":"message_delta","delta":{"stop_reason":"tool_use"}}`)...)
 	events = append(events, mapOneAnthropicEvent(t, state, `{"type":"message_stop"}`)...)
 
 	resp, err := llm.Collect(providerutil.StreamContract(providerName, testutil.EventSeq(events...)))
@@ -651,6 +673,7 @@ func TestAnthropicStreamMalformedToolCallDropsPartialState(t *testing.T) {
 		`{"type":"content_block_start","index":5,"content_block":{"type":"tool_use","id":"bad","name":"lookup","input":{}}}`,
 		`{"type":"content_block_delta","index":5,"delta":{"type":"input_json_delta","partial_json":"{\"q\":"}}`,
 		`{"type":"content_block_stop","index":5}`,
+		`{"type":"message_delta","delta":{"stop_reason":"tool_use"}}`,
 		`{"type":"message_stop"}`,
 	}
 	state := newStreamState(&Provider{})
@@ -685,6 +708,7 @@ func TestAnthropicStreamMessageStopRescuesOpenValidToolCall(t *testing.T) {
 		`{"type":"message_start","message":{"id":"msg_1","model":"claude-test"}}`,
 		`{"type":"content_block_delta","index":9,"delta":{"type":"input_json_delta","partial_json":"{\"q\":\"go\"}"}}`,
 		`{"type":"content_block_start","index":9,"content_block":{"type":"tool_use","id":"toolu_late","name":"lookup","input":{}}}`,
+		`{"type":"message_delta","delta":{"stop_reason":"tool_use"}}`,
 		`{"type":"message_stop"}`,
 	}
 	state := newStreamState(&Provider{})
@@ -718,6 +742,7 @@ func TestAnthropicStreamMessageStopDropsOpenMalformedToolCall(t *testing.T) {
 		`{"type":"message_start","message":{"id":"msg_1","model":"claude-test"}}`,
 		`{"type":"content_block_start","index":6,"content_block":{"type":"tool_use","id":"bad","name":"lookup","input":{}}}`,
 		`{"type":"content_block_delta","index":6,"delta":{"type":"input_json_delta","partial_json":"{\"q\":"}}`,
+		`{"type":"message_delta","delta":{"stop_reason":"tool_use"}}`,
 		`{"type":"message_stop"}`,
 	}
 	state := newStreamState(&Provider{})
@@ -745,13 +770,22 @@ func TestAnthropicStreamMessageStopDropsOpenMalformedToolCall(t *testing.T) {
 	}
 }
 
-func TestAnthropicStreamMessageStopWithoutDeltaEnds(t *testing.T) {
-	resp := collectContractAnthropicStream(t, []string{
-		`{"type":"message_start","message":{"id":"msg_1","model":"claude-test","usage":{"input_tokens":3,"output_tokens":0}}}`,
-		`{"type":"message_stop"}`,
-	})
-	if resp.ID != "msg_1" || resp.Model != "claude-test" || resp.Usage.InputTokens != 3 {
-		t.Fatalf("message-stop-only response = %#v", resp)
+func TestAnthropicStreamMessageStopWithoutDeltaFails(t *testing.T) {
+	state := newStreamState(&Provider{})
+	events := mapOneAnthropicEvent(t, state, `{"type":"message_start","message":{"id":"msg_1","model":"claude-test"}}`)
+	var stop sdk.MessageStreamEventUnion
+	if err := json.Unmarshal([]byte(`{"type":"message_stop"}`), &stop); err != nil {
+		t.Fatal(err)
+	}
+	terminal, err := state.mapEvent(stop)
+	if !errors.Is(err, llm.ErrServer) {
+		t.Fatalf("message_stop error = %v, want ErrServer", err)
+	}
+	if len(terminal) != 0 {
+		t.Fatalf("message_stop events = %#v, want none", terminal)
+	}
+	if len(events) != 1 {
+		t.Fatalf("partial events = %#v, want MessageStart only", events)
 	}
 }
 
@@ -925,7 +959,7 @@ func TestAnthropicStreamProviderContractEOF(t *testing.T) {
 	}
 }
 
-func TestAnthropicStreamProviderMessageStopOnlyAndEarlyBreak(t *testing.T) {
+func TestAnthropicStreamProviderRejectsMessageStopOnlyAndAllowsEarlyBreak(t *testing.T) {
 	body := anthropicSSE(
 		`{"type":"message_start","message":{"id":"msg_1","model":"claude-test","usage":{"input_tokens":2,"output_tokens":0}}}`,
 		`{"type":"message_stop"}`,
@@ -933,32 +967,12 @@ func TestAnthropicStreamProviderMessageStopOnlyAndEarlyBreak(t *testing.T) {
 	provider := newAnthropicStreamFixtureProvider(t, func(*http.Request) (*http.Response, error) {
 		return anthropicStreamResponse(body), nil
 	})
-	var events []llm.Event
-	starts, ends := 0, 0
-	for event, err := range provider.ChatStream(context.Background(), anthropicStreamFixtureRequest()) {
-		if err != nil {
-			t.Fatalf("ChatStream returned error: %v", err)
-		}
-		events = append(events, event)
-		switch providerutil.DerefEvent(event).(type) {
-		case llm.MessageStart:
-			starts++
-		case llm.MessageEnd:
-			ends++
-		}
-	}
-	if starts != 1 || ends != 1 {
-		t.Fatalf("start/end counts = %d/%d, want 1/1", starts, ends)
-	}
-	if _, ok := providerutil.DerefEvent(events[len(events)-1]).(llm.MessageEnd); !ok {
-		t.Fatalf("last event = %T, want MessageEnd", events[len(events)-1])
-	}
-	resp, err := llm.Collect(testutil.EventSeq(events...))
-	if err != nil {
-		t.Fatalf("Collect mapped events returned error: %v", err)
-	}
-	if resp.ID != "msg_1" || resp.Usage.InputTokens != 2 {
-		t.Fatalf("message-stop-only response = %#v", resp)
+	items := observeAnthropicStream(provider.ChatStream(context.Background(), anthropicStreamFixtureRequest()))
+	assertAnthropicObservedKinds(t, items, []string{"MessageStart", "error"})
+	resp, err := collectAnthropicObserved(items)
+	assertAnthropicProviderServerError(t, err)
+	if resp == nil || resp.ID != "msg_1" || resp.Model != "claude-test" {
+		t.Fatalf("message-stop-only partial response = %#v", resp)
 	}
 
 	provider = newAnthropicStreamFixtureProvider(t, func(*http.Request) (*http.Response, error) {
@@ -1622,17 +1636,6 @@ func collectAnthropicStream(t *testing.T, rawEvents []string) *llm.Response {
 	t.Helper()
 	state := newStreamState(&Provider{})
 	return testutil.CollectRawEvents(t, rawEvents, state.mapEvent)
-}
-
-func collectContractAnthropicStream(t *testing.T, rawEvents []string) *llm.Response {
-	t.Helper()
-	state := newStreamState(&Provider{})
-	events := testutil.MapRawEvents(t, rawEvents, state.mapEvent)
-	resp, err := llm.Collect(providerutil.StreamContract(providerName, testutil.EventSeq(events...)))
-	if err != nil {
-		t.Fatalf("Collect returned error: %v", err)
-	}
-	return resp
 }
 
 func newAnthropicStreamFixtureProvider(t *testing.T, roundTrip func(*http.Request) (*http.Response, error)) *Provider {

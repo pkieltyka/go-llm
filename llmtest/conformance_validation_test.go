@@ -73,7 +73,7 @@ func TestSuccessfulStreamGrammarRejectsMaliciousProviders(t *testing.T) {
 			want: "after MessageEnd",
 			seq: streamPairs(
 				yieldedPair{event: llm.MessageStart{}},
-				yieldedPair{event: llm.MessageEnd{}},
+				yieldedPair{event: llm.MessageEnd{StopReason: llm.StopReasonEndTurn}},
 				yieldedPair{event: llm.TextDelta{Index: 0, Text: "late"}},
 			),
 		},
@@ -82,7 +82,15 @@ func TestSuccessfulStreamGrammarRejectsMaliciousProviders(t *testing.T) {
 			want: "MessageEnd count",
 			seq: streamPairs(
 				yieldedPair{event: llm.MessageStart{}},
-				yieldedPair{event: llm.MessageEnd{}},
+				yieldedPair{event: llm.MessageEnd{StopReason: llm.StopReasonEndTurn}},
+				yieldedPair{event: llm.MessageEnd{StopReason: llm.StopReasonEndTurn}},
+			),
+		},
+		{
+			name: "empty_stop_reason",
+			want: "empty stop reason",
+			seq: streamPairs(
+				yieldedPair{event: llm.MessageStart{}},
 				yieldedPair{event: llm.MessageEnd{}},
 			),
 		},

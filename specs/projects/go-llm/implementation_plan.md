@@ -216,10 +216,10 @@ visibly and the phase still completes — never fail a phase on missing keys.
     `docs/release.md`; LICENSE; tag `v0.1.0`.
 
 - [x] **Phase 10 (v0.3): public `chatcompletions.New` + vLLM provider**
-  (shipped 2026-07-05; live-verified against vLLM 0.24.0 at the checkpoint
-  host and re-verified on 0.23.1rc1 — see phase_plans/phase_10.md for wire
-  findings; the two queued vLLM increments — `/tokenize` extension and
-  native `structured_outputs` modes — shipped in phase 11)
+  (shipped 2026-07-05; subsequently hardened to the current stable vLLM
+  v0.26.0 contract — see phase_plans/phase_10.md; the two queued vLLM
+  increments — `/tokenize` extensions and native `structured_outputs`
+  modes — shipped in phase 11)
   - **Promote** `providers/internal/chatcompletions` → public
     `providers/chatcompletions` (one layer, one name — decision recorded
     2026-07-05): add `New(baseURL string, opts ...Option)` with
@@ -229,9 +229,9 @@ visibly and the phase still completes — never fail a phase on missing keys.
     where possible — a public interface is forever-ish). `openrouter`
     updates its import to the public path; behavior identical.
   - `providers/vllm` preset per FS §2 row + `vllm_research.md` +
-    ARCH §3.3: era-aware defaults (host verified: **vLLM 0.24.0** →
-    `structured_outputs` param, `reasoning` output field; portable
-    `response_format: json_schema` baseline), `reasoning` delta parsing,
+    ARCH §3.3: current-stable defaults (`structured_outputs` parameter,
+    `reasoning` output field, and portable `response_format: json_schema`
+    baseline), `reasoning` delta parsing,
     choice-less mid-stream error sniff, `vllm_xargs` passthrough
     extension, live `Models()` (max_model_len surfaced), Qwen-style
     thinking toggles (`chat_template_kwargs.enable_thinking`) as typed
@@ -251,9 +251,8 @@ visibly and the phase still completes — never fail a phase on missing keys.
     `http://pax.local:8000` serving `Qwen/Qwen3.6-27B-FP8` (2026-07-05).
 
 - [x] **Phase 11 (post-v0.3.1): vLLM increments — `/tokenize` extensions +
-  native `structured_outputs` modes** (shipped 2026-07-05, live-verified
-  against the checkpoint host on 0.23.1rc1 — see
-  phase_plans/phase_11.md for wire findings)
+  native `structured_outputs` modes** (shipped 2026-07-05 and maintained
+  against the current stable protocol — see phase_plans/phase_11.md)
   - Typed tokenizer extension methods on `vllm.Provider` (escape hatch,
     not `llm.Provider`): `Tokenize` (chat-shaped `/tokenize` body reusing
     the engine's `BuildParams` conversion; endpoints live at the SERVER
@@ -266,9 +265,9 @@ visibly and the phase still completes — never fail a phase on missing keys.
   - `vllm.Options.StructuredOutputs` (Regex/Choice/Grammar/StructuralTag +
     WhitespacePattern; JSON schema stays on unified `ResponseFormat`) with
     fail-loud conflict rules (ResponseFormat conflict → ErrBadRequest,
-    legacy era → ErrUnsupported, exactly-one-mode → ErrBadRequest); live
-    finding: constraint modes corrupt output while thinking is active
-    (doubled choice text), so the e2e scenarios pin Effort none.
+    exactly-one-mode → ErrBadRequest); reasoning plus constrained output
+    requires the server's structured-output-in-reasoning flag, while e2e
+    scenarios pin Effort none for portable coverage.
   - e2e: `tokenize`, `structured_choice`, `structured_regex` scenarios in
     `TestLiveVLLM`; offline goldens + conflict/era table tests; vllm
     coverage floor ratcheted 76→84; FS §14 + README updated.

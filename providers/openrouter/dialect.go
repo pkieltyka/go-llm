@@ -27,10 +27,11 @@ func (dialect) Capabilities() []llm.Capability { return append([]llm.Capability(
 func (d dialect) Compat() chatcompletions.Compat {
 	return chatcompletions.Compat{
 		// OpenRouter reports usage (and native cost) on the final stream
-		// chunk; include_usage makes that explicit (matches pi).
-		StreamIncludeUsage: true,
-		MapEffort:          mapEffort,
-		DefaultHeaders:     d.headers,
+		// chunk; include_usage makes that explicit.
+		StreamIncludeUsage:       true,
+		ToolMessageContentBlocks: true,
+		MapEffort:                mapEffort,
+		DefaultHeaders:           d.headers,
 	}
 }
 

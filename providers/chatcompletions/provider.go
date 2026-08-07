@@ -26,7 +26,6 @@ type Provider struct {
 	apiKey     string
 	apiKeyFunc func(context.Context) (string, error)
 	baseURL    string
-	maxRetries int
 	timeout    time.Duration
 	priceTable llm.PriceTable
 	logger     *slog.Logger

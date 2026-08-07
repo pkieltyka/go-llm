@@ -32,6 +32,9 @@ const (
 	// conformanceBlockProbe proves the cancellation fixture remains blocked
 	// after its first event without materially slowing the provider suites.
 	conformanceBlockProbe = 20 * time.Millisecond
+	// conformanceDeadline is long enough for -race scheduling while keeping
+	// deadline-propagation checks fast across every provider package.
+	conformanceDeadline = 100 * time.Millisecond
 	// conformanceLeakSlack tolerates ambient goroutine churn (HTTP keepalive
 	// pools, test servers) when checking that a canceled stream does not
 	// leak goroutines.
@@ -40,20 +43,22 @@ const (
 
 // ConformanceScenario identifies the deterministic fixture behavior requested
 // by RunConformance. Provider fixture handlers should inspect each request with
-// ConformanceScenarioFromRequest and implement all four scenarios.
+// ConformanceScenarioFromRequest and implement all five scenarios.
 type ConformanceScenario string
 
 const (
 	// ConformanceSuccess requests a complete successful response or stream.
 	ConformanceSuccess ConformanceScenario = "success"
-	// ConformanceCancel requests a stream that emits MessageStart, flushes it,
-	// then blocks until the request context is canceled.
+	// ConformanceCancel blocks a blocking request until its context ends; a
+	// stream emits MessageStart, flushes it, then blocks on the same condition.
 	ConformanceCancel ConformanceScenario = "cancel"
 	// ConformanceEmpty requests a successful HTTP response with an empty body.
 	ConformanceEmpty ConformanceScenario = "empty"
 	// ConformanceTruncated requests only the provider's start event followed by
 	// EOF, without a terminal event.
 	ConformanceTruncated ConformanceScenario = "truncated"
+	// ConformanceTools requests one deterministic conformance_echo tool call.
+	ConformanceTools ConformanceScenario = "tools"
 )
 
 const (
@@ -61,6 +66,7 @@ const (
 	conformanceCancelModel    = "llmtest-conformance-cancel"
 	conformanceEmptyModel     = "llmtest-conformance-empty"
 	conformanceTruncatedModel = "llmtest-conformance-truncated"
+	conformanceToolsModel     = "llmtest-conformance-tools"
 )
 
 // ConformanceScenarioForModel maps RunConformance's model sentinels to their
@@ -74,6 +80,8 @@ func ConformanceScenarioForModel(model string) ConformanceScenario {
 		return ConformanceEmpty
 	case conformanceTruncatedModel:
 		return ConformanceTruncated
+	case conformanceToolsModel:
+		return ConformanceTools
 	default:
 		return ConformanceSuccess
 	}
@@ -104,10 +112,12 @@ func ConformanceScenarioFromRequest(req *http.Request) ConformanceScenario {
 // the prose contract on llm.Provider: single-use streams (a second range
 // yields exactly one ErrBadRequest — never a silent empty stream), context
 // cancellation mid-stream (the stream terminates with context.Canceled and
-// does not leak goroutines), successful event grammar, empty/truncated EOF
-// normalization, goroutine-safe independent concurrent streams,
-// panic-freedom on odd but valid requests, early-break behavior, and
-// Collect's partial-response-on-error shape over the provider's own events.
+// does not leak goroutines), blocking and streaming deadline propagation,
+// normalized text/usage semantics, exact tool-call identity and arguments,
+// successful event grammar, empty/truncated EOF normalization, goroutine-safe
+// independent concurrent streams, panic-freedom on odd but valid requests,
+// early-break behavior, and Collect's partial-response-on-error shape over the
+// provider's own events.
 //
 // newProvider is called once per subtest and must return a provider able to
 // answer any number of Chat and ChatStream calls, concurrently, without
@@ -120,6 +130,83 @@ func RunConformance(t *testing.T, newProvider func(t *testing.T) llm.Provider) {
 	if newProvider == nil {
 		t.Fatal("RunConformance requires a provider factory")
 	}
+
+	t.Run("chat_semantics", func(t *testing.T) {
+		p := newProvider(t)
+		resp, err := p.Chat(context.Background(), conformanceRequest(ConformanceSuccess))
+		if err != nil {
+			t.Fatalf("Chat returned error: %v", err)
+		}
+		assertSuccessfulResponse(t, resp)
+	})
+
+	t.Run("stream_semantics", func(t *testing.T) {
+		p := newProvider(t)
+		resp, err := llm.Collect(p.ChatStream(context.Background(), conformanceRequest(ConformanceSuccess)))
+		if err != nil {
+			t.Fatalf("Collect(ChatStream) returned error: %v", err)
+		}
+		assertSuccessfulResponse(t, resp)
+	})
+
+	t.Run("tool_call_semantics", func(t *testing.T) {
+		for _, tt := range []struct {
+			name string
+			call func(llm.Provider) (*llm.Response, error)
+		}{
+			{
+				name: "chat",
+				call: func(p llm.Provider) (*llm.Response, error) {
+					return p.Chat(context.Background(), conformanceRequest(ConformanceTools))
+				},
+			},
+			{
+				name: "stream",
+				call: func(p llm.Provider) (*llm.Response, error) {
+					return llm.Collect(p.ChatStream(context.Background(), conformanceRequest(ConformanceTools)))
+				},
+			},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				resp, err := tt.call(newProvider(t))
+				if err != nil {
+					t.Fatalf("tool call returned error: %v", err)
+				}
+				assertToolResponse(t, resp)
+			})
+		}
+	})
+
+	t.Run("chat_deadline", func(t *testing.T) {
+		p := newProvider(t)
+		ctx, cancel := context.WithTimeout(context.Background(), conformanceDeadline)
+		defer cancel()
+		done := make(chan error, 1)
+		go func() {
+			_, err := p.Chat(ctx, conformanceRequest(ConformanceCancel))
+			done <- err
+		}()
+		select {
+		case err := <-done:
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("Chat error = %v, want context.DeadlineExceeded", err)
+			}
+		case <-time.After(conformanceCancelTimeout):
+			t.Fatal("Chat did not terminate after its context deadline")
+		}
+	})
+
+	t.Run("stream_deadline", func(t *testing.T) {
+		p := newProvider(t)
+		ctx, cancel := context.WithTimeout(context.Background(), conformanceDeadline)
+		defer cancel()
+		res := drainStreamFuncWithin(t, conformanceCancelTimeout, func() result {
+			return drainStreamWithoutWatchdog(p.ChatStream(ctx, conformanceRequest(ConformanceCancel)))
+		})
+		if err := contextTerminatedStreamError(res, context.DeadlineExceeded); err != nil {
+			t.Fatal(err)
+		}
+	})
 
 	t.Run("stream_single_use", func(t *testing.T) {
 		p := newProvider(t)
@@ -375,12 +462,23 @@ func conformanceRequest(scenario ConformanceScenario) *llm.Request {
 		model = conformanceEmptyModel
 	case ConformanceTruncated:
 		model = conformanceTruncatedModel
+	case ConformanceTools:
+		model = conformanceToolsModel
 	}
-	return &llm.Request{
+	req := &llm.Request{
 		Model:     model,
 		MaxTokens: 64,
 		Messages:  []llm.Message{llm.UserText("conformance ping")},
 	}
+	if scenario == ConformanceTools {
+		req.Tools = []llm.Tool{{
+			Name:        "conformance_echo",
+			Description: "Return the supplied value.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"value":{"type":"string"}},"required":["value"],"additionalProperties":false}`),
+		}}
+		req.ToolChoice = llm.ToolChoice{Mode: llm.ToolChoiceRequired}
+	}
+	return req
 }
 
 func successfulStreamError(res result) error {
@@ -412,10 +510,13 @@ func successfulStreamError(res result) error {
 				return fmt.Errorf("MessageStart count = %d at event %d, want exactly one", startCount, i)
 			}
 		}
-		if _, ok := event.(llm.MessageEnd); ok {
+		if end, ok := event.(llm.MessageEnd); ok {
 			endCount++
 			if endCount > 1 {
 				return fmt.Errorf("MessageEnd count = %d at event %d, want exactly one", endCount, i)
+			}
+			if end.StopReason == "" {
+				return fmt.Errorf("MessageEnd at event %d has an empty stop reason", i)
 			}
 		}
 		if ended {
@@ -435,6 +536,47 @@ func successfulStreamError(res result) error {
 		return fmt.Errorf("MessageEnd count = %d, want exactly one", endCount)
 	}
 	return nil
+}
+
+func assertSuccessfulResponse(t *testing.T, resp *llm.Response) {
+	t.Helper()
+	if resp == nil {
+		t.Fatal("response = nil")
+	}
+	if got := resp.Text(); got != "pong" {
+		t.Fatalf("response text = %q, want pong", got)
+	}
+	if resp.StopReason != llm.StopReasonEndTurn {
+		t.Fatalf("stop reason = %q, want %q", resp.StopReason, llm.StopReasonEndTurn)
+	}
+	if resp.Usage.InputTokens != 1 || resp.Usage.OutputTokens != 1 || resp.Usage.TotalTokens != 2 {
+		t.Fatalf("usage = %+v, want input/output/total 1/1/2", resp.Usage)
+	}
+}
+
+func assertToolResponse(t *testing.T, resp *llm.Response) {
+	t.Helper()
+	if resp == nil {
+		t.Fatal("tool response = nil")
+	}
+	calls := resp.ToolCalls()
+	if len(calls) != 1 {
+		t.Fatalf("tool calls = %#v, want one", calls)
+	}
+	call := calls[0]
+	if call.ID != "call_conformance" || call.Name != "conformance_echo" {
+		t.Fatalf("tool identity = %q/%q, want call_conformance/conformance_echo", call.ID, call.Name)
+	}
+	var args map[string]any
+	if err := json.Unmarshal(call.Args, &args); err != nil {
+		t.Fatalf("tool arguments = %q: %v", call.Args, err)
+	}
+	if !reflect.DeepEqual(args, map[string]any{"value": "pong"}) {
+		t.Fatalf("tool arguments = %#v, want value=pong", args)
+	}
+	if resp.StopReason != llm.StopReasonToolUse {
+		t.Fatalf("tool stop reason = %q, want %q", resp.StopReason, llm.StopReasonToolUse)
+	}
 }
 
 func consumedStreamError(res result) error {
@@ -607,8 +749,12 @@ func waitCancellationResult(done <-chan result, timeout time.Duration) (result, 
 }
 
 func canceledStreamError(res result) error {
+	return contextTerminatedStreamError(res, context.Canceled)
+}
+
+func contextTerminatedStreamError(res result, want error) error {
 	if res.panicked != nil {
-		return fmt.Errorf("canceled stream panicked: %v", res.panicked)
+		return fmt.Errorf("context-terminated stream panicked: %v", res.panicked)
 	}
 	if res.eventWithError != 0 {
 		return fmt.Errorf("canceled stream yielded %d event+error pairs", res.eventWithError)
@@ -625,8 +771,8 @@ func canceledStreamError(res result) error {
 	if _, ok := res.events[0].(llm.MessageStart); !ok {
 		return fmt.Errorf("canceled stream first event = %T, want MessageStart", res.events[0])
 	}
-	if !errors.Is(res.err, context.Canceled) {
-		return fmt.Errorf("canceled stream error = %v, want context.Canceled", res.err)
+	if !errors.Is(res.err, want) {
+		return fmt.Errorf("context-terminated stream error = %v, want %v", res.err, want)
 	}
 	if res.yields != 2 {
 		return fmt.Errorf("canceled stream yielded %d pairs, want start then cancellation", res.yields)

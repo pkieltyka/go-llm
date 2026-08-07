@@ -136,34 +136,6 @@ func TestBuildRequestGolden(t *testing.T) {
 	}
 }
 
-func TestLegacyEraReplaysReasoningContent(t *testing.T) {
-	p, err := New("http://vllm.test/v1", WithLegacyEra())
-	if err != nil {
-		t.Fatalf("New returned error: %v", err)
-	}
-	params, err := p.inner.BuildParams(&llm.Request{
-		Model: "m",
-		Messages: []llm.Message{
-			llm.UserText("q"),
-			llm.AssistantParts(
-				llm.ReasoningPart{Provider: providerName, Text: "prior thinking"},
-				llm.Text("a"),
-			),
-			llm.UserText("next"),
-		},
-	}, false)
-	if err != nil {
-		t.Fatalf("BuildParams returned error: %v", err)
-	}
-	raw, _ := json.Marshal(params)
-	if !strings.Contains(string(raw), `"reasoning_content":"prior thinking"`) {
-		t.Fatalf("legacy era wire missing reasoning_content: %s", raw)
-	}
-	if strings.Contains(string(raw), `"reasoning":"`) {
-		t.Fatalf("legacy era wire used modern reasoning field: %s", raw)
-	}
-}
-
 func TestEffortMapping(t *testing.T) {
 	p, err := New("http://vllm.test/v1")
 	if err != nil {
@@ -179,8 +151,8 @@ func TestEffortMapping(t *testing.T) {
 		{llm.EffortLow, "low"},
 		{llm.EffortMedium, "medium"},
 		{llm.EffortHigh, "high"},
-		{llm.EffortXHigh, "high"}, // nearest vLLM level: no xhigh upstream
-		{llm.EffortMax, "max"},    // vLLM-specific level
+		{llm.EffortXHigh, "xhigh"},
+		{llm.EffortMax, "max"}, // vLLM-specific level
 	}
 	for _, tc := range cases {
 		params, err := p.inner.BuildParams(&llm.Request{
@@ -207,13 +179,13 @@ func TestEffortMapping(t *testing.T) {
 	}
 }
 
-// vllmChatBody is a verbatim-shaped vLLM 0.24 blocking response: content is
+// vllmChatBody is a verbatim-shaped vLLM 0.26 blocking response: content is
 // null while reasoning carries the parser's output, and vLLM-only fields
 // (stop_reason, prompt_token_ids, kv_transfer_params) ride along.
 const vllmChatBody = `{"id":"chatcmpl-1","object":"chat.completion","created":1,"model":"Qwen/Qwen3.6-27B-FP8",` +
 	`"choices":[{"index":0,"message":{"role":"assistant","content":"pong","refusal":null,"annotations":null,"audio":null,"function_call":null,"reasoning":"user wants pong"},` +
 	`"logprobs":null,"finish_reason":"stop","stop_reason":null,"token_ids":null}],` +
-	`"service_tier":null,"system_fingerprint":"vllm-0.24.0","usage":{"prompt_tokens":12,"total_tokens":72,"completion_tokens":60,"prompt_tokens_details":null},` +
+	`"service_tier":null,"system_fingerprint":"vllm-0.26.0","usage":{"prompt_tokens":12,"total_tokens":72,"completion_tokens":60,"prompt_tokens_details":null},` +
 	`"prompt_logprobs":null,"prompt_token_ids":null,"kv_transfer_params":null}`
 
 func TestChatMapsReasoningField(t *testing.T) {
@@ -245,27 +217,8 @@ func TestChatMapsReasoningField(t *testing.T) {
 		t.Fatalf("self-hosted cost should be nil: %+v", resp.Usage)
 	}
 	raw, ok := resp.Raw.(chatcompletions.JSONObject)
-	if !ok || raw["system_fingerprint"] != "vllm-0.24.0" {
+	if !ok || raw["system_fingerprint"] != "vllm-0.26.0" {
 		t.Fatalf("raw extras = %#v", resp.Raw)
-	}
-}
-
-func TestChatMapsLegacyReasoningContent(t *testing.T) {
-	p := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		mustWrite(t, w, `{"id":"chatcmpl-1","model":"m","choices":[{"index":0,"finish_reason":"stop",`+
-			`"message":{"role":"assistant","content":"hi","reasoning_content":"legacy thinking"}}],`+
-			`"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`)
-	})
-	resp, err := p.Chat(context.Background(), &llm.Request{
-		Model:    "m",
-		Messages: []llm.Message{llm.UserText("hi")},
-	})
-	if err != nil {
-		t.Fatalf("Chat returned error: %v", err)
-	}
-	if resp.Reasoning() != "legacy thinking" {
-		t.Fatalf("legacy reasoning_content not mapped: %+v", resp.Parts)
 	}
 }
 
@@ -345,8 +298,8 @@ func TestStreamUsesChoiceIndexZero(t *testing.T) {
 
 // TestStreamMidStreamErrorSniff covers the goose-crash case: after HTTP 200,
 // vLLM emits a choice-less SSE data event whose payload is the error JSON.
-// Both the nested (current) and flat legacy shapes must map to a normalized
-// in-stream error, with the partial response still collectable.
+// The current nested shape must map to a normalized in-stream error, with the
+// partial response still collectable.
 func TestStreamMidStreamErrorSniff(t *testing.T) {
 	cases := map[string]struct {
 		payload string
@@ -356,14 +309,10 @@ func TestStreamMidStreamErrorSniff(t *testing.T) {
 			payload: `{"error":{"message":"Internal server error","type":"InternalServerError","param":null,"code":500}}`,
 			want:    llm.ErrServer,
 		},
-		"flat_legacy": {
-			payload: `{"object":"error","message":"engine died","code":500}`,
-			want:    llm.ErrServer,
-		},
 		// Status-less chunk errors carry a numeric code mirroring an HTTP
 		// status; it classifies through the canonical status table.
 		"numeric_code_status_table": {
-			payload: `{"object":"error","message":"too many requests","code":429}`,
+			payload: `{"error":{"message":"too many requests","type":"RateLimitError","code":429}}`,
 			want:    llm.ErrRateLimited,
 		},
 	}
@@ -635,11 +584,6 @@ func TestErrorMapping(t *testing.T) {
 		"nested_bad_request": {
 			status: http.StatusBadRequest,
 			body:   `{"error":{"message":"max_tokens=131073 cannot be greater than max_model_len","type":"BadRequestError","param":"max_tokens","code":400}}`,
-			want:   llm.ErrBadRequest,
-		},
-		"flat_legacy": {
-			status: http.StatusBadRequest,
-			body:   `{"object":"error","message":"bad request","type":"invalid_request_error","code":400}`,
 			want:   llm.ErrBadRequest,
 		},
 		"auth": {
