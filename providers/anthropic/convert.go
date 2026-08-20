@@ -155,7 +155,9 @@ func applyOptions(options *Options, params *sdk.MessageNewParams) {
 		params.ServiceTier = sdk.MessageNewParamsServiceTier(options.ServiceTier)
 	}
 	if options.Container != "" {
-		params.Container = sdk.String(options.Container)
+		params.Container = sdk.MessageCreateParamsContainerUnion{
+			OfString: sdk.String(options.Container),
+		}
 	}
 	if options.MetadataUserID != "" {
 		params.Metadata.UserID = sdk.String(options.MetadataUserID)

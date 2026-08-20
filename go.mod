@@ -3,8 +3,8 @@ module github.com/pkieltyka/go-llm
 go 1.26
 
 require (
-	github.com/anthropics/anthropic-sdk-go v1.61.0
-	github.com/openai/openai-go/v3 v3.50.0
+	github.com/anthropics/anthropic-sdk-go v1.66.0
+	github.com/openai/openai-go/v3 v3.52.0
 )
 
 require (
