@@ -218,13 +218,15 @@ type Provider interface {
 }
 
 type ModelInfo struct {
-    ID              string
-    CanonicalID     string        // provider-qualified upstream identity for aggregator entries; "" if unknown or self
-    DisplayName     string
-    ContextWindow   int
-    MaxOutputTokens int
-    Pricing         *ModelPricing // when reported (OpenRouter) or from table
-    Raw             any
+    ID               string
+    CanonicalID      string        // provider-qualified upstream identity for aggregator entries; "" if unknown or self
+    DisplayName      string
+    ContextWindow    int
+    MaxOutputTokens  int
+    Pricing          *ModelPricing // when reported (OpenRouter) or from table
+    SupportedEfforts []Effort      // advisory; empty means unknown
+    Capabilities     []Capability  // advisory positive claims; empty means unknown
+    Raw              any
 }
 ```
 
@@ -239,6 +241,9 @@ Design notes:
   (`interface{ Batch() BatchClient }` shape) without touching `Provider`.
 - Raw-client escape hatch is per-package via type assertion:
   `p.(*anthropic.Provider).Client()` returns the SDK client.
+- Provider-level `Capabilities()` remains the request-validation authority.
+  `ModelInfo.Capabilities` is discovery metadata only and never causes a
+  model-specific preflight rejection.
 
 ### 2.5 Stream events
 
@@ -631,9 +636,14 @@ wire shape at `chatgpt.com/backend-api/codex`:
   `accountId` — re-resolved per request so refreshes that rotate the
   account claim take effect) and `originator`.
 - Statelessness, tools, reasoning items, stop-reason mapping: identical
-  to §3.2 via the shared mapping. Capabilities mirror `providers/openai`;
-  `Models()` returns a curated static list (subscription backend has no
-  public models endpoint).
+  to §3.2 via the shared mapping. Capabilities mirror `providers/openai`.
+  An explicit `Models(ctx)` call uses the authenticated
+  `GET {codex-base}/models?client_version=<compat>` endpoint and retains the
+  complete live row in `ModelInfo.Raw`. Successful catalogs are cached for
+  30 minutes per provider instance. Transient failures use the last successful
+  catalog, or a curated static fallback, with five-minute retry suppression;
+  authentication and context failures remain visible. Construction and chat
+  calls never trigger discovery.
 - Exact refresh endpoint and public client id are pinned and covered by
   focused authentication tests.
 - **Reasoning-replay matching**: the shared Responses mapping takes the
@@ -965,8 +975,10 @@ boundary) so the taxonomy can't drift between code paths.
   metadata loss are guarded; destructive changes require an explicit
   `--allow-destructive` review override. Writes are atomic and preserve the
   previous file on failure. The root package `go:embed`s the result and parses
-  **lazily** (`sync.Once` on first pricing/`Models()` use — no `init()`
-  cost, one immutable table). The library never fetches at runtime.
+  **lazily** (`sync.Once` on first pricing/offline-lookup use — no `init()`
+  cost, one immutable table). Loading the embedded table never fetches at
+  runtime; only an explicit provider `Models(ctx)` call may use a remote model
+  endpoint.
   Parsing fails closed on unknown fields, duplicate/unsorted identities,
   invalid limits/prices/tiers/efforts, invalid timestamps, and trailing or
   concatenated JSON.

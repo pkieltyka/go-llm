@@ -234,10 +234,17 @@ func (dialect) Models(ctx context.Context, p *chatcompletions.Provider) ([]llm.M
 	models := make([]llm.ModelInfo, 0, len(payload.Data))
 	for _, rawRow := range payload.Data {
 		var row struct {
-			ID            string `json:"id"`
-			Name          string `json:"name"`
-			ContextLength int    `json:"context_length"`
-			TopProvider   struct {
+			ID                  string   `json:"id"`
+			Name                string   `json:"name"`
+			ContextLength       int      `json:"context_length"`
+			SupportedParameters []string `json:"supported_parameters"`
+			// Modalities is retained for compatibility with older catalog
+			// responses; Architecture is the current OpenRouter schema.
+			Modalities   []string `json:"modalities"`
+			Architecture struct {
+				InputModalities []string `json:"input_modalities"`
+			} `json:"architecture"`
+			TopProvider struct {
 				MaxCompletionTokens int `json:"max_completion_tokens"`
 			} `json:"top_provider"`
 			Pricing struct {
@@ -255,6 +262,7 @@ func (dialect) Models(ctx context.Context, p *chatcompletions.Provider) ([]llm.M
 			ContextWindow:   row.ContextLength,
 			MaxOutputTokens: row.TopProvider.MaxCompletionTokens,
 			CanonicalID:     row.CanonicalSlug,
+			Capabilities:    openRouterModelCapabilities(row.SupportedParameters, row.Modalities, row.Architecture.InputModalities),
 			Raw:             append(json.RawMessage(nil), rawRow...),
 		}
 		if pricing := parsePricing(row.Pricing.Prompt, row.Pricing.Completion); pricing != nil {
@@ -263,6 +271,45 @@ func (dialect) Models(ctx context.Context, p *chatcompletions.Provider) ([]llm.M
 		models = append(models, info)
 	}
 	return models, nil
+}
+
+func openRouterModelCapabilities(parameters, legacyModalities, inputModalities []string) []llm.Capability {
+	params := make(map[string]bool, len(parameters))
+	for _, parameter := range parameters {
+		if parameter = strings.TrimSpace(parameter); parameter != "" {
+			params[parameter] = true
+		}
+	}
+	modalities := make(map[string]bool, len(legacyModalities)+len(inputModalities))
+	for _, modality := range append(append([]string(nil), legacyModalities...), inputModalities...) {
+		if modality = strings.TrimSpace(modality); modality != "" {
+			modalities[modality] = true
+		}
+	}
+
+	var capabilities []llm.Capability
+	if params["tools"] {
+		capabilities = append(capabilities, llm.CapabilityTools)
+	}
+	if params["tool_choice"] {
+		capabilities = append(capabilities, llm.CapabilityToolChoiceRequired)
+	}
+	if params["parallel_tool_calls"] {
+		capabilities = append(capabilities, llm.CapabilityParallelTools)
+	}
+	if params["structured_outputs"] {
+		capabilities = append(capabilities, llm.CapabilityJSONSchema)
+	}
+	if params["reasoning"] || params["include_reasoning"] || params["reasoning_effort"] {
+		capabilities = append(capabilities, llm.CapabilityReasoning)
+	}
+	if modalities["image"] {
+		capabilities = append(capabilities, llm.CapabilityImageInput)
+	}
+	if params["stop"] {
+		capabilities = append(capabilities, llm.CapabilityStopSequences)
+	}
+	return capabilities
 }
 
 func parsePricing(prompt, completion string) *llm.ModelPricing {

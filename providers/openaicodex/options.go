@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	sdk "github.com/openai/openai-go/v3"
@@ -15,18 +16,19 @@ import (
 )
 
 const (
-	providerName        = "openai-codex"
-	defaultCodexBaseURL = "https://chatgpt.com/backend-api/codex"
-	defaultOriginator   = "codex_cli_rs"
-	organizationHeader  = "OpenAI-Organization"
-	projectHeader       = "OpenAI-Project"
-	accountIDHeader     = "chatgpt-account-id"
-	originatorHeader    = "originator"
+	providerName              = "openai-codex"
+	defaultCodexBaseURL       = "https://chatgpt.com/backend-api/codex"
+	defaultOriginator         = "codex_cli_rs"
+	defaultCodexClientVersion = "0.144.0"
+	organizationHeader        = "OpenAI-Organization"
+	projectHeader             = "OpenAI-Project"
+	accountIDHeader           = "chatgpt-account-id"
+	originatorHeader          = "originator"
 	// defaultCodexUserAgent mirrors the Codex CLI version whose wire contract
 	// this provider implements: the backend gates newer models (the gpt-5.6
 	// family) on this compatibility version, so it applies to every
 	// subscription request, not only 5.6 ones.
-	defaultCodexUserAgent = "codex_cli_rs/0.144.0"
+	defaultCodexUserAgent = defaultOriginator + "/" + defaultCodexClientVersion
 )
 
 // Option configures an OpenAI Codex subscription provider.
@@ -188,16 +190,32 @@ func (c config) directTransport(source *provideroauth.Source) codexTransport {
 		maxRetries = *c.maxRetries
 	}
 	return codexTransport{
-		endpoint:   codexResponsesEndpoint(c.baseURL),
-		httpClient: providerutil.SafeRetryHTTPClient(c.observedHTTPClient(), maxRetries, c.responseRetries),
-		source:     source,
-		originator: c.originatorValue(),
-		headerFunc: c.applyCodexHeaders,
-		authFunc:   applyOAuthHeaders(c.originatorValue()),
+		endpoint:        codexResponsesEndpoint(c.baseURL),
+		modelsEndpoint:  codexModelsEndpoint(c.baseURL),
+		httpClient:      providerutil.SafeRetryHTTPClient(c.observedHTTPClient(), maxRetries, c.responseRetries),
+		source:          source,
+		originator:      c.originatorValue(),
+		headerFunc:      c.applyCodexHeaders,
+		modelHeaderFunc: c.applyCodexModelHeaders,
+		authFunc:        applyOAuthHeaders(c.originatorValue()),
 	}
 }
 
 func (c config) applyCodexHeaders(req *http.Request) {
+	c.applyCodexBaseHeaders(req)
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("OpenAI-Beta", "responses=experimental")
+}
+
+func (c config) applyCodexModelHeaders(req *http.Request) {
+	c.applyCodexBaseHeaders(req)
+	req.Header.Del("Content-Type")
+	req.Header.Del("OpenAI-Beta")
+	req.Header.Set("Accept", "application/json")
+}
+
+func (c config) applyCodexBaseHeaders(req *http.Request) {
 	for name, values := range c.customHeaders {
 		for _, value := range values {
 			req.Header.Add(name, value)
@@ -205,9 +223,6 @@ func (c config) applyCodexHeaders(req *http.Request) {
 	}
 	req.Header.Del(organizationHeader)
 	req.Header.Del(projectHeader)
-	req.Header.Set("Accept", "text/event-stream")
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("OpenAI-Beta", "responses=experimental")
 	req.Header.Set("User-Agent", defaultCodexUserAgent)
 }
 
@@ -254,6 +269,10 @@ func codexBaseURL(baseURL string) string {
 	return base
 }
 
+func codexModelsEndpoint(baseURL string) string {
+	return codexBaseURL(baseURL) + "/models"
+}
+
 // Provider is the OpenAI Codex subscription implementation of llm.Provider.
 // It speaks the Responses wire shape against chatgpt.com/backend-api/codex
 // using ChatGPT Plus/Pro OAuth credentials. See New for the request knobs
@@ -264,4 +283,11 @@ type Provider struct {
 	priceTable llm.PriceTable
 	logger     *slog.Logger
 	timeout    time.Duration
+
+	modelsMu         sync.Mutex
+	modelsCache      []llm.ModelInfo
+	modelsExpiresAt  time.Time
+	modelsRetryAfter time.Time
+	modelsFlight     *modelsFlight
+	modelsNow        func() time.Time
 }

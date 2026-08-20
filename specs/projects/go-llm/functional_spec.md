@@ -641,9 +641,10 @@ Cost sourcing:
    community-maintained models.dev database** plus a hand-maintained
    overrides file, refreshed by a dev-time script, embedded via `go:embed`,
    parsed lazily on first use, and stamped with a generation date. The
-   library never fetches model data at runtime. Estimates are marked as
-   estimates via `Usage.CostSource`. No table entry → `CostUSD` nil (and
-   `CostSource` empty).
+   embedded-table API never fetches model data at runtime. Explicit provider
+   `Models(ctx)` calls may use that provider's remote model endpoint.
+   Estimates are marked as estimates via `Usage.CostSource`. No table entry →
+   `CostUSD` nil (and `CostSource` empty).
 
 ## 12. Capabilities
 
@@ -670,14 +671,23 @@ Cost sourcing:
 aggregator entry, e.g. OpenRouter's `anthropic/claude-x` →
 `anthropic/claude-x`; empty when unknown or identical to the row's own
 `provider/id`; populated from the generated catalog where known — enables
-pricing/capability lookup and same-model handoff across providers) where the
-provider reports them:
+pricing/capability lookup and same-model handoff across providers),
+`SupportedEfforts`, and per-model `Capabilities` where the provider reports
+them. Per-model capabilities are advisory positive claims: empty means
+unknown, and provider-wide `Capabilities()` remains the sole request-preflight
+authority.
 
 - Anthropic: `GET /v1/models` (rich capability data)
 - OpenAI: `GET /models` (IDs, minimal metadata)
-- OpenAI Codex: curated static list (the subscription backend has no public
-  model-list endpoint)
-- OpenRouter: `GET /models` (rich: pricing, context length, modalities)
+- OpenAI Codex: explicit authenticated
+  `GET {codex-base}/models?client_version=<compat>` with a 30-minute
+  per-instance success cache. Transient failures use stale/static fallback
+  and suppress refresh for five minutes; auth and context errors remain
+  visible. No construction or chat path fetches models.
+- OpenRouter: `GET /models` (rich: pricing, context length, input modalities,
+  and supported parameters). Explicit catalog fields populate advisory tool,
+  parallel-tool, reasoning, structured-output, image-input, and stop
+  capabilities; unknown fields remain in `Raw`.
 - vLLM: `GET /v1/models`, including `max_model_len` when the server reports
   it. `ResolveModel(ctx, preference)` chooses an exact, substring/normalized,
   or token-overlap match, then prefers a Qwen model and finally the first row.
