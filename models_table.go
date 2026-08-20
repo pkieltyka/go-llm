@@ -358,6 +358,9 @@ func cloneModelInfo(info ModelInfo) ModelInfo {
 	if len(info.SupportedEfforts) > 0 {
 		info.SupportedEfforts = append([]Effort(nil), info.SupportedEfforts...)
 	}
+	if len(info.Capabilities) > 0 {
+		info.Capabilities = append([]Capability(nil), info.Capabilities...)
+	}
 	return info
 }
 

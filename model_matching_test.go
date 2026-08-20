@@ -140,6 +140,36 @@ func TestMatchModelDoesNotReorderCatalog(t *testing.T) {
 	}
 }
 
+func TestMatchModelReturnsIndependentMutableMetadata(t *testing.T) {
+	models := []llm.ModelInfo{{
+		ID:               "gpt-5.6",
+		SupportedEfforts: []llm.Effort{llm.EffortLow},
+		Capabilities:     []llm.Capability{llm.CapabilityTools},
+		Pricing: &llm.ModelPricing{
+			InputPerMTok: 1,
+			Tiers:        []llm.ModelPricingTier{{InputTokensAbove: 100, InputPerMTok: 2}},
+		},
+	}}
+	matched, ok := llm.MatchModel(models, "gpt-5.6")
+	if !ok {
+		t.Fatal("MatchModel returned no match")
+	}
+	matched.SupportedEfforts[0] = llm.EffortMax
+	matched.Capabilities[0] = llm.CapabilityStreaming
+	matched.Pricing.InputPerMTok = 99
+	matched.Pricing.Tiers[0].InputPerMTok = 99
+
+	if models[0].SupportedEfforts[0] != llm.EffortLow {
+		t.Fatal("MatchModel result efforts alias the input")
+	}
+	if models[0].Capabilities[0] != llm.CapabilityTools {
+		t.Fatal("MatchModel result capabilities alias the input")
+	}
+	if models[0].Pricing.InputPerMTok != 1 || models[0].Pricing.Tiers[0].InputPerMTok != 2 {
+		t.Fatal("MatchModel result pricing aliases the input")
+	}
+}
+
 func TestMatchModelRejectsEmptyAndUnrelatedQueries(t *testing.T) {
 	models := []llm.ModelInfo{{ID: "claude-opus-4-8"}}
 	for _, query := range []string{"", " ", "---", "/", "_", "gpt-5.6"} {

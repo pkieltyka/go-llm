@@ -2,6 +2,7 @@ package provideroauth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -38,6 +39,24 @@ type refreshGeneration struct {
 	cancel context.CancelFunc
 	done   chan struct{}
 	err    error
+}
+
+type persistenceError struct {
+	err error
+}
+
+func (e *persistenceError) Error() string {
+	return "persist refreshed OAuth credential: " + e.err.Error()
+}
+
+func (e *persistenceError) Unwrap() error { return e.err }
+
+// IsPersistenceError reports whether err originated from the application's
+// durable OAuth credential callback. Providers use it to keep local storage
+// failures distinct from transient remote transport or server failures.
+func IsPersistenceError(err error) bool {
+	var persistenceErr *persistenceError
+	return errors.As(err, &persistenceErr)
 }
 
 // Option configures a Source.
@@ -238,7 +257,7 @@ func (s *Source) runRefresh(generation *refreshGeneration) {
 				return
 			}
 			if err != nil {
-				err = fmt.Errorf("persist refreshed OAuth credential: %w", err)
+				err = &persistenceError{err: err}
 			}
 			s.finishRefresh(generation, cred, err)
 		}

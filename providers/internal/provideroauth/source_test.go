@@ -430,6 +430,8 @@ func TestSourcePersistenceFailureDoesNotPublishAndCanRetry(t *testing.T) {
 	for range 2 {
 		if err := <-errs; !errors.Is(err, persistErr) {
 			t.Fatalf("persistence error = %v, want %v", err, persistErr)
+		} else if !IsPersistenceError(err) {
+			t.Fatalf("persistence error = %v, want IsPersistenceError", err)
 		}
 	}
 	if got := source.Snapshot(); got.Access != "old" || got.Refresh != "refresh-0" {

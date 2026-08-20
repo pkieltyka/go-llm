@@ -77,6 +77,29 @@ func TestModelTableCanonicalFallbackDeepCopiesPricingTiers(t *testing.T) {
 	}
 }
 
+func TestCloneModelInfoCopiesMutableMetadata(t *testing.T) {
+	original := ModelInfo{
+		ID:               "model",
+		SupportedEfforts: []Effort{EffortLow, EffortHigh},
+		Capabilities:     []Capability{CapabilityTools, CapabilityReasoning},
+		Pricing:          &ModelPricing{Tiers: []ModelPricingTier{{InputTokensAbove: 100}}},
+	}
+	cloned := cloneModelInfo(original)
+	cloned.SupportedEfforts[0] = EffortMax
+	cloned.Capabilities[0] = CapabilityStreaming
+	cloned.Pricing.Tiers[0].InputTokensAbove = 999
+
+	if original.SupportedEfforts[0] != EffortLow {
+		t.Fatal("cloned efforts alias the original")
+	}
+	if original.Capabilities[0] != CapabilityTools {
+		t.Fatal("cloned capabilities alias the original")
+	}
+	if original.Pricing.Tiers[0].InputTokensAbove != 100 {
+		t.Fatal("cloned pricing tiers alias the original")
+	}
+}
+
 func catalogJSON(rows string) string {
 	return `{"generated_at":"2026-08-05T00:00:00Z","models":[` + rows + `]}`
 }

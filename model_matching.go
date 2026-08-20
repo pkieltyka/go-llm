@@ -41,7 +41,7 @@ func MatchModel(models []ModelInfo, query string) (ModelInfo, bool) {
 	if bestIndex < 0 {
 		return ModelInfo{}, false
 	}
-	return models[bestIndex], true
+	return cloneModelInfo(models[bestIndex]), true
 }
 
 func newerModelMatch(candidate, current ModelInfo) bool {

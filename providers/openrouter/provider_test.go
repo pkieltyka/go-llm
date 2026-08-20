@@ -752,7 +752,7 @@ func TestOpenRouterModels(t *testing.T) {
 		if r.URL.Path != "/models" {
 			t.Fatalf("path = %s", r.URL.Path)
 		}
-		mustWrite(t, w, `{"data":[{"id":"openai/gpt-test","name":"GPT Test","context_length":128000,"top_provider":{"max_completion_tokens":4096},"pricing":{"prompt":"0.000001","completion":"0.000002"},"canonical_slug":"openai/gpt-test","supported_parameters":["tools"],"modalities":["text","image"]}]}`)
+		mustWrite(t, w, `{"data":[{"id":"openai/gpt-test","name":"GPT Test","context_length":128000,"top_provider":{"max_completion_tokens":4096},"pricing":{"prompt":"0.000001","completion":"0.000002"},"canonical_slug":"openai/gpt-test","supported_parameters":["tools","reasoning","structured_outputs","stop"],"architecture":{"input_modalities":["text","image"],"output_modalities":["text"]},"future_field":{"kept":true}}]}`)
 	})
 	models, err := p.Models(context.Background())
 	if err != nil {
@@ -761,9 +761,63 @@ func TestOpenRouterModels(t *testing.T) {
 	if len(models) != 1 || models[0].ID != "openai/gpt-test" || models[0].ContextWindow != 128000 || models[0].MaxOutputTokens != 4096 || models[0].Pricing == nil || models[0].Pricing.InputPerMTok != 1 {
 		t.Fatalf("models = %+v", models)
 	}
+	wantCapabilities := []llm.Capability{
+		llm.CapabilityTools,
+		llm.CapabilityJSONSchema,
+		llm.CapabilityReasoning,
+		llm.CapabilityImageInput,
+		llm.CapabilityStopSequences,
+	}
+	if !reflect.DeepEqual(models[0].Capabilities, wantCapabilities) {
+		t.Fatalf("capabilities = %+v, want %+v", models[0].Capabilities, wantCapabilities)
+	}
 	raw, ok := models[0].Raw.(json.RawMessage)
-	if !ok || !bytes.Contains(raw, []byte(`"supported_parameters"`)) || !bytes.Contains(raw, []byte(`"modalities"`)) {
+	if !ok || !bytes.Contains(raw, []byte(`"supported_parameters"`)) || !bytes.Contains(raw, []byte(`"future_field"`)) {
 		t.Fatalf("raw model payload = %T %s", models[0].Raw, raw)
+	}
+}
+
+func TestOpenRouterModelCapabilities(t *testing.T) {
+	tests := []struct {
+		name       string
+		parameters []string
+		legacy     []string
+		inputs     []string
+		want       []llm.Capability
+	}{
+		{
+			name:       "official_fields",
+			parameters: []string{"tools", "tool_choice", "parallel_tool_calls", "structured_outputs", "reasoning_effort", "stop"},
+			inputs:     []string{"text", "image"},
+			want: []llm.Capability{
+				llm.CapabilityTools,
+				llm.CapabilityToolChoiceRequired,
+				llm.CapabilityParallelTools,
+				llm.CapabilityJSONSchema,
+				llm.CapabilityReasoning,
+				llm.CapabilityImageInput,
+				llm.CapabilityStopSequences,
+			},
+		},
+		{
+			name:       "reasoning_alias_and_legacy_image",
+			parameters: []string{"include_reasoning"},
+			legacy:     []string{"text", "image"},
+			want:       []llm.Capability{llm.CapabilityReasoning, llm.CapabilityImageInput},
+		},
+		{
+			name:       "unknown_and_ambiguous_values_are_ignored",
+			parameters: []string{"response_format", "file", "future_parameter"},
+			inputs:     []string{"file", "audio"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := openRouterModelCapabilities(tt.parameters, tt.legacy, tt.inputs)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("capabilities = %+v, want %+v", got, tt.want)
+			}
+		})
 	}
 }
 

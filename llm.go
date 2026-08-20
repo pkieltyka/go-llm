@@ -38,7 +38,11 @@ type ModelInfo struct {
 	// empty means unknown, request forwarding and server-side validation
 	// are unchanged, and preflight never rejects an effort based on it.
 	SupportedEfforts []Effort
-	Raw              any
+	// Capabilities lists capabilities positively advertised for this model.
+	// The metadata is advisory: empty means unknown, and request validation
+	// continues to use Provider.Capabilities().
+	Capabilities []Capability
+	Raw          any
 }
 
 // ModelPricingTier replaces the base rates for an entire request when its

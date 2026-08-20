@@ -21,12 +21,14 @@ import (
 const defaultTransportMaxRetries = 2
 
 type codexTransport struct {
-	endpoint   string
-	httpClient *http.Client
-	source     *provideroauth.Source
-	originator string
-	headerFunc func(*http.Request)
-	authFunc   provideroauth.ApplyHeadersFunc
+	endpoint        string
+	modelsEndpoint  string
+	httpClient      *http.Client
+	source          *provideroauth.Source
+	originator      string
+	headerFunc      func(*http.Request)
+	modelHeaderFunc func(*http.Request)
+	authFunc        provideroauth.ApplyHeadersFunc
 }
 
 // postStream issues a streaming request. The configured shared HTTP transport
@@ -51,6 +53,33 @@ func (t codexTransport) doAttempt(ctx context.Context, body []byte, lite bool) (
 	// the backend serves the gpt-5.6 family only when the Lite header is set.
 	if lite {
 		req.Header.Set(codexResponsesLiteHeader, "true")
+	}
+	client := t.httpClient
+	if client == nil {
+		client = llm.DefaultHTTPClient()
+	}
+	return provideroauth.DoWithAuthRetry(req, client.Do, t.source, t.applyAuth)
+}
+
+func (t codexTransport) getModels(ctx context.Context) (*http.Response, error) {
+	if strings.TrimSpace(t.modelsEndpoint) == "" {
+		return nil, fmt.Errorf("%w: missing OpenAI Codex models endpoint", llm.ErrBadRequest)
+	}
+	if t.source == nil {
+		return nil, fmt.Errorf("%w: missing OpenAI Codex OAuth source", llm.ErrAuth)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, t.modelsEndpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	query := req.URL.Query()
+	query.Set("client_version", defaultCodexClientVersion)
+	req.URL.RawQuery = query.Encode()
+	if t.modelHeaderFunc != nil {
+		t.modelHeaderFunc(req)
+	} else {
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("User-Agent", defaultCodexUserAgent)
 	}
 	client := t.httpClient
 	if client == nil {

@@ -457,6 +457,9 @@ func cloneModels(models []llm.ModelInfo) []llm.ModelInfo {
 		if len(model.SupportedEfforts) > 0 {
 			out[i].SupportedEfforts = append([]llm.Effort(nil), model.SupportedEfforts...)
 		}
+		if len(model.Capabilities) > 0 {
+			out[i].Capabilities = append([]llm.Capability(nil), model.Capabilities...)
+		}
 	}
 	return out
 }

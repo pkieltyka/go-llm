@@ -45,9 +45,10 @@ where they exist and pulled in only by the provider package you import.
   price table, including request-wide long-context pricing tiers — with
   provenance in `CostSource` (`native` vs `estimated`) — plus `ContextUsage`
   for context-window accounting.
-- **Capabilities**: `Capabilities()` discovery with pre-flight request
-  validation — unsupported features fail fast with `ErrUnsupported`, never
-  silently.
+- **Capabilities**: provider-wide `Capabilities()` discovery with pre-flight
+  request validation, plus advisory per-model capabilities from rich live
+  catalogs such as OpenRouter and Codex. Unsupported provider features fail
+  fast with `ErrUnsupported`; incomplete model metadata never blocks a call.
 - **Conveniences**: `Session` (auto-managed history, session tools with
   `AddToolResults` + `Continue`, cumulative usage), `History`,
   `PromptTemplate`, `llm.Ptr` for optional scalar fields, middleware via
@@ -135,8 +136,8 @@ _, _ = summary, resp
 |---|---|---|
 | `providers/anthropic` | `ANTHROPIC_API_KEY`, `WithAPIKey`, or `WithOAuth` (Claude Pro/Max) | Messages API |
 | `providers/openai` | `OPENAI_API_KEY` or `WithAPIKey` | Responses API — reasoning survives across tool-call turns |
-| `providers/openaicodex` | `WithOAuth` only (ChatGPT Plus/Pro) | Responses wire shape against the codex backend |
-| `providers/openrouter` | `OPENROUTER_API_KEY` or `WithAPIKey` | Chat Completions; native per-request cost reporting |
+| `providers/openaicodex` | `WithOAuth` only (ChatGPT Plus/Pro) | Responses wire shape; explicit `Models` calls use cached authenticated discovery with a curated fallback |
+| `providers/openrouter` | `OPENROUTER_API_KEY` or `WithAPIKey` | Chat Completions; routing/plugins, rich model discovery, and native per-request cost reporting |
 | `providers/vllm` | optional `WithAPIKey` (vLLM `--api-key`) | Self-hosted vLLM preset: host-first, era-aware, live-tested |
 | `providers/ollama` | none | Data-only local-Ollama preset over the engine below (community-verified) |
 | `providers/chatcompletions` | optional `WithAPIKey` | Public engine for ANY OpenAI-compatible server: `New(baseURL, ...)` + declarative `Compat` quirks |

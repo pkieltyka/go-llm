@@ -20,7 +20,13 @@ func TestProvider(t *testing.T) {
 	p := New(
 		WithName("fake"),
 		WithCapabilities(llm.CapabilityStreaming),
-		WithModels(llm.ModelInfo{ID: "model-a", Pricing: &llm.ModelPricing{InputPerMTok: 1, Tiers: []llm.ModelPricingTier{{InputTokensAbove: 100, InputPerMTok: 2}}}, Raw: map[string]any{"nested": []any{map[string]any{"value": "original"}}}}),
+		WithModels(llm.ModelInfo{
+			ID:               "model-a",
+			Pricing:          &llm.ModelPricing{InputPerMTok: 1, Tiers: []llm.ModelPricingTier{{InputTokensAbove: 100, InputPerMTok: 2}}},
+			SupportedEfforts: []llm.Effort{llm.EffortLow},
+			Capabilities:     []llm.Capability{llm.CapabilityTools},
+			Raw:              map[string]any{"nested": []any{map[string]any{"value": "original"}}},
+		}),
 	)
 	p.EnqueueResponse(&llm.Response{
 		Provider: "fake",
@@ -46,6 +52,8 @@ func TestProvider(t *testing.T) {
 	}
 	models[0].Pricing.InputPerMTok = 99
 	models[0].Pricing.Tiers[0].InputPerMTok = 99
+	models[0].SupportedEfforts[0] = llm.EffortMax
+	models[0].Capabilities[0] = llm.CapabilityStreaming
 	models[0].Raw.(map[string]any)["nested"].([]any)[0].(map[string]any)["value"] = "mutated"
 	models, _ = p.Models(context.Background())
 	if models[0].Pricing.InputPerMTok != 1 || models[0].Pricing.Tiers[0].InputPerMTok != 2 {
@@ -53,6 +61,12 @@ func TestProvider(t *testing.T) {
 	}
 	if got := models[0].Raw.(map[string]any)["nested"].([]any)[0].(map[string]any)["value"]; got != "original" {
 		t.Fatalf("Models did not return defensive Raw copy: %v", got)
+	}
+	if models[0].SupportedEfforts[0] != llm.EffortLow {
+		t.Fatal("Models did not return defensive effort copy")
+	}
+	if models[0].Capabilities[0] != llm.CapabilityTools {
+		t.Fatal("Models did not return defensive capability copy")
 	}
 
 	resp, err := p.Chat(context.Background(), &llm.Request{Model: "model-a", Messages: []llm.Message{llm.UserText("hi")}})

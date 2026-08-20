@@ -27,11 +27,8 @@ var capabilities = []llm.Capability{
 	llm.CapabilityModelsListing,
 }
 
-// staticModels is the curated Codex subscription list, refreshed 2026-07-22
-// from the backend's authenticated discovery endpoint
-// (GET {base}/models?client_version=<compat> — it exists but requires the
-// compat query and a live bearer; adopting runtime discovery with this list
-// as fallback is recorded follow-up work in plan 2 phase 3b findings). The
+// staticModels is the curated Codex subscription fallback, refreshed
+// 2026-07-22 from the backend's authenticated discovery endpoint. The
 // internal "codex-auto-review" id is deliberately excluded. The gpt-5.6
 // family additionally reports an "ultra" reasoning level not yet in the
 // go-llm Effort vocabulary; it is omitted here until that vocabulary
@@ -109,23 +106,6 @@ func (p *Provider) Name() string { return providerName }
 // Capabilities returns Codex Responses provider-level capabilities.
 func (p *Provider) Capabilities() []llm.Capability {
 	return append([]llm.Capability(nil), capabilities...)
-}
-
-// Models returns the curated Codex subscription model list.
-func (p *Provider) Models(ctx context.Context) ([]llm.ModelInfo, error) {
-	models := make([]llm.ModelInfo, len(staticModels))
-	for i, model := range staticModels {
-		models[i] = model
-		models[i].SupportedEfforts = append([]llm.Effort(nil), model.SupportedEfforts...)
-		if p != nil && p.priceTable != nil {
-			models[i].Pricing = priceForModel(p.priceTable, model.ID)
-		} else if info, ok := llm.LookupModelInfo(providerName, model.ID); ok && info.Pricing != nil {
-			pricing := *info.Pricing
-			pricing.Tiers = append([]llm.ModelPricingTier(nil), info.Pricing.Tiers...)
-			models[i].Pricing = &pricing
-		}
-	}
-	return models, nil
 }
 
 func priceForModel(table llm.PriceTable, model string) *llm.ModelPricing {
