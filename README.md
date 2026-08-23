@@ -27,6 +27,8 @@ where they exist and pulled in only by the provider package you import.
 - **Tools**: parallel calls, streamed arguments, and a defined contract for
   malformed tool calls — rescue what's rescuable, drop the rest *visibly*
   (`ToolCallDropped`), with an opt-in `llm.RetryDroppedToolCalls` middleware.
+  OpenAI-compatible no-argument tool schemas are sent with
+  `parameters.properties: {}`; non-object `properties` values fail locally.
 - **Structured output**: `llm.Parse[T]` decodes model output straight into
   your struct (native JSON-schema mode where supported, forced-tool or
   JSON-mode fallback elsewhere), and `schema.For[T]` generates JSON Schema
@@ -137,7 +139,7 @@ _, _ = summary, resp
 | `providers/anthropic` | `ANTHROPIC_API_KEY`, `WithAPIKey`, or `WithOAuth` (Claude Pro/Max) | Messages API |
 | `providers/openai` | `OPENAI_API_KEY` or `WithAPIKey` | Responses API — reasoning survives across tool-call turns |
 | `providers/openaicodex` | `WithOAuth` only (ChatGPT Plus/Pro) | Responses wire shape; explicit `Models` calls use cached authenticated discovery with a curated fallback |
-| `providers/openrouter` | `OPENROUTER_API_KEY` or `WithAPIKey` | Chat Completions; routing/plugins, rich model discovery, and native per-request cost reporting |
+| `providers/openrouter` | `OPENROUTER_API_KEY` or `WithAPIKey` | Chat Completions; routing/plugins, explicit rich model discovery, and native per-request cost reporting |
 | `providers/vllm` | optional `WithAPIKey` (vLLM `--api-key`) | Self-hosted vLLM preset: host-first, era-aware, live-tested |
 | `providers/ollama` | none | Data-only local-Ollama preset over the engine below (community-verified) |
 | `providers/chatcompletions` | optional `WithAPIKey` | Public engine for ANY OpenAI-compatible server: `New(baseURL, ...)` + declarative `Compat` quirks |
@@ -294,8 +296,14 @@ llm-cli -p openai -m gpt-5.5 --save chat.json "Start a checklist"
 llm-cli -p anthropic -m claude-opus-4-8 --load chat.json --save chat.json "Continue it"
 ```
 
-Model listings include advisory supported reasoning efforts and capabilities
-when the provider reports them; `--json` emits both as arrays.
+`llm-cli models` explicitly performs provider model-discovery network I/O.
+OpenRouter uses exactly its `/models` response and does not fall back to
+models.dev. Listings include advisory supported/default reasoning effort,
+whether the provider positively reports reasoning as required, and model
+capabilities. Text output shows `EFFORTS`, `DEFAULT EFFORT`, and
+`REASONING REQUIRED`; `--json` emits the corresponding optional fields.
+`ReasoningRequired` is selection metadata only and never overrides the
+caller's `Request.Effort`.
 
 The last pair saves a conversation with one provider and continues it with
 another — the handoff described above, from the shell.

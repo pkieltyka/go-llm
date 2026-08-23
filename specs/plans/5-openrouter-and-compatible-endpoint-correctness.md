@@ -1,5 +1,5 @@
 ---
-status: ready
+status: complete
 planned_at: c983a92
 planned_at_date: 2026-08-23
 ---
@@ -71,18 +71,18 @@ addressed by this plan. PromptTemplate remains part of go-llm.
 
 ## Outcomes
 
-- [ ] OpenAI-compatible no-argument tools serialize
+- [x] OpenAI-compatible no-argument tools serialize
   `parameters.properties` as an empty JSON object, never omitted or `null`.
-- [ ] Malformed non-object tool `properties` fails locally as `ErrBadRequest`
+- [x] Malformed non-object tool `properties` fails locally as `ErrBadRequest`
   without a network call.
-- [ ] OpenRouter model discovery never exposes negative or non-finite pricing,
+- [x] OpenRouter model discovery never exposes negative or non-finite pricing,
   preserves explicitly free pricing, and maps cache-read/cache-write rates.
-- [ ] OpenRouter model discovery maps advertised reasoning effort ladders,
+- [x] OpenRouter model discovery maps advertised reasoning effort ladders,
   default effort, and mandatory-reasoning state into advisory `ModelInfo`
   fields while retaining the original row in `Raw`.
-- [ ] `llm-cli models` exposes the new typed reasoning metadata in text and JSON
+- [x] `llm-cli models` exposes the new typed reasoning metadata in text and JSON
   output without making an additional request.
-- [ ] Offline tests cover wire shape, invalid schemas, pricing sentinels,
+- [x] Offline tests cover wire shape, invalid schemas, pricing sentinels,
   reasoning metadata normalization, caller isolation, and the no-hidden-fetch
   boundary.
 
@@ -474,19 +474,19 @@ while the unrelated snapshot remains staged.
 
 ## Acceptance criteria
 
-- Compatible no-argument tools have exact `{}` properties on blocking and
+- [x] Compatible no-argument tools have exact `{}` properties on blocking and
   streaming wire paths.
-- Malformed properties fail before network I/O.
-- OpenRouter catalog pricing is never negative; explicit free rows remain
+- [x] Malformed properties fail before network I/O.
+- [x] OpenRouter catalog pricing is never negative; explicit free rows remain
   distinguishable from unknown pricing by a non-nil `Pricing` pointer.
-- Cache read/write rates populate the existing common fields when valid.
-- OpenRouter reasoning efforts, default, and mandatory state are accurately
+- [x] Cache read/write rates populate the existing common fields when valid.
+- [x] OpenRouter reasoning efforts, default, and mandatory state are accurately
   normalized from the single explicit catalog response.
-- Unknown future OpenRouter data remains available in Raw.
-- No request is rejected or rewritten because of model metadata.
-- No new background, startup, chat-time, or fallback catalog traffic exists.
-- Focused tests, `make test`, `make check`, vet, and diff checks pass.
-- User-owned staged snapshot work remains intact and separate.
+- [x] Unknown future OpenRouter data remains available in Raw.
+- [x] No request is rejected or rewritten because of model metadata.
+- [x] No new background, startup, chat-time, or fallback catalog traffic exists.
+- [x] Focused tests, `make test`, `make check`, vet, and diff checks pass.
+- [x] User-owned staged snapshot work remains intact and separate.
 
 ## Suggested implementation commits
 

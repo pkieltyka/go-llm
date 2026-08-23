@@ -224,7 +224,9 @@ type ModelInfo struct {
     ContextWindow    int
     MaxOutputTokens  int
     Pricing          *ModelPricing // when reported (OpenRouter) or from table
-    SupportedEfforts []Effort      // advisory; empty means unknown
+    SupportedEfforts []Effort      // advisory; nil = unknown, non-nil empty = advertised/no known unified values
+    DefaultEffort    Effort        // provider-advertised default; advisory
+    ReasoningRequired bool         // positive provider claim; advisory
     Capabilities     []Capability  // advisory positive claims; empty means unknown
     Raw              any
 }
@@ -242,8 +244,9 @@ Design notes:
 - Raw-client escape hatch is per-package via type assertion:
   `p.(*anthropic.Provider).Client()` returns the SDK client.
 - Provider-level `Capabilities()` remains the request-validation authority.
-  `ModelInfo.Capabilities` is discovery metadata only and never causes a
-  model-specific preflight rejection.
+  `ModelInfo` reasoning/capability fields are discovery metadata only and
+  never cause model-specific preflight rejection, effort clamping, or request
+  rewriting.
 
 ### 2.5 Stream events
 
@@ -765,7 +768,9 @@ vendor-coupled, and stability-exempt before v1. Ordinary callers use `New`,
 `Compat`, `Chat`, and `ChatStream`.
 
 The adapter owns everything common: message/part conversion, tools, response
-format, **fail-open schema adaptation** (per-dialect strict-mode
+format, **compatible tool-schema normalization** (an object schema with
+missing/null `properties` gets a new `{}` on the decoded copy; non-object
+roots/types/properties fail before transport), **fail-open schema adaptation** (per-dialect strict-mode
 sanitization of tool/output schemas — unsupported keywords stripped;
 if adaptation still fails, degrade to `strict: false` rather than
 erroring), streaming loop (`stream_options.include_usage` set where a
@@ -788,7 +793,13 @@ Dialect specifics (surface per functional spec §14):
   extracts `provider`, `native_finish_reason`, annotations,
   `reasoning_details` into typed response extras; enables cache-aware
   role-tool text blocks after a focused live write/read cache probe (accessor
-  `openrouter.Extras(resp *llm.Response) (*ResponseExtras, bool)`).
+  `openrouter.Extras(resp *llm.Response) (*ResponseExtras, bool)`). An explicit
+  `Models(ctx)` issues exactly one OpenRouter `/models` request with no cache,
+  models.dev fallback, or hidden construction/chat fetch. It retains each
+  complete row in `Raw`, maps valid token and cache prices per million (zero
+  is free; negative/dynamic and non-finite token pricing is unknown), and
+  normalizes supported/default/mandatory reasoning data into advisory
+  `ModelInfo` fields without changing request mapping.
 - **vllm** (upstream research: `vllm_research.md`): current-stable v0.26.0,
   host-first `vllm.New(baseURL, opts...)`, key-optional. Reasoning replay and
   response parsing use `reasoning`; JSON-schema output uses
@@ -965,6 +976,10 @@ boundary) so the taxonomy can't drift between code paths.
   scans for the highest valid input-occupancy threshold strictly exceeded by
   input + cache-read + cache-write tokens; exact equality uses the lower
   tier. Tier slices are deep-copied with catalog/model values.
+- Live OpenRouter catalog pricing preserves explicit zero as a non-nil free
+  `ModelPricing`. Negative/dynamic token sentinels and non-finite values are
+  unknown, never negative or implicitly free; independently invalid cache
+  rates are omitted while valid fixed token rates remain available.
 - **Model table = embedded JSON snapshot** (`models.json`), refreshed by
   `make models` through `scripts/snapshot-models-table.ts` (tsx; dev-time only):
   validates the models.dev provider object maps and OpenRouter `data[]`,

@@ -329,6 +329,12 @@ adapter and its OpenRouter, vLLM, and Ollama presets.
   (`ReadOnly`, `Destructive`, `Idempotent`, `OpenWorld`). Informational
   only — never sent to providers; consumed by callers (e.g. `go-agent`
   approval policies, MCP interop).
+- The shared Chat Completions adapter requires an object tool-schema root
+  (an absent root `type` or `type: "object"` is accepted). Missing or null
+  `properties` is normalized on a decoded copy to `{}` so no-argument tools
+  work across compatible endpoints. A non-object root/type or non-object
+  `properties` value fails with `ErrBadRequest` before network I/O; caller
+  schemas are never mutated.
 - `ToolChoice`: `auto` | `none` | `required` | `tool(name)`. Unsupported
   choices return `ErrUnsupported` before any network call when the provider's
   fixed capabilities make that determinable.
@@ -672,10 +678,16 @@ aggregator entry, e.g. OpenRouter's `anthropic/claude-x` →
 `anthropic/claude-x`; empty when unknown or identical to the row's own
 `provider/id`; populated from the generated catalog where known — enables
 pricing/capability lookup and same-model handoff across providers),
-`SupportedEfforts`, and per-model `Capabilities` where the provider reports
-them. Per-model capabilities are advisory positive claims: empty means
-unknown, and provider-wide `Capabilities()` remains the sole request-preflight
-authority.
+`SupportedEfforts`, advisory `DefaultEffort`, advisory `ReasoningRequired`,
+and per-model `Capabilities` where the provider reports them.
+For `SupportedEfforts`, nil means the ladder was omitted or is unknown; a
+non-nil empty slice means the provider supplied a ladder containing no known
+unified effort values.
+`ReasoningRequired == false` means false or unknown. These per-model fields
+never reject or rewrite a request; provider-wide `Capabilities()` remains the
+sole request-preflight authority, and `Request.Effort` is forwarded unchanged.
+Model discovery is caller-triggered network I/O only when `Models(ctx)` is
+explicitly invoked; construction, chat, and streaming do not fetch catalogs.
 
 - Anthropic: `GET /v1/models` (rich capability data)
 - OpenAI: `GET /models` (IDs, minimal metadata)
@@ -684,10 +696,16 @@ authority.
   per-instance success cache. Transient failures use stale/static fallback
   and suppress refresh for five minutes; auth and context errors remain
   visible. No construction or chat path fetches models.
-- OpenRouter: `GET /models` (rich: pricing, context length, input modalities,
-  and supported parameters). Explicit catalog fields populate advisory tool,
-  parallel-tool, reasoning, structured-output, image-input, and stop
-  capabilities; unknown fields remain in `Raw`.
+- OpenRouter: one `GET /models` per explicit call (rich: pricing, context
+  length, input modalities, supported parameters, and reasoning policy). No
+  models.dev or other fallback request is performed. Explicit catalog fields
+  populate advisory tool, parallel-tool, reasoning, structured-output,
+  image-input, and stop capabilities plus normalized supported/default effort
+  and mandatory-reasoning metadata. Unknown or malformed advisory fields stay
+  in `Raw` without failing the row. Explicit zero token prices are free and
+  retain a non-nil zero-rate `Pricing`; negative/dynamic or non-finite token
+  pricing is unknown rather than negative or free. Valid cache-read/write
+  prices populate their existing common rate fields.
 - vLLM: `GET /v1/models`, including `max_model_len` when the server reports
   it. `ResolveModel(ctx, preference)` chooses an exact, substring/normalized,
   or token-overlap match, then prefers a Qwen model and finally the first row.
@@ -1050,8 +1068,11 @@ llm-cli models -p openrouter
   envelope, §10A), `--save <file>` writes the updated conversation after
   the response. Loading with a *different* `-p` exercises cross-provider
   history replay directly from the shell.
-- **Commands**: default = chat; `models` = list models for a provider
-  (table; `--json` for machine output).
+- **Commands**: default = chat; `models` = explicitly fetch and list models
+  for a provider (table; `--json` for machine output). The table exposes
+  supported efforts, default effort, and positive reasoning-required claims;
+  JSON uses optional `supported_efforts`, `default_effort`, and
+  `reasoning_required` fields.
 - **Keys** from provider env vars (library convention) or `--api-key`.
   OpenAI Codex auth precedence is explicit `--auth-file`, then
   `OPENAI_CODEX_ACCESS_TOKEN`, then compatibility `--api-key`; files are

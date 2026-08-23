@@ -34,10 +34,19 @@ type ModelInfo struct {
 	MaxOutputTokens int
 	Pricing         *ModelPricing
 	// SupportedEfforts enumerates the reasoning Effort levels the model
-	// supports, ordered weakest → strongest. The metadata is ADVISORY —
-	// empty means unknown, request forwarding and server-side validation
-	// are unchanged, and preflight never rejects an effort based on it.
+	// supports, ordered weakest → strongest. A nil slice means the provider
+	// omitted the ladder or it is unknown; a non-nil empty slice means the
+	// provider supplied a ladder containing no known unified efforts. The
+	// metadata is advisory: request forwarding and server-side validation are
+	// unchanged, and preflight never rejects an effort based on it.
 	SupportedEfforts []Effort
+	// DefaultEffort is the provider-advertised default reasoning effort.
+	// Empty means unknown. It is advisory and never changes request forwarding.
+	DefaultEffort Effort
+	// ReasoningRequired reports a positive provider claim that reasoning cannot
+	// be disabled for this model. False means false or unknown; it never causes
+	// client-side request rejection or rewriting.
+	ReasoningRequired bool
 	// Capabilities lists capabilities positively advertised for this model.
 	// The metadata is advisory: empty means unknown, and request validation
 	// continues to use Provider.Capabilities().

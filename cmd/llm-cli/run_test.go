@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"math"
 	"os"
 	"strings"
 	"testing"
@@ -179,13 +180,15 @@ func TestRunChatSchemaValidatesBeforeOutput(t *testing.T) {
 func TestRunModelsOutput(t *testing.T) {
 	price := &llm.ModelPricing{InputPerMTok: 1.25, OutputPerMTok: 2.5}
 	fake := llmtest.New(llmtest.WithModels(llm.ModelInfo{
-		ID:               "model-1",
-		DisplayName:      "Model One",
-		ContextWindow:    1000,
-		MaxOutputTokens:  200,
-		Pricing:          price,
-		SupportedEfforts: []llm.Effort{llm.EffortLow, llm.EffortHigh},
-		Capabilities:     []llm.Capability{llm.CapabilityTools, llm.CapabilityReasoning},
+		ID:                "model-1",
+		DisplayName:       "Model One",
+		ContextWindow:     1000,
+		MaxOutputTokens:   200,
+		Pricing:           price,
+		SupportedEfforts:  []llm.Effort{llm.EffortLow, llm.EffortHigh},
+		DefaultEffort:     llm.EffortHigh,
+		ReasoningRequired: true,
+		Capabilities:      []llm.Capability{llm.CapabilityTools, llm.CapabilityReasoning},
 	}))
 	var stdout, stderr bytes.Buffer
 	a := testApp(fake, &stdout, &stderr)
@@ -193,7 +196,7 @@ func TestRunModelsOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := stdout.String()
-	for _, want := range []string{"ID", "model-1", "Model One", "1.25", "2.5", "low,high", "tools,reasoning"} {
+	for _, want := range []string{"ID", "DEFAULT EFFORT", "REASONING REQUIRED", "model-1", "Model One", "1.25", "2.5", "low,high", "high", "true", "tools,reasoning"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("table output missing %q: %q", want, got)
 		}
@@ -209,6 +212,8 @@ func TestRunModelsOutput(t *testing.T) {
 		`"supported_efforts": [`,
 		`"low"`,
 		`"high"`,
+		`"default_effort": "high"`,
+		`"reasoning_required": true`,
 		`"capabilities": [`,
 		`"tools"`,
 		`"reasoning"`,
@@ -216,6 +221,43 @@ func TestRunModelsOutput(t *testing.T) {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("JSON output missing %q: %q", want, stdout.String())
 		}
+	}
+}
+
+func TestModelRowsHideInvalidPricesAndPreserveFreePricing(t *testing.T) {
+	rows := modelRows([]llm.ModelInfo{
+		{ID: "negative", Pricing: &llm.ModelPricing{InputPerMTok: -1, OutputPerMTok: 2}},
+		{ID: "non-finite", Pricing: &llm.ModelPricing{InputPerMTok: math.NaN(), OutputPerMTok: math.Inf(1)}},
+		{ID: "free", Pricing: &llm.ModelPricing{}},
+	})
+	if rows[0].InputPerMTok != "" || rows[0].OutputPerMTok != "2" {
+		t.Fatalf("negative row = %+v", rows[0])
+	}
+	if rows[1].InputPerMTok != "" || rows[1].OutputPerMTok != "" {
+		t.Fatalf("non-finite row = %+v", rows[1])
+	}
+	if rows[2].InputPerMTok != "0" || rows[2].OutputPerMTok != "0" {
+		t.Fatalf("free row = %+v", rows[2])
+	}
+	raw, err := json.Marshal(rows)
+	if err != nil {
+		t.Fatalf("marshal rows: %v", err)
+	}
+	for _, forbidden := range []string{"-1", "NaN", "Inf"} {
+		if strings.Contains(string(raw), forbidden) {
+			t.Fatalf("JSON leaked %q: %s", forbidden, raw)
+		}
+	}
+}
+
+func TestModelRowsOmitUnknownReasoningPolicy(t *testing.T) {
+	rows := modelRows([]llm.ModelInfo{{ID: "unknown"}})
+	raw, err := json.Marshal(rows)
+	if err != nil {
+		t.Fatalf("marshal rows: %v", err)
+	}
+	if strings.Contains(string(raw), "default_effort") || strings.Contains(string(raw), "reasoning_required") {
+		t.Fatalf("unknown reasoning metadata should be omitted: %s", raw)
 	}
 }
 
