@@ -179,11 +179,13 @@ func TestRunChatSchemaValidatesBeforeOutput(t *testing.T) {
 func TestRunModelsOutput(t *testing.T) {
 	price := &llm.ModelPricing{InputPerMTok: 1.25, OutputPerMTok: 2.5}
 	fake := llmtest.New(llmtest.WithModels(llm.ModelInfo{
-		ID:              "model-1",
-		DisplayName:     "Model One",
-		ContextWindow:   1000,
-		MaxOutputTokens: 200,
-		Pricing:         price,
+		ID:               "model-1",
+		DisplayName:      "Model One",
+		ContextWindow:    1000,
+		MaxOutputTokens:  200,
+		Pricing:          price,
+		SupportedEfforts: []llm.Effort{llm.EffortLow, llm.EffortHigh},
+		Capabilities:     []llm.Capability{llm.CapabilityTools, llm.CapabilityReasoning},
 	}))
 	var stdout, stderr bytes.Buffer
 	a := testApp(fake, &stdout, &stderr)
@@ -191,7 +193,7 @@ func TestRunModelsOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := stdout.String()
-	for _, want := range []string{"ID", "model-1", "Model One", "1.25", "2.5"} {
+	for _, want := range []string{"ID", "model-1", "Model One", "1.25", "2.5", "low,high", "tools,reasoning"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("table output missing %q: %q", want, got)
 		}
@@ -201,7 +203,16 @@ func TestRunModelsOutput(t *testing.T) {
 	if err := a.runModels(context.Background(), modelsConfig{provider: "llmtest", jsonOutput: true}); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"id": "model-1"`, `"input_per_mtok": "1.25"`} {
+	for _, want := range []string{
+		`"id": "model-1"`,
+		`"input_per_mtok": "1.25"`,
+		`"supported_efforts": [`,
+		`"low"`,
+		`"high"`,
+		`"capabilities": [`,
+		`"tools"`,
+		`"reasoning"`,
+	} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("JSON output missing %q: %q", want, stdout.String())
 		}

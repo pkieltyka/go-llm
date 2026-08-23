@@ -2,8 +2,12 @@ name: ci
 
 on:
   push:
-    branches: ["**"]
+    branches: [master]
   pull_request:
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -16,7 +20,7 @@ jobs:
 
       - uses: actions/setup-go@v7.0.0
         with:
-          go-version: "1.26.6"
+          go-version-file: .go-version
           cache: true
 
       - uses: pnpm/action-setup@v6.0.10
@@ -32,49 +36,5 @@ jobs:
       - name: Download modules
         run: go mod download
 
-      - name: Build and smoke-test CLI
-        run: |
-          make build
-          test -x bin/llm-cli
-          ./bin/llm-cli --help >/dev/null
-          ./bin/llm-cli --version >/dev/null
-
-      - name: Vet
-        run: go vet ./...
-
-      - name: Lint
-        uses: golangci/golangci-lint-action@v9.3.0
-        with:
-          version: v2.12.2
-          args: --default=none --enable=govet --enable=ineffassign --enable=unused ./...
-
-      - name: Race tests
-        run: go test -race ./...
-
-      - name: Snapshot fixture tests
-        run: |
-          pnpm --dir scripts install --frozen-lockfile
-          pnpm --dir scripts test
-
-      - name: Compile live-tag tests without credentials
-        run: |
-          go test -count=1 -tags=live -run '^TestLiveRunnerManifests$' ./internal/e2e
-          go test -count=1 -tags=live -run '^$' ./...
-
-      - name: Coverage floors
-        run: |
-          ./scripts/check-coverage_test.sh
-          ./scripts/check-coverage.sh
-
-      - name: Vulnerability check
-        run: go run golang.org/x/vuln/cmd/govulncheck@v1.5.0 ./...
-
-      # go test -fuzz accepts only a single package with a single matching
-      # target, so enumerate packages and fuzz targets explicitly.
-      - name: Short fuzz smoke
-        run: |
-          for pkg in $(go list ./...); do
-            for target in $(go test -list '^Fuzz' "$pkg" | grep '^Fuzz' || true); do
-              go test -run='^$' -fuzz="^${target}\$" -fuzztime=5s "$pkg"
-            done
-          done
+      - name: Check
+        run: make check

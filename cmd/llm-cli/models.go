@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"text/tabwriter"
 
 	llm "github.com/pkieltyka/go-llm"
@@ -30,39 +31,45 @@ func (a app) runModels(ctx context.Context, cfg modelsConfig) error {
 		return nil
 	}
 	tw := tabwriter.NewWriter(a.stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "ID\tDISPLAY\tCONTEXT\tMAX OUTPUT\tINPUT $/M\tOUTPUT $/M")
+	fmt.Fprintln(tw, "ID\tDISPLAY\tCONTEXT\tMAX OUTPUT\tINPUT $/M\tOUTPUT $/M\tEFFORTS\tCAPABILITIES")
 	for _, row := range rows {
-		fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%s\t%s\n",
+		fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%s\t%s\t%s\t%s\n",
 			row.ID,
 			row.DisplayName,
 			row.ContextWindow,
 			row.MaxOutputTokens,
 			row.InputPerMTok,
 			row.OutputPerMTok,
+			joinModelMetadata(row.SupportedEfforts),
+			joinModelMetadata(row.Capabilities),
 		)
 	}
 	return tw.Flush()
 }
 
 type modelRow struct {
-	ID              string `json:"id"`
-	CanonicalID     string `json:"canonical_id,omitempty"`
-	DisplayName     string `json:"display_name,omitempty"`
-	ContextWindow   int    `json:"context_window,omitempty"`
-	MaxOutputTokens int    `json:"max_output_tokens,omitempty"`
-	InputPerMTok    string `json:"input_per_mtok,omitempty"`
-	OutputPerMTok   string `json:"output_per_mtok,omitempty"`
+	ID               string           `json:"id"`
+	CanonicalID      string           `json:"canonical_id,omitempty"`
+	DisplayName      string           `json:"display_name,omitempty"`
+	ContextWindow    int              `json:"context_window,omitempty"`
+	MaxOutputTokens  int              `json:"max_output_tokens,omitempty"`
+	InputPerMTok     string           `json:"input_per_mtok,omitempty"`
+	OutputPerMTok    string           `json:"output_per_mtok,omitempty"`
+	SupportedEfforts []llm.Effort     `json:"supported_efforts,omitempty"`
+	Capabilities     []llm.Capability `json:"capabilities,omitempty"`
 }
 
 func modelRows(models []llm.ModelInfo) []modelRow {
 	rows := make([]modelRow, len(models))
 	for i, model := range models {
 		rows[i] = modelRow{
-			ID:              model.ID,
-			CanonicalID:     model.CanonicalID,
-			DisplayName:     model.DisplayName,
-			ContextWindow:   model.ContextWindow,
-			MaxOutputTokens: model.MaxOutputTokens,
+			ID:               model.ID,
+			CanonicalID:      model.CanonicalID,
+			DisplayName:      model.DisplayName,
+			ContextWindow:    model.ContextWindow,
+			MaxOutputTokens:  model.MaxOutputTokens,
+			SupportedEfforts: append([]llm.Effort(nil), model.SupportedEfforts...),
+			Capabilities:     append([]llm.Capability(nil), model.Capabilities...),
 		}
 		if model.Pricing != nil {
 			rows[i].InputPerMTok = formatFloat(model.Pricing.InputPerMTok)
@@ -70,4 +77,12 @@ func modelRows(models []llm.ModelInfo) []modelRow {
 		}
 	}
 	return rows
+}
+
+func joinModelMetadata[T ~string](values []T) string {
+	formatted := make([]string, len(values))
+	for i, value := range values {
+		formatted[i] = string(value)
+	}
+	return strings.Join(formatted, ",")
 }

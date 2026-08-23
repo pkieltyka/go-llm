@@ -68,7 +68,7 @@ go get github.com/pkieltyka/go-llm
 ```
 
 Go 1.26 is the minimum version for users of the module. Releases are verified with
-Go 1.26.5 or newer. Provider SDK dependencies are pulled only when importing provider
+Go 1.26.6 or newer. Provider SDK dependencies are pulled only when importing provider
 packages.
 
 ## Quick start
@@ -294,6 +294,9 @@ llm-cli -p openai -m gpt-5.5 --save chat.json "Start a checklist"
 llm-cli -p anthropic -m claude-opus-4-8 --load chat.json --save chat.json "Continue it"
 ```
 
+Model listings include advisory supported reasoning efforts and capabilities
+when the provider reports them; `--json` emits both as arrays.
+
 The last pair saves a conversation with one provider and continues it with
 another — the handoff described above, from the shell.
 
@@ -319,6 +322,7 @@ worked example. Repository commands:
 ```sh
 make build       # compile all packages and create bin/llm-cli
 make test        # offline tests with the race detector
+make check       # complete credential-free CI gate
 make models      # refresh the embedded root models.json snapshot
 ```
 

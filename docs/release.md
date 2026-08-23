@@ -1,38 +1,30 @@
 # Release Checklist
 
 This checklist is version-neutral. Replace `$VERSION` with the intended tag.
-Release verification requires Go 1.26.5 or newer.
+Release verification requires Go 1.26.6 or newer. CI reads its pinned patch
+version from `.go-version`.
 
 ## Offline Gates
 
-Run the same commands after any fixture or model snapshot refresh:
+Run the same credential-free gate used by CI after any fixture or model snapshot
+refresh:
 
 ```sh
 go version
 go mod tidy
 go mod verify
-pnpm --dir scripts install --frozen-lockfile
-pnpm --dir scripts test
 test -z "$(gofmt -l $(git ls-files '*.go'))"
 git diff --check
-go vet ./...
-go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2 run --default=none --enable=govet --enable=ineffassign --enable=unused ./...
-go test -count=1 ./...
-go test -race -count=1 ./...
+make check
 go test -shuffle=on -count=10 ./...
-./scripts/check-coverage_test.sh
-./scripts/check-coverage.sh
-go test -count=1 -tags=live -run '^TestLiveRunnerManifests$' ./internal/e2e
-go test -count=1 -tags=live -run '^$' ./...
-go run golang.org/x/vuln/cmd/govulncheck@v1.5.0 ./...
-make build
-test -x bin/llm-cli
-./bin/llm-cli --help >/dev/null
-./bin/llm-cli --version >/dev/null
 go test -count=1 ./internal/e2e -run '^TestRecordedFixturesAreRedacted$'
 gitleaks detect --source . --no-git --redact --no-banner
 gitleaks detect --source . --redact --no-banner
 ```
+
+`make check` builds and smoke-tests the CLI, runs vet and the pinned lint gate,
+race tests, snapshot tests, live-tag compilation without credentials, coverage
+floors, the pinned vulnerability scan, and short fuzz smoke tests.
 
 The root-only entries in `.gitleaksignore` suppress the known rule findings
 from the ignored local `gollm-test.json` by their no-git fingerprints. Git
@@ -40,9 +32,9 @@ history findings include a commit hash in the fingerprint, so committing that
 file still fails the history scan. Keep the credential file at mode `0600`;
 update the narrow fingerprints only when its line layout changes.
 
-CI also runs the frozen snapshot fixture suite and the CLI smoke gate. Every
-external `uses:` entry in `.github/workflows` uses an explicit release tag;
-review and advance those tags deliberately when new releases are available.
+CI runs `make check` directly. Every external `uses:` entry in
+`.github/workflows` uses an explicit release tag; review and advance those tags
+deliberately when new releases are available.
 
 ## Credentials
 

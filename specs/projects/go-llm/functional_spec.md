@@ -17,7 +17,7 @@ separate `go-agent` package will build agent primitives (loops, planning,
 memory persistence) on top of go-llm.
 
 The minimum Go version for users of the module is **1.26**. Releases are
-verified with Go 1.26.5 or newer. Streaming uses standard iterators (`iter`).
+verified with Go 1.26.6 or newer. Streaming uses standard iterators (`iter`).
 
 ## 2. Providers
 

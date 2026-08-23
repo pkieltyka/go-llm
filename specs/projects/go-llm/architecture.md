@@ -69,7 +69,7 @@ Dependencies (pinned at implementation time):
 | `github.com/openai/openai-go/v3` | `providers/openai` (Responses) + `providers/chatcompletions` and its presets | Official OpenAI SDK; ordinary OpenAI options do not expose its types |
 
 The minimum Go version for users of the module is 1.26. Releases are verified
-with Go 1.26.5 or newer.
+with Go 1.26.6 or newer.
 
 ## 2. Core Types (package `llm`)
 
