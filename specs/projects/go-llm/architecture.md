@@ -230,6 +230,20 @@ type ModelInfo struct {
     Capabilities     []Capability  // advisory positive claims; empty means unknown
     Raw              any
 }
+
+type ModelPricing struct {
+    InputPerMTok, OutputPerMTok           float64
+    CacheReadPerMTok, CacheWritePerMTok   float64
+    Availability                          *ModelPricingAvailability
+    // ...request-wide tiers...
+}
+
+// A non-nil value is authoritative and distinguishes known zero/free rates
+// from unavailable components. Nil preserves the legacy value interpretation.
+type ModelPricingAvailability struct {
+    InputPerMTok, OutputPerMTok           bool
+    CacheReadPerMTok, CacheWritePerMTok   bool
+}
 ```
 
 Design notes:
@@ -984,17 +998,24 @@ boundary) so the taxonomy can't drift between code paths.
   scans for the highest valid input-occupancy threshold strictly exceeded by
   input + cache-read + cache-write tokens; exact equality uses the lower
   tier. Tier slices are deep-copied with catalog/model values.
-- Live OpenRouter catalog pricing preserves explicit zero as a non-nil free
-  `ModelPricing`. Negative/dynamic token sentinels and non-finite values are
-  unknown, never negative or implicitly free; independently invalid cache
-  rates are omitted while valid fixed token rates remain available.
+- Live OpenRouter catalog pricing decodes input, output, cache-read, and
+  cache-write independently. `ModelPricing.Availability` preserves explicit
+  zero as known/free and marks missing, null, malformed, non-numeric,
+  negative/dynamic, overflowing, or non-finite values unknown without losing
+  valid sibling rates or the copied raw catalog row. Estimation returns no
+  cost when a nonzero usage component has no known rate; a selected complete
+  request-wide tier supplies all four rates.
 - **Model table = embedded JSON snapshot** (`models.json`), refreshed by
   `make models` through `scripts/snapshot-models-table.ts` (tsx; dev-time only):
   validates the models.dev provider object maps and OpenRouter `data[]`,
   trims them to Anthropic, OpenAI, and OpenRouter fields consumed by the
   library, omits invalid limit/pricing sentinels, applies
-  `scripts/overrides.json`, and deterministically writes a `generated_at`
-  snapshot. Provider/count minimums, model-identity replacement, and material
+  `scripts/overrides.json`, and deterministically writes a versioned snapshot
+  with a controllable `generated_at` plus ordered source IDs, URLs, and SHA-256
+  content digests. Exact remote response bytes are retained as deterministic
+  gzip files; the reproducibility gate replays them, verifies their digests,
+  inherits the reviewed timestamp, and byte-compares the complete output.
+  Provider/count minimums, model-identity replacement, and material
   metadata loss are guarded; destructive changes require an explicit
   `--allow-destructive` review override. Writes are atomic and preserve the
   previous file on failure. The root package `go:embed`s the result and parses
@@ -1003,8 +1024,8 @@ boundary) so the taxonomy can't drift between code paths.
   runtime; only an explicit provider `Models(ctx)` call may use a remote model
   endpoint.
   Parsing fails closed on unknown fields, duplicate/unsorted identities,
-  invalid limits/prices/tiers/efforts, invalid timestamps, and trailing or
-  concatenated JSON.
+  invalid schema/generator/source provenance, invalid limits/prices/tiers/
+  efforts, invalid timestamps, and trailing or concatenated JSON.
   Snapshot refresh is a release-phase step and documented maintenance
   task. `PriceTableDate` is read from `generated_at`. Users override via
   `WithPriceTable`.

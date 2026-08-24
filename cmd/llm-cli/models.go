@@ -32,16 +32,18 @@ func (a app) runModels(ctx context.Context, cfg modelsConfig) error {
 		return nil
 	}
 	tw := tabwriter.NewWriter(a.stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "ID\tDISPLAY\tCONTEXT\tMAX OUTPUT\tINPUT $/M\tOUTPUT $/M\tEFFORTS\tDEFAULT EFFORT\tREASONING REQUIRED\tCAPABILITIES")
+	fmt.Fprintln(tw, "ID\tDISPLAY\tCONTEXT\tMAX OUTPUT\tINPUT $/M\tOUTPUT $/M\tCACHE READ $/M\tCACHE WRITE $/M\tEFFORTS\tDEFAULT EFFORT\tREASONING REQUIRED\tCAPABILITIES")
 	for _, row := range rows {
-		fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			row.ID,
 			row.DisplayName,
 			row.ContextWindow,
 			row.MaxOutputTokens,
 			row.InputPerMTok,
 			row.OutputPerMTok,
-			joinModelMetadata(row.SupportedEfforts),
+			row.CacheReadPerMTok,
+			row.CacheWritePerMTok,
+			joinOptionalModelMetadata(row.SupportedEfforts),
 			row.DefaultEffort,
 			formatReasoningRequired(row.ReasoningRequired),
 			joinModelMetadata(row.Capabilities),
@@ -58,7 +60,9 @@ type modelRow struct {
 	MaxOutputTokens   int              `json:"max_output_tokens,omitempty"`
 	InputPerMTok      string           `json:"input_per_mtok,omitempty"`
 	OutputPerMTok     string           `json:"output_per_mtok,omitempty"`
-	SupportedEfforts  []llm.Effort     `json:"supported_efforts,omitempty"`
+	CacheReadPerMTok  string           `json:"cache_read_per_mtok,omitempty"`
+	CacheWritePerMTok string           `json:"cache_write_per_mtok,omitempty"`
+	SupportedEfforts  *[]llm.Effort    `json:"supported_efforts,omitempty"`
 	DefaultEffort     llm.Effort       `json:"default_effort,omitempty"`
 	ReasoningRequired bool             `json:"reasoning_required,omitempty"`
 	Capabilities      []llm.Capability `json:"capabilities,omitempty"`
@@ -73,14 +77,27 @@ func modelRows(models []llm.ModelInfo) []modelRow {
 			DisplayName:       model.DisplayName,
 			ContextWindow:     model.ContextWindow,
 			MaxOutputTokens:   model.MaxOutputTokens,
-			SupportedEfforts:  append([]llm.Effort(nil), model.SupportedEfforts...),
 			DefaultEffort:     model.DefaultEffort,
 			ReasoningRequired: model.ReasoningRequired,
 			Capabilities:      append([]llm.Capability(nil), model.Capabilities...),
 		}
+		if model.SupportedEfforts != nil {
+			efforts := append(make([]llm.Effort, 0, len(model.SupportedEfforts)), model.SupportedEfforts...)
+			rows[i].SupportedEfforts = &efforts
+		}
 		if model.Pricing != nil {
-			rows[i].InputPerMTok = formatModelPrice(model.Pricing.InputPerMTok)
-			rows[i].OutputPerMTok = formatModelPrice(model.Pricing.OutputPerMTok)
+			if model.Pricing.HasInputPrice() {
+				rows[i].InputPerMTok = formatModelPrice(model.Pricing.InputPerMTok)
+			}
+			if model.Pricing.HasOutputPrice() {
+				rows[i].OutputPerMTok = formatModelPrice(model.Pricing.OutputPerMTok)
+			}
+			if model.Pricing.HasCacheReadPrice() {
+				rows[i].CacheReadPerMTok = formatModelPrice(model.Pricing.CacheReadPerMTok)
+			}
+			if model.Pricing.HasCacheWritePrice() {
+				rows[i].CacheWritePerMTok = formatModelPrice(model.Pricing.CacheWritePerMTok)
+			}
 		}
 	}
 	return rows
@@ -106,4 +123,11 @@ func joinModelMetadata[T ~string](values []T) string {
 		formatted[i] = string(value)
 	}
 	return strings.Join(formatted, ",")
+}
+
+func joinOptionalModelMetadata[T ~string](values *[]T) string {
+	if values == nil {
+		return ""
+	}
+	return joinModelMetadata(*values)
 }

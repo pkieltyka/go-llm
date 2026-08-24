@@ -98,6 +98,35 @@ func TestProvider(t *testing.T) {
 	}
 }
 
+func TestProviderModelsPreserveExplicitEmptyEffortsWithoutAliasingCapacity(t *testing.T) {
+	efforts := make([]llm.Effort, 0, 4)
+	p := New(WithModels(
+		llm.ModelInfo{ID: "explicit-empty", SupportedEfforts: efforts},
+		llm.ModelInfo{ID: "unknown"},
+	))
+	efforts = append(efforts, llm.EffortMax)
+
+	models, err := p.Models(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if models[0].SupportedEfforts == nil || len(models[0].SupportedEfforts) != 0 {
+		t.Fatalf("explicit empty efforts = %#v", models[0].SupportedEfforts)
+	}
+	models[0].SupportedEfforts = append(models[0].SupportedEfforts, llm.EffortLow)
+	if efforts[0] != llm.EffortMax {
+		t.Fatalf("provider models share caller backing storage: %#v", efforts)
+	}
+	if models[1].SupportedEfforts != nil {
+		t.Fatalf("unknown efforts = %#v, want nil", models[1].SupportedEfforts)
+	}
+	models[0].SupportedEfforts = append(models[0].SupportedEfforts, llm.EffortHigh)
+	again, _ := p.Models(context.Background())
+	if len(again[0].SupportedEfforts) != 0 {
+		t.Fatalf("returned empty effort slice shares backing storage: %#v", again[0].SupportedEfforts)
+	}
+}
+
 func TestProviderCanceledStreamStillConsumesIterator(t *testing.T) {
 	p := New()
 	p.EnqueueStream(llm.TextDelta{Index: 0, Text: "unread"})

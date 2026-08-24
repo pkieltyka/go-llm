@@ -55,6 +55,11 @@ func TestGenericCapabilityConformance(t *testing.T) {
 			if invocation.Capability == llm.CapabilityReasoning && body["reasoning_effort"] != "high" {
 				t.Errorf("reasoning_effort = %#v, want high", body["reasoning_effort"])
 			}
+			if invocation.Path == llmtest.ConformanceStream {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, testutil.CompatibleActivationStream(invocation, model))
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, testutil.CompatibleActivationResponse(invocation, model))
 		}))

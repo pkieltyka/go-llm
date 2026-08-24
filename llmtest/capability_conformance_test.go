@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	llm "github.com/pkieltyka/go-llm"
 )
@@ -43,7 +44,11 @@ func TestRunCapabilityConformancePreservesModelAndInvocation(t *testing.T) {
 				llm.MessageEnd{StopReason: llm.StopReasonEndTurn, Usage: llm.Usage{InputTokens: 1, OutputTokens: 1, TotalTokens: 2}},
 			)
 		}
-		return provider
+		return dispatchLoggingProvider{Provider: provider, log: func(path ConformancePath) {
+			mu.Lock()
+			order = append(order, "dispatch/"+string(path))
+			mu.Unlock()
+		}}
 	}, CapabilityProfile{Cases: []CapabilityCase{{
 		Name:       "native-tools",
 		Capability: llm.CapabilityTools,
@@ -56,8 +61,8 @@ func TestRunCapabilityConformancePreservesModelAndInvocation(t *testing.T) {
 			return &llm.Request{Model: model, Messages: []llm.Message{llm.UserText("activate")}}
 		},
 		Assert: func(response *llm.Response) error {
-			if response.Model != model || response.Text() != "activated" {
-				return fmt.Errorf("response = model %q text %q", response.Model, response.Text())
+			if response.Model != model || response.Text() != "activated" || response.StopReason != llm.StopReasonEndTurn || response.Usage.InputTokens != 1 || response.Usage.OutputTokens != 1 || response.Usage.TotalTokens != 2 {
+				return fmt.Errorf("response = model %q text %q stop %q usage %+v", response.Model, response.Text(), response.StopReason, response.Usage)
 			}
 			return nil
 		},
@@ -73,7 +78,7 @@ func TestRunCapabilityConformancePreservesModelAndInvocation(t *testing.T) {
 	if !reflect.DeepEqual(invocations, wantInvocations) {
 		t.Fatalf("factory invocations = %#v, want %#v", invocations, wantInvocations)
 	}
-	wantOrder := []string{"factory/", "factory/chat", "request/1", "factory/stream", "request/2"}
+	wantOrder := []string{"factory/", "factory/chat", "request/1", "factory/stream", "request/2", "dispatch/chat", "dispatch/stream"}
 	if !reflect.DeepEqual(order, wantOrder) {
 		t.Fatalf("factory/request order = %#v, want %#v", order, wantOrder)
 	}
@@ -129,18 +134,36 @@ func TestValidateCapabilityProfile(t *testing.T) {
 		{name: "contradictory exemption", profile: CapabilityProfile{Cases: []CapabilityCase{validCase(llm.CapabilityTools)}, Exemptions: []CapabilityExemption{{Capability: llm.CapabilityTools, Reason: "gap"}}}, claims: advertised, want: "both activation cases"},
 		{name: "missing advertised capability", profile: CapabilityProfile{}, claims: map[llm.Capability]struct{}{llm.CapabilityTools: {}}, want: "no activation case or exemption"},
 	}
+	if selected := os.Getenv("GO_LLM_MALFORMED_PROFILE"); selected != "" {
+		var index int
+		if _, err := fmt.Sscanf(selected, "%d", &index); err != nil || index < 0 || index >= len(tests) {
+			t.Fatalf("invalid malformed profile selector %q", selected)
+		}
+		tt := tests[index]
+		RunCapabilityConformance(t, func(*testing.T, CapabilityInvocation) llm.Provider {
+			return New(WithName("fixture"), WithCapabilities(claimSlice(tt.claims)...))
+		}, tt.profile)
+		return
+	}
 
-	for _, tt := range tests {
+	for index, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateCapabilityProfile("fixture", tt.claims, tt.profile)
-			if tt.want == "" {
-				if err != nil {
-					t.Fatalf("validateCapabilityProfile returned error: %v", err)
+			if tt.want != "" {
+				command := exec.Command(os.Args[0], "-test.run=^TestValidateCapabilityProfile$")
+				command.Env = append(os.Environ(), fmt.Sprintf("GO_LLM_MALFORMED_PROFILE=%d", index))
+				output, err := command.CombinedOutput()
+				if err == nil {
+					t.Fatalf("malformed profile child unexpectedly passed:\n%s", output)
+				}
+				text := string(output)
+				if strings.Contains(text, "panic:") || !strings.Contains(text, tt.want) || !strings.Contains(text, "fixture") {
+					t.Fatalf("malformed profile output does not pin non-panic provider context and %q:\n%s", tt.want, text)
 				}
 				return
 			}
-			if err == nil || !strings.Contains(err.Error(), tt.want) || !strings.Contains(err.Error(), "fixture") {
-				t.Fatalf("validateCapabilityProfile error = %v, want provider context and %q", err, tt.want)
+			err := validateCapabilityProfile("fixture", tt.claims, tt.profile)
+			if err != nil {
+				t.Fatalf("validateCapabilityProfile returned error: %v", err)
 			}
 		})
 	}
@@ -151,7 +174,7 @@ func TestRunCapabilityConformanceFailureContract(t *testing.T) {
 		runCapabilityFailureCase(t, failure)
 		return
 	}
-	for _, failure := range []string{"nil_factory", "nil_probe", "typed_nil_probe", "nil_request_result", "nil_case_provider", "claim_drift", "provider_error", "nil_response", "assertion_error"} {
+	for _, failure := range []string{"nil_factory", "nil_probe", "typed_nil_probe", "nil_request_result", "late_nil_request", "nil_case_provider", "claim_drift", "provider_error", "stream_provider_error", "nil_response", "assertion_error", "stream_assertion_error", "stream_watchdog"} {
 		t.Run(failure, func(t *testing.T) {
 			command := exec.Command(os.Args[0], "-test.run=^TestRunCapabilityConformanceFailureContract$")
 			command.Env = append(os.Environ(), "GO_LLM_CAPABILITY_FAILURE="+failure)
@@ -163,8 +186,10 @@ func TestRunCapabilityConformanceFailureContract(t *testing.T) {
 			if strings.Contains(text, "panic:") {
 				t.Fatalf("failure child panicked instead of failing through testing.T:\n%s", text)
 			}
-			if !strings.Contains(text, failureExpectedText(failure)) {
-				t.Fatalf("failure output missing %q:\n%s", failureExpectedText(failure), text)
+			for _, fragment := range failureExpectedText(failure) {
+				if !strings.Contains(text, fragment) {
+					t.Fatalf("failure output missing %q:\n%s", fragment, text)
+				}
 			}
 		})
 	}
@@ -198,7 +223,15 @@ func runCapabilityFailureCase(t *testing.T, failure string) {
 	baseFactory := func(t *testing.T, invocation CapabilityInvocation) llm.Provider {
 		provider := New(WithName("failure-fixture"), WithCapabilities(llm.CapabilityTools))
 		if invocation != (CapabilityInvocation{}) {
-			provider.EnqueueResponse(capabilityResponse("real-model"))
+			if invocation.Path == ConformanceStream {
+				provider.EnqueueStream(
+					llm.MessageStart{ID: "response", Provider: "failure-fixture", Model: "real-model"},
+					llm.TextDelta{Index: 0, Text: "activated"},
+					llm.MessageEnd{StopReason: llm.StopReasonEndTurn, Usage: llm.Usage{InputTokens: 1, OutputTokens: 1, TotalTokens: 2}},
+				)
+			} else {
+				provider.EnqueueResponse(capabilityResponse("real-model"))
+			}
 		}
 		return provider
 	}
@@ -206,8 +239,10 @@ func runCapabilityFailureCase(t *testing.T, failure string) {
 		Name:       "tools-case",
 		Capability: llm.CapabilityTools,
 		Paths:      []ConformancePath{ConformanceChat},
-		Request:    func() *llm.Request { return &llm.Request{Model: "real-model"} },
-		Assert:     func(*llm.Response) error { return nil },
+		Request: func() *llm.Request {
+			return &llm.Request{Model: "real-model", Messages: []llm.Message{llm.UserText("activate")}}
+		},
+		Assert: func(*llm.Response) error { return nil },
 	}}}
 
 	switch failure {
@@ -220,6 +255,20 @@ func runCapabilityFailureCase(t *testing.T, failure string) {
 	case "nil_request_result":
 		profile.Cases[0].Request = func() *llm.Request { return nil }
 		RunCapabilityConformance(t, baseFactory, profile)
+	case "late_nil_request":
+		calls := 0
+		defer func() {
+			if calls != 0 {
+				panic(fmt.Sprintf("dispatch occurred before preparation completed: %d calls", calls))
+			}
+		}()
+		profile.Cases = append(profile.Cases, CapabilityCase{
+			Name: "late-invalid", Capability: llm.CapabilityTools, Paths: []ConformancePath{ConformanceChat},
+			Request: func() *llm.Request { return nil }, Assert: func(*llm.Response) error { return nil },
+		})
+		RunCapabilityConformance(t, func(t *testing.T, invocation CapabilityInvocation) llm.Provider {
+			return callCountingProvider{Provider: baseFactory(t, invocation), calls: &calls}
+		}, profile)
 	case "nil_case_provider":
 		RunCapabilityConformance(t, func(t *testing.T, invocation CapabilityInvocation) llm.Provider {
 			if invocation != (CapabilityInvocation{}) {
@@ -242,6 +291,15 @@ func runCapabilityFailureCase(t *testing.T, failure string) {
 			}
 			return provider
 		}, profile)
+	case "stream_provider_error":
+		profile.Cases[0].Paths = []ConformancePath{ConformanceStream}
+		RunCapabilityConformance(t, func(t *testing.T, invocation CapabilityInvocation) llm.Provider {
+			provider := New(WithName("failure-fixture"), WithCapabilities(llm.CapabilityTools))
+			if invocation != (CapabilityInvocation{}) {
+				provider.EnqueueError(errors.New("stream wire rejected"))
+			}
+			return provider
+		}, profile)
 	case "nil_response":
 		RunCapabilityConformance(t, func(t *testing.T, invocation CapabilityInvocation) llm.Provider {
 			return nilResponseProvider{Provider: baseFactory(t, invocation)}
@@ -249,36 +307,116 @@ func runCapabilityFailureCase(t *testing.T, failure string) {
 	case "assertion_error":
 		profile.Cases[0].Assert = func(*llm.Response) error { return errors.New("normalized mismatch") }
 		RunCapabilityConformance(t, baseFactory, profile)
+	case "stream_assertion_error":
+		profile.Cases[0].Paths = []ConformancePath{ConformanceStream}
+		profile.Cases[0].Assert = func(*llm.Response) error { return errors.New("stream normalized mismatch") }
+		RunCapabilityConformance(t, baseFactory, profile)
+	case "stream_watchdog":
+		profile.Cases[0].Paths = []ConformancePath{ConformanceStream}
+		capabilityConformanceStreamTimeout = 20 * time.Millisecond
+		observedCancellation := make(chan struct{})
+		defer func() {
+			select {
+			case <-observedCancellation:
+			case <-time.After(time.Second):
+				panic("stream watchdog did not cancel the request context")
+			}
+		}()
+		RunCapabilityConformance(t, func(t *testing.T, invocation CapabilityInvocation) llm.Provider {
+			return watchdogProvider{Provider: baseFactory(t, invocation), observedCancellation: observedCancellation}
+		}, profile)
 	}
 }
 
-func failureExpectedText(failure string) string {
+func failureExpectedText(failure string) []string {
 	switch failure {
 	case "nil_factory":
-		return "requires a provider factory"
+		return []string{"requires a provider factory"}
 	case "nil_probe", "typed_nil_probe":
-		return "probe factory returned a nil provider"
-	case "nil_request_result":
-		return "Request returned nil"
+		return []string{"probe factory returned a nil provider"}
+	case "nil_request_result", "late_nil_request":
+		return []string{"Request returned nil"}
 	case "nil_case_provider":
-		return "factory returned a nil provider"
+		return []string{"factory returned a nil provider"}
 	case "claim_drift":
-		return "changed reviewed capability claims"
-	case "provider_error":
-		return "provider call failed"
+		return []string{"changed reviewed capability claims"}
+	case "provider_error", "stream_provider_error", "stream_watchdog":
+		return append(failureContext(failure), "provider call failed")
 	case "nil_response":
-		return "nil response"
-	case "assertion_error":
-		return "normalized response assertion failed"
+		return append(failureContext(failure), "nil response")
+	case "assertion_error", "stream_assertion_error":
+		return append(failureContext(failure), "normalized response assertion failed")
 	default:
-		return failure
+		return []string{failure}
 	}
+}
+
+func failureContext(failure string) []string {
+	path := `path "chat"`
+	if strings.HasPrefix(failure, "stream_") {
+		path = `path "stream"`
+	}
+	return []string{`provider "failure-fixture"`, `case "tools-case"`, "(tools)", path}
 }
 
 type nilResponseProvider struct{ llm.Provider }
 
 func (nilResponseProvider) Chat(context.Context, *llm.Request) (*llm.Response, error) {
 	return nil, nil
+}
+
+type dispatchLoggingProvider struct {
+	*Provider
+	log func(ConformancePath)
+}
+
+func (p dispatchLoggingProvider) Chat(ctx context.Context, request *llm.Request) (*llm.Response, error) {
+	p.log(ConformanceChat)
+	return p.Provider.Chat(ctx, request)
+}
+
+func (p dispatchLoggingProvider) ChatStream(ctx context.Context, request *llm.Request) iter.Seq2[llm.Event, error] {
+	p.log(ConformanceStream)
+	return p.Provider.ChatStream(ctx, request)
+}
+
+type callCountingProvider struct {
+	llm.Provider
+	calls *int
+}
+
+func (p callCountingProvider) Chat(ctx context.Context, request *llm.Request) (*llm.Response, error) {
+	(*p.calls)++
+	return p.Provider.Chat(ctx, request)
+}
+
+func (p callCountingProvider) ChatStream(ctx context.Context, request *llm.Request) iter.Seq2[llm.Event, error] {
+	(*p.calls)++
+	return p.Provider.ChatStream(ctx, request)
+}
+
+type watchdogProvider struct {
+	llm.Provider
+	observedCancellation chan<- struct{}
+}
+
+func (p watchdogProvider) ChatStream(ctx context.Context, _ *llm.Request) iter.Seq2[llm.Event, error] {
+	return func(yield func(llm.Event, error) bool) {
+		yield(llm.MessageStart{Provider: "failure-fixture", Model: "real-model"}, nil)
+		<-ctx.Done()
+		close(p.observedCancellation)
+		select {}
+	}
+}
+
+func claimSlice(claims map[llm.Capability]struct{}) []llm.Capability {
+	result := make([]llm.Capability, 0, len(claims))
+	for _, capability := range reviewedCapabilityActivations {
+		if _, ok := claims[capability]; ok {
+			result = append(result, capability)
+		}
+	}
+	return result
 }
 
 func (nilResponseProvider) ChatStream(context.Context, *llm.Request) iter.Seq2[llm.Event, error] {

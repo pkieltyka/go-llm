@@ -137,6 +137,15 @@ with any necessary intent-to-add step for new files, or use a dedicated
 temporary index. If that cannot be done safely, leave implementation changes
 uncommitted for the maintainer.
 
+### Maintainer disposition recorded 2026-08-24
+
+Commit `1815a64` is already published and combined the planning artifacts with
+the then-staged model snapshot despite the isolation rule above. The
+maintainer's disposition is to preserve published branch history rather than
+rewrite or split that commit. Treat it as a documented historical exception,
+not a precedent: every future generated snapshot refresh must land in a
+dedicated commit with its captured source inputs and provenance manifest.
+
 ## Boundaries and invariants
 
 - Keep the root `llm` package standard-library-only.
@@ -265,15 +274,18 @@ The parser must distinguish missing, valid, and invalid values:
 2. Parse only finite numeric values, and after multiplying by one million
    require the converted per-MTok value to remain finite and non-negative.
 3. Explicit zero is valid and represents free pricing.
-4. A negative prompt or completion value marks the row's token pricing as
-   non-fixed/unknown; return `nil` for the complete `ModelPricing` rather than
-   emitting a negative rate or pretending the model is free.
-5. A negative cache component is omitted as unknown and must never become a
-   negative typed rate. If the same row also has valid fixed prompt/completion
-   prices, retain those fixed prices.
-6. Missing or malformed individual components remain zero in the typed shape,
-   matching the existing partial-price behavior. When no component is valid,
-   return nil.
+4. A negative prompt or completion value marks only that component as
+   non-fixed/unknown; it must never become a negative rate or be presented as
+   free. Preserve independently valid sibling components.
+5. Apply the same independent degradation to cache-read and cache-write rates.
+   JSON `null`, non-numeric JSON types, malformed strings, overflow, and
+   non-finite values are unknown for that component and do not fail the row or
+   complete catalog.
+6. Record per-component availability in `ModelPricing.Availability`. This
+   additive metadata distinguishes an explicit zero/free component from the
+   zero value used for an unavailable component while retaining legacy pricing
+   values and cost-estimation behavior. Return nil only when no component is
+   valid.
 7. Keep the complete wire pricing object in `ModelInfo.Raw`.
 
 Do not add per-request, per-image, internal-reasoning, or tiered OpenRouter
@@ -378,8 +390,13 @@ Mapping rules:
 Extend `llm-cli models`:
 
 - JSON rows add optional `default_effort` and `reasoning_required` fields.
+- JSON pricing fields are emitted only for known components, so explicit zero
+  remains visible while unavailable prices are omitted. Cache-read and
+  cache-write pricing use their own fields.
 - Text output adds compact `DEFAULT EFFORT` and `REASONING REQUIRED` columns
   after `EFFORTS` and before `CAPABILITIES`.
+- Text pricing has separate input, output, cache-read, and cache-write columns;
+  unavailable components remain blank and explicit zero prints as free.
 - Empty/false metadata remains visually empty rather than printing a misleading
   negative assertion.
 

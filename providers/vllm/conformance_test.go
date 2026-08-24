@@ -101,6 +101,11 @@ func TestVLLMCapabilityConformance(t *testing.T) {
 					t.Errorf("configured reasoning fields = effort %#v budget %#v kwargs %#v", body["reasoning_effort"], body["thinking_token_budget"], kwargs)
 				}
 			}
+			if invocation.Path == llmtest.ConformanceStream {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, testutil.CompatibleActivationStream(invocation, model))
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, testutil.CompatibleActivationResponse(invocation, model))
 		})

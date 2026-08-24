@@ -88,6 +88,32 @@ func TestEstimateCostSelectsHighestStrictlyExceededPricingTier(t *testing.T) {
 	}
 }
 
+func TestEstimateCostHonorsComponentAvailability(t *testing.T) {
+	pricing := llm.ModelPricing{
+		OutputPerMTok: 2,
+		Availability:  &llm.ModelPricingAvailability{OutputPerMTok: true},
+	}
+
+	covered := llm.EstimateCost(llm.Usage{OutputTokens: 500}, pricing)
+	if covered.CostUSD == nil || *covered.CostUSD != 0.001 {
+		t.Fatalf("covered cost = %v, want 0.001", covered.CostUSD)
+	}
+
+	unknown := llm.EstimateCost(llm.Usage{InputTokens: 1, OutputTokens: 500}, pricing)
+	if unknown.CostUSD != nil || unknown.CostSource != "" {
+		t.Fatalf("unknown component produced estimate: %+v", unknown)
+	}
+
+	pricing.Tiers = []llm.ModelPricingTier{{
+		InputTokensAbove: 1, InputPerMTok: 3, OutputPerMTok: 4,
+		CacheReadPerMTok: 1, CacheWritePerMTok: 2,
+	}}
+	tiered := llm.EstimateCost(llm.Usage{InputTokens: 2, OutputTokens: 1}, pricing)
+	if tiered.CostUSD == nil || *tiered.CostUSD != 0.00001 {
+		t.Fatalf("complete tier cost = %v, want 0.00001", tiered.CostUSD)
+	}
+}
+
 func TestEstimateCostIgnoresInvalidCallerPricingTiers(t *testing.T) {
 	pricing := llm.ModelPricing{
 		InputPerMTok: 1,

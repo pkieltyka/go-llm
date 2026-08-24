@@ -89,10 +89,10 @@ func TestOpenAICapabilityConformance(t *testing.T) {
 		{Name: "required-tool-choice", Capability: llm.CapabilityToolChoiceRequired, Paths: []llmtest.ConformancePath{llmtest.ConformanceChat}, Request: func() *llm.Request { return testutil.ToolActivationRequest(model, llm.ToolChoiceRequired) }, Assert: testutil.AssertActivationToolCall},
 		{Name: "json-schema", Capability: llm.CapabilityJSONSchema, Paths: []llmtest.ConformancePath{llmtest.ConformanceChat}, Request: func() *llm.Request { return testutil.JSONSchemaActivationRequest(model) }, Assert: testutil.AssertActivationText},
 		{Name: "image-input", Capability: llm.CapabilityImageInput, Paths: []llmtest.ConformancePath{llmtest.ConformanceChat}, Request: func() *llm.Request { return testutil.ImageActivationRequest(model) }, Assert: testutil.AssertActivationText},
-		{Name: "prompt-cache-key", Capability: llm.CapabilityPromptCaching, Paths: []llmtest.ConformancePath{llmtest.ConformanceChat}, Request: func() *llm.Request {
+		{Name: "prompt-cache-key", Capability: llm.CapabilityPromptCaching, Paths: []llmtest.ConformancePath{llmtest.ConformanceChat, llmtest.ConformanceStream}, Request: func() *llm.Request {
 			return &llm.Request{Model: model, Messages: []llm.Message{llm.UserText("cache")}, SessionID: "session.activation/1"}
-		}, Assert: testutil.AssertActivationText},
-		{Name: "reasoning", Capability: llm.CapabilityReasoning, Paths: []llmtest.ConformancePath{llmtest.ConformanceChat}, Request: func() *llm.Request { return testutil.ReasoningActivationRequest(model) }, Assert: testutil.AssertActivationReasoning},
+		}, Assert: assertOpenAICacheResponse},
+		{Name: "reasoning", Capability: llm.CapabilityReasoning, Paths: []llmtest.ConformancePath{llmtest.ConformanceChat, llmtest.ConformanceStream}, Request: func() *llm.Request { return testutil.ReasoningActivationRequest(model) }, Assert: testutil.AssertActivationReasoning},
 	}}
 
 	llmtest.RunCapabilityConformance(t, func(t *testing.T, invocation llmtest.CapabilityInvocation) llm.Provider {
@@ -105,6 +105,11 @@ func TestOpenAICapabilityConformance(t *testing.T) {
 			}
 			if err := assertOpenAIActivationRequest(body, invocation); err != nil {
 				t.Errorf("%s native request: %v; body=%#v", invocation.CaseName, err, body)
+			}
+			if invocation.Path == llmtest.ConformanceStream {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, openAIActivationStream(invocation, model))
+				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, openAIActivationResponse(invocation, model))
@@ -188,10 +193,43 @@ func openAIActivationResponse(invocation llmtest.CapabilityInvocation, model str
 	case llm.CapabilityReasoning:
 		output = append([]any{map[string]any{"id": "rs_activation", "type": "reasoning", "summary": []any{map[string]any{"type": "summary_text", "text": "because"}}, "status": "completed"}}, output...)
 		usage["output_tokens_details"] = map[string]any{"reasoning_tokens": 1}
+	case llm.CapabilityPromptCaching:
+		usage["input_tokens"] = 3
+		usage["input_tokens_details"] = map[string]any{"cached_tokens": 2}
+		usage["total_tokens"] = 5
 	}
 	payload := map[string]any{"id": "resp_activation", "model": model, "status": "completed", "output": output, "usage": usage}
 	encoded, _ := json.Marshal(payload)
 	return string(encoded)
+}
+
+func openAIActivationStream(invocation llmtest.CapabilityInvocation, model string) string {
+	response := openAIActivationResponse(invocation, model)
+	parts := []string{
+		"event: response.created\n" + `data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_activation","model":"` + model + `","status":"in_progress","output":[]}}` + "\n\n",
+	}
+	sequence := 1
+	outputIndex := 0
+	if invocation.Capability == llm.CapabilityReasoning {
+		parts = append(parts, "event: response.reasoning_summary_text.delta\n"+`data: {"type":"response.reasoning_summary_text.delta","sequence_number":1,"item_id":"rs_activation","output_index":0,"summary_index":0,"delta":"because"}`+"\n\n")
+		sequence++
+		outputIndex = 1
+	}
+	parts = append(parts,
+		"event: response.output_text.delta\n"+fmt.Sprintf(`data: {"type":"response.output_text.delta","sequence_number":%d,"item_id":"msg_activation","output_index":%d,"content_index":0,"delta":"activated","logprobs":[]}`, sequence, outputIndex)+"\n\n",
+		"event: response.completed\n"+fmt.Sprintf(`data: {"type":"response.completed","sequence_number":%d,"response":%s}`, sequence+1, response)+"\n\n",
+	)
+	return strings.Join(parts, "")
+}
+
+func assertOpenAICacheResponse(response *llm.Response) error {
+	if err := testutil.AssertActivationText(response); err != nil {
+		return err
+	}
+	if response.Usage.InputTokens != 1 || response.Usage.CacheReadTokens != 2 || response.Usage.TotalTokens != 5 {
+		return fmt.Errorf("cache usage = %+v", response.Usage)
+	}
+	return nil
 }
 
 // TestProviderIdentitySurface pins the trivial identity accessors.

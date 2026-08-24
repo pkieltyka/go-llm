@@ -117,11 +117,11 @@ func TestAnthropicCapabilityConformance(t *testing.T) {
 		{Name: "required-tool-choice", Capability: llm.CapabilityToolChoiceRequired, Paths: []llmtest.ConformancePath{llmtest.ConformanceChat}, Request: func() *llm.Request { return testutil.ToolActivationRequest(model, llm.ToolChoiceRequired) }, Assert: testutil.AssertActivationToolCall},
 		{Name: "json-schema", Capability: llm.CapabilityJSONSchema, Paths: []llmtest.ConformancePath{llmtest.ConformanceChat}, Request: func() *llm.Request { return testutil.JSONSchemaActivationRequest(model) }, Assert: testutil.AssertActivationText},
 		{Name: "image-input", Capability: llm.CapabilityImageInput, Paths: []llmtest.ConformancePath{llmtest.ConformanceChat}, Request: func() *llm.Request { return testutil.ImageActivationRequest(model) }, Assert: testutil.AssertActivationText},
-		{Name: "prompt-cache-block", Capability: llm.CapabilityPromptCaching, Paths: []llmtest.ConformancePath{llmtest.ConformanceChat}, Request: func() *llm.Request {
+		{Name: "prompt-cache-block", Capability: llm.CapabilityPromptCaching, Paths: []llmtest.ConformancePath{llmtest.ConformanceChat, llmtest.ConformanceStream}, Request: func() *llm.Request {
 			return &llm.Request{Model: model, Messages: []llm.Message{llm.UserParts(llm.TextPart{Text: "cache", Cache: &llm.CacheHint{TTL: time.Hour}})}}
 		}, Assert: assertAnthropicCacheResponse},
 		{Name: "stop-sequences", Capability: llm.CapabilityStopSequences, Paths: []llmtest.ConformancePath{llmtest.ConformanceChat}, Request: func() *llm.Request { return testutil.StopActivationRequest(model) }, Assert: testutil.AssertActivationText},
-		{Name: "reasoning", Capability: llm.CapabilityReasoning, Paths: []llmtest.ConformancePath{llmtest.ConformanceChat}, Request: func() *llm.Request { return testutil.ReasoningActivationRequest(model) }, Assert: testutil.AssertActivationReasoning},
+		{Name: "reasoning", Capability: llm.CapabilityReasoning, Paths: []llmtest.ConformancePath{llmtest.ConformanceChat, llmtest.ConformanceStream}, Request: func() *llm.Request { return testutil.ReasoningActivationRequest(model) }, Assert: testutil.AssertActivationReasoning},
 	}}
 
 	llmtest.RunCapabilityConformance(t, func(t *testing.T, invocation llmtest.CapabilityInvocation) llm.Provider {
@@ -134,6 +134,11 @@ func TestAnthropicCapabilityConformance(t *testing.T) {
 			}
 			if err := assertAnthropicActivationRequest(body, invocation); err != nil {
 				t.Errorf("%s native request: %v; body=%#v", invocation.CaseName, err, body)
+			}
+			if invocation.Path == llmtest.ConformanceStream {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, anthropicActivationStream(invocation, model))
+				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, anthropicActivationResponse(invocation, model))
@@ -236,6 +241,37 @@ func anthropicActivationResponse(invocation llmtest.CapabilityInvocation, model 
 	}
 	encoded, _ := json.Marshal(payload)
 	return string(encoded)
+}
+
+func anthropicActivationStream(invocation llmtest.CapabilityInvocation, model string) string {
+	inputUsage := map[string]any{"input_tokens": 1, "output_tokens": 0}
+	if invocation.Capability == llm.CapabilityPromptCaching {
+		inputUsage["cache_read_input_tokens"] = 2
+		inputUsage["cache_creation_input_tokens"] = 3
+	}
+	message := map[string]any{"id": "msg_activation", "type": "message", "role": "assistant", "model": model, "usage": inputUsage}
+	start, _ := json.Marshal(map[string]any{"type": "message_start", "message": message})
+	events := []string{"event: message_start\ndata: " + string(start) + "\n\n"}
+	index := 0
+	if invocation.Capability == llm.CapabilityReasoning {
+		events = append(events,
+			`event: content_block_start`+"\n"+`data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"because","signature":"fixture"}}`+"\n\n",
+			`event: content_block_stop`+"\n"+`data: {"type":"content_block_stop","index":0}`+"\n\n",
+		)
+		index = 1
+	}
+	events = append(events,
+		fmt.Sprintf("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":%d,\"content_block\":{\"type\":\"text\",\"text\":\"activated\"}}\n\n", index),
+		fmt.Sprintf("event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":%d}\n\n", index),
+	)
+	outputUsage := map[string]any{"output_tokens": 1}
+	if invocation.Capability == llm.CapabilityReasoning {
+		outputUsage["output_tokens"] = 2
+		outputUsage["output_tokens_details"] = map[string]any{"thinking_tokens": 1}
+	}
+	delta, _ := json.Marshal(map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": "end_turn"}, "usage": outputUsage})
+	events = append(events, "event: message_delta\ndata: "+string(delta)+"\n\n", "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	return strings.Join(events, "")
 }
 
 func assertAnthropicCacheResponse(response *llm.Response) error {

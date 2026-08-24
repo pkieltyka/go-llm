@@ -182,6 +182,39 @@ func TestParseOpenAICodexModelsDataShapeAndEmpty(t *testing.T) {
 	}
 }
 
+func TestCodexModelsPreserveExplicitEmptyAndUnknownOnlyEffortLadders(t *testing.T) {
+	models, err := parseCodexCatalog([]byte(`{"models":[
+		{"id":"gpt-5.4","reasoning_efforts":[]},
+		{"id":"gpt-5.5","reasoning_efforts":["ultra"]},
+		{"id":"gpt-5.4-mini"}
+	]}`), nil)
+	if err != nil {
+		t.Fatalf("parseCodexCatalog: %v", err)
+	}
+	if len(models) != 3 {
+		t.Fatalf("models = %d, want 3", len(models))
+	}
+	for _, index := range []int{0, 1} {
+		if models[index].SupportedEfforts == nil || len(models[index].SupportedEfforts) != 0 {
+			t.Fatalf("model %q efforts = %#v, want explicit empty", models[index].ID, models[index].SupportedEfforts)
+		}
+	}
+	if models[2].SupportedEfforts == nil || len(models[2].SupportedEfforts) == 0 {
+		t.Fatalf("omitted live ladder did not enrich from fallback: %#v", models[2].SupportedEfforts)
+	}
+
+	capacityBearing := make([]llm.Effort, 0, 4)
+	cloned := cloneCodexModels([]llm.ModelInfo{{ID: "empty", SupportedEfforts: capacityBearing}})
+	capacityBearing = append(capacityBearing, llm.EffortMax)
+	if cloned[0].SupportedEfforts == nil || len(cloned[0].SupportedEfforts) != 0 {
+		t.Fatalf("clone collapsed or aliased explicit empty efforts: %#v", cloned[0].SupportedEfforts)
+	}
+	cloned[0].SupportedEfforts = append(cloned[0].SupportedEfforts, llm.EffortLow)
+	if capacityBearing[0] != llm.EffortMax {
+		t.Fatalf("clone shares source backing storage: %#v", capacityBearing)
+	}
+}
+
 func TestOpenAICodexModelsTTLsAndFallbacks(t *testing.T) {
 	access := fakeCodexJWT(t, "acct-cache")
 	var calls atomic.Int32

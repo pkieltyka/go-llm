@@ -83,7 +83,7 @@ func TestOpenRouterCapabilityConformance(t *testing.T) {
 		llmtest.CapabilityCase{
 			Name:       "prompt-cache-content",
 			Capability: llm.CapabilityPromptCaching,
-			Paths:      []llmtest.ConformancePath{llmtest.ConformanceChat},
+			Paths:      []llmtest.ConformancePath{llmtest.ConformanceChat, llmtest.ConformanceStream},
 			Request: func() *llm.Request {
 				return &llm.Request{Model: model, Messages: []llm.Message{llm.UserParts(llm.TextPart{Text: "cache me", Cache: &llm.CacheHint{TTL: time.Hour}})}}
 			},
@@ -92,7 +92,7 @@ func TestOpenRouterCapabilityConformance(t *testing.T) {
 		llmtest.CapabilityCase{
 			Name:       "prompt-cache-tool-result",
 			Capability: llm.CapabilityPromptCaching,
-			Paths:      []llmtest.ConformancePath{llmtest.ConformanceChat},
+			Paths:      []llmtest.ConformancePath{llmtest.ConformanceChat, llmtest.ConformanceStream},
 			Request: func() *llm.Request {
 				return &llm.Request{Model: model, Messages: []llm.Message{{Role: llm.RoleTool, Parts: []llm.Part{
 					llm.ToolResultPart{ToolCallID: "call_activation", Content: []llm.Part{llm.TextPart{Text: "cached result", Cache: &llm.CacheHint{}}}},
@@ -128,6 +128,15 @@ func TestOpenRouterCapabilityConformance(t *testing.T) {
 					t.Errorf("tool-result cache request: %v; body=%#v", err, body)
 				}
 			}
+			if invocation.Path == llmtest.ConformanceStream {
+				w.Header().Set("Content-Type", "text/event-stream")
+				if invocation.Capability == llm.CapabilityPromptCaching {
+					_, _ = io.WriteString(w, openRouterCacheActivationStream(model))
+				} else {
+					_, _ = io.WriteString(w, testutil.CompatibleActivationStream(invocation, model))
+				}
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			if invocation.Capability == llm.CapabilityPromptCaching {
 				_, _ = io.WriteString(w, `{"id":"activation_response","model":"anthropic/claude-test","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"activated"}}],"usage":{"prompt_tokens":3,"prompt_tokens_details":{"cached_tokens":2},"completion_tokens":1,"total_tokens":4}}`)
@@ -142,6 +151,12 @@ func TestOpenRouterCapabilityConformance(t *testing.T) {
 		}
 		return provider
 	}, profile)
+}
+
+func openRouterCacheActivationStream(model string) string {
+	return `data: {"id":"activation_response","model":"` + model + `","choices":[{"index":0,"delta":{"role":"assistant","content":"activated"},"finish_reason":"stop"}]}` + "\n\n" +
+		`data: {"id":"activation_response","model":"` + model + `","choices":[],"usage":{"prompt_tokens":3,"prompt_tokens_details":{"cached_tokens":2},"completion_tokens":1,"total_tokens":4}}` + "\n\n" +
+		"data: [DONE]\n\n"
 }
 
 func assertOpenRouterCacheBlock(body map[string]any, toolResult bool, ttl string) error {

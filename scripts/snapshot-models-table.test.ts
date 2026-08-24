@@ -34,7 +34,21 @@ async function fixtureSnapshot(): Promise<SnapshotDocument> {
   );
 }
 
-test("maps models.dev object maps and merges only defined values", async () => {
+function snapshotDocument(generatedAt: string, models: SnapshotDocument["models"]): SnapshotDocument {
+  return {
+    schema_version: 1,
+    generator: "go-llm-model-snapshot/v1",
+    generated_at: generatedAt,
+    sources: ["models.dev", "openrouter", "overrides"].map((id, index) => ({
+      id,
+      url: `fixture:${id}`,
+      sha256: String(index + 1).repeat(64),
+    })),
+    models,
+  };
+}
+
+test("maps sources with deterministic schema, timestamp, and provenance", async () => {
   const snapshot = await fixtureSnapshot();
   assert.deepEqual(
     snapshot.models.map((row) => `${row.provider}/${row.id}`),
@@ -74,6 +88,36 @@ test("maps models.dev object maps and merges only defined values", async () => {
     for (const price of Object.values(model.pricing ?? {})) assert.ok(price >= 0);
   }
   assert.deepEqual(snapshot, await fixtureSnapshot(), "fixture snapshots must be deterministic");
+  assert.equal(snapshot.schema_version, 1);
+  assert.equal(snapshot.generator, "go-llm-model-snapshot/v1");
+  assert.equal(snapshot.generated_at, "2026-07-10T00:00:00.000Z");
+  assert.deepEqual(snapshot.sources.map((source) => source.id), ["models.dev", "openrouter", "overrides"]);
+  for (const source of snapshot.sources) {
+    assert.match(source.sha256, /^[0-9a-f]{64}$/);
+    assert.match(source.url, /^memory:/);
+  }
+});
+
+test("OpenRouter pricing accepts only strict decimal spellings per component", async () => {
+  const openRouter = structuredClone(await fixture("openrouter-models.json")) as any;
+  openRouter.data.push(
+    { id: "strict/prompt", pricing: { prompt: "0x1", completion: "0.000002" } },
+    { id: "strict/completion", pricing: { prompt: "0.000001", completion: "1_0" } },
+    { id: "strict/cache-read", pricing: { prompt: "0.000001", input_cache_read: " " } },
+    { id: "strict/cache-write", pricing: { input_cache_read: "0", input_cache_write: "+1" } },
+  );
+  const snapshot = buildSnapshot(
+    await fixture("models-dev.json"),
+    openRouter,
+    await fixture("overrides.json"),
+    { generatedAt: "2026-07-10T00:00:00Z", minimums: fixtureMinimums },
+  );
+  const pricing = (id: string) => snapshot.models.find((row) => row.provider === "openrouter" && row.id === id)?.pricing;
+
+  assert.deepEqual(pricing("strict/prompt"), { output_per_mtok: 2 });
+  assert.deepEqual(pricing("strict/completion"), { input_per_mtok: 1 });
+  assert.deepEqual(pricing("strict/cache-read"), { input_per_mtok: 1 });
+  assert.deepEqual(pricing("strict/cache-write"), { cache_read_per_mtok: 0 });
 });
 
 test("mergeRow never clobbers defined values with undefined", () => {
@@ -336,14 +380,11 @@ test("file-backed destructive checks preserve supported efforts", async (t) => {
   const directory = await mkdtemp(resolve(tmpdir(), "go-llm-efforts-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const output = resolve(directory, "models.json");
-  const previous: SnapshotDocument = {
-    generated_at: "before",
-    models: Array.from({ length: 4 }, (_, index) => ({
+	const previous = snapshotDocument("2026-07-10T00:00:00Z", Array.from({ length: 4 }, (_, index) => ({
       provider: "anthropic",
       id: `claude-${index + 1}`,
       supported_efforts: ["none", "low", "high"],
-    })),
-  };
+    })));
   await persistSnapshot(output, previous);
 
   const stripped: SnapshotDocument = {
@@ -358,9 +399,7 @@ test("file-backed destructive checks preserve pricing tiers", async (t) => {
   const directory = await mkdtemp(resolve(tmpdir(), "go-llm-tiers-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const output = resolve(directory, "models.json");
-  const previous: SnapshotDocument = {
-    generated_at: "before",
-    models: Array.from({ length: 4 }, (_, index) => ({
+	const previous = snapshotDocument("2026-07-10T00:00:00Z", Array.from({ length: 4 }, (_, index) => ({
       provider: "anthropic",
       id: `claude-${index + 1}`,
       pricing: {
@@ -375,8 +414,7 @@ test("file-backed destructive checks preserve pricing tiers", async (t) => {
           },
         ],
       },
-    })),
-  };
+    })));
   await persistSnapshot(output, previous);
 
   const stripped = structuredClone(previous);

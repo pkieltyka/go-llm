@@ -17,61 +17,62 @@ import (
 
 func TestParsePricing(t *testing.T) {
 	tests := []struct {
-		name                  string
-		prompt, completion    string
-		cacheRead, cacheWrite string
-		want                  *llm.ModelPricing
+		name string
+		raw  string
+		want *llm.ModelPricing
 	}{
 		{
-			name:       "ordinary positive rates",
-			prompt:     "0.000001",
-			completion: "0.0000025",
-			want:       &llm.ModelPricing{InputPerMTok: 1, OutputPerMTok: 2.5},
+			name: "ordinary positive rates",
+			raw:  `{"prompt":"0.000001","completion":"0.0000025"}`,
+			want: knownPricing(1, 2.5, 0, 0, true, true, false, false),
 		},
 		{
-			name:       "explicit free rates",
-			prompt:     "0",
-			completion: "0.0",
-			want:       &llm.ModelPricing{},
+			name: "explicit free rates",
+			raw:  `{"prompt":"0","completion":0}`,
+			want: knownPricing(0, 0, 0, 0, true, true, false, false),
 		},
-		{name: "negative prompt invalidates token pricing", prompt: "-1", completion: "0.000002"},
-		{name: "negative completion invalidates token pricing", prompt: "0.000001", completion: " -1 "},
+		{name: "negative prompt preserves completion", raw: `{"prompt":"-1","completion":"0.000002"}`, want: knownPricing(0, 2, 0, 0, false, true, false, false)},
+		{name: "negative completion preserves prompt", raw: `{"prompt":"0.000001","completion":" -1 "}`, want: knownPricing(1, 0, 0, 0, true, false, false, false)},
 		{
-			name:       "negative cache rate is omitted",
-			prompt:     "0.000001",
-			completion: "0.000002",
-			cacheRead:  "-1",
-			cacheWrite: "0.0000005",
-			want:       &llm.ModelPricing{InputPerMTok: 1, OutputPerMTok: 2, CacheWritePerMTok: 0.5},
+			name: "negative cache rate is omitted",
+			raw:  `{"prompt":"0.000001","completion":"0.000002","input_cache_read":"-1","input_cache_write":"0.0000005"}`,
+			want: knownPricing(1, 2, 0, 0.5, true, true, false, true),
 		},
 		{
-			name:       "cache rates",
-			cacheRead:  "0.00000025",
-			cacheWrite: "0.00000075",
-			want:       &llm.ModelPricing{CacheReadPerMTok: 0.25, CacheWritePerMTok: 0.75},
+			name: "cache rates",
+			raw:  `{"input_cache_read":"0.00000025","input_cache_write":"0.00000075"}`,
+			want: knownPricing(0, 0, 0.25, 0.75, false, false, true, true),
 		},
-		{name: "all absent"},
+		{name: "all absent", raw: `{}`},
 		{
-			name:   "surrounding whitespace",
-			prompt: " 0.0000015\t",
-			want:   &llm.ModelPricing{InputPerMTok: 1.5},
+			name: "surrounding whitespace",
+			raw:  `{"prompt":" 0.0000015\t"}`,
+			want: knownPricing(1.5, 0, 0, 0, true, false, false, false),
 		},
 		{
-			name:       "malformed component preserves valid component",
-			prompt:     "not-a-number",
-			completion: "0.000002",
-			want:       &llm.ModelPricing{OutputPerMTok: 2},
+			name: "malformed component preserves valid component",
+			raw:  `{"prompt":"not-a-number","completion":"0.000002"}`,
+			want: knownPricing(0, 2, 0, 0, false, true, false, false),
 		},
-		{name: "all malformed", prompt: "wat", completion: ""},
-		{name: "parse overflow", prompt: "1e309"},
-		{name: "nan", prompt: "NaN"},
-		{name: "positive infinity", prompt: "+Inf"},
-		{name: "negative infinity", prompt: "-Infinity"},
-		{name: "per-million overflow", prompt: "1e303"},
+		{name: "all malformed", raw: `{"prompt":"wat","completion":""}`},
+		{name: "parse overflow", raw: `{"prompt":"1e309"}`},
+		{name: "nan", raw: `{"prompt":"NaN"}`},
+		{name: "positive infinity", raw: `{"prompt":"+Inf"}`},
+		{name: "negative infinity", raw: `{"prompt":"-Infinity"}`},
+		{name: "per-million overflow", raw: `{"prompt":"1e303"}`},
+		{name: "null components", raw: `{"prompt":null,"completion":null,"input_cache_read":null,"input_cache_write":null}`},
+		{name: "wrong typed components", raw: `{"prompt":true,"completion":{},"input_cache_read":[],"input_cache_write":false}`},
+		{name: "wrong type preserves numeric sibling", raw: `{"prompt":true,"completion":"0.000002"}`, want: knownPricing(0, 2, 0, 0, false, true, false, false)},
+		{name: "non-decimal spellings", raw: `{"prompt":"0x1","completion":"1_0","input_cache_read":".5","input_cache_write":"+1"}`},
+		{
+			name: "invalid decimal spellings preserve valid siblings",
+			raw:  `{"prompt":"0x1","completion":"0.000002","input_cache_read":"1_0","input_cache_write":"0"}`,
+			want: knownPricing(0, 2, 0, 0, false, true, false, true),
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := parsePricing(tt.prompt, tt.completion, tt.cacheRead, tt.cacheWrite)
+			got := parsePricing(json.RawMessage(tt.raw))
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("parsePricing = %+v, want %+v", got, tt.want)
 			}
@@ -89,6 +90,16 @@ func TestParsePricing(t *testing.T) {
 	}
 }
 
+func knownPricing(input, output, cacheRead, cacheWrite float64, inputKnown, outputKnown, cacheReadKnown, cacheWriteKnown bool) *llm.ModelPricing {
+	return &llm.ModelPricing{
+		InputPerMTok: input, OutputPerMTok: output, CacheReadPerMTok: cacheRead, CacheWritePerMTok: cacheWrite,
+		Availability: &llm.ModelPricingAvailability{
+			InputPerMTok: inputKnown, OutputPerMTok: outputKnown,
+			CacheReadPerMTok: cacheReadKnown, CacheWritePerMTok: cacheWriteKnown,
+		},
+	}
+}
+
 func TestOpenRouterModelPricingPreservesFreeCacheAndRawValues(t *testing.T) {
 	p := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/models" {
@@ -98,27 +109,31 @@ func TestOpenRouterModelPricingPreservesFreeCacheAndRawValues(t *testing.T) {
 			{"id":"free","pricing":{"prompt":"0","completion":"0","input_cache_read":"0","input_cache_write":"0","request":"9"}},
 			{"id":"dynamic","pricing":{"prompt":"-1","completion":"0.000002","input_cache_read":"0.0000002","input_cache_write":"0.0000003"}},
 			{"id":"fixed-cache","pricing":{"prompt":"0.000001","completion":"0.000002","input_cache_read":"0.00000025","input_cache_write":"0.00000075","future_tier":{"kept":true}}},
-			{"id":"unknown-cache","pricing":{"prompt":"0.000001","completion":"0.000002","input_cache_read":"-1","input_cache_write":"wat"}}
+			{"id":"unknown-cache","pricing":{"prompt":"0.000001","completion":"0.000002","input_cache_read":"-1","input_cache_write":"wat"}},
+			{"id":"wrong-types","pricing":{"prompt":true,"completion":"0.000003","input_cache_read":null,"input_cache_write":{"future":true}}}
 		]}`)
 	})
 	models, err := p.Models(context.Background())
 	if err != nil {
 		t.Fatalf("Models returned error: %v", err)
 	}
-	if len(models) != 4 {
-		t.Fatalf("models = %d, want 4", len(models))
+	if len(models) != 5 {
+		t.Fatalf("models = %d, want 5", len(models))
 	}
-	if models[0].Pricing == nil || !reflect.DeepEqual(models[0].Pricing, &llm.ModelPricing{}) {
+	if models[0].Pricing == nil || !reflect.DeepEqual(models[0].Pricing, knownPricing(0, 0, 0, 0, true, true, true, true)) {
 		t.Fatalf("free pricing = %+v, want non-nil zero rates", models[0].Pricing)
 	}
-	if models[1].Pricing != nil {
-		t.Fatalf("dynamic pricing = %+v, want nil", models[1].Pricing)
+	if got := models[1].Pricing; got == nil || got.HasInputPrice() || !got.HasOutputPrice() || !got.HasCacheReadPrice() || !got.HasCacheWritePrice() {
+		t.Fatalf("dynamic pricing availability = %+v", got)
 	}
 	if got := models[2].Pricing; got == nil || got.InputPerMTok != 1 || got.OutputPerMTok != 2 || got.CacheReadPerMTok != 0.25 || got.CacheWritePerMTok != 0.75 {
 		t.Fatalf("fixed cache pricing = %+v", got)
 	}
 	if got := models[3].Pricing; got == nil || got.InputPerMTok != 1 || got.OutputPerMTok != 2 || got.CacheReadPerMTok != 0 || got.CacheWritePerMTok != 0 {
 		t.Fatalf("unknown cache pricing = %+v", got)
+	}
+	if got := models[4].Pricing; got == nil || got.HasInputPrice() || !got.HasOutputPrice() || got.OutputPerMTok != 3 || got.HasCacheReadPrice() || got.HasCacheWritePrice() {
+		t.Fatalf("wrong-typed pricing = %+v", got)
 	}
 	for _, model := range models {
 		if model.Pricing != nil && (model.Pricing.InputPerMTok < 0 || model.Pricing.OutputPerMTok < 0 || model.Pricing.CacheReadPerMTok < 0 || model.Pricing.CacheWritePerMTok < 0) {

@@ -1,5 +1,24 @@
 {
-  "generated_at": "2026-08-24T00:30:55.877Z",
+  "schema_version": 1,
+  "generator": "go-llm-model-snapshot/v1",
+  "generated_at": "2026-08-24T00:00:00Z",
+  "sources": [
+    {
+      "id": "models.dev",
+      "url": "https://models.dev/api.json",
+      "sha256": "7f5dffb8f86caee2571c20a9921b5822c8e6d83a96bd5ab202d8556595eef77f"
+    },
+    {
+      "id": "openrouter",
+      "url": "https://openrouter.ai/api/v1/models",
+      "sha256": "d0a1af263bd917e2fd2deaf25056df07774f6849287c3aefac8f289155b5f2b2"
+    },
+    {
+      "id": "overrides",
+      "url": "file:scripts/overrides.json",
+      "sha256": "30c769b4378579c5050e4f7aef396ce446da0b6c87b3ba06a030f381279200f3"
+    }
+  ],
   "models": [
     {
       "provider": "anthropic",
@@ -2143,9 +2162,9 @@
       "context_window": 1048576,
       "max_output_tokens": 384000,
       "pricing": {
-        "input_per_mtok": 0.05866,
-        "output_per_mtok": 0.11732,
-        "cache_read_per_mtok": 0.011732000000000001
+        "input_per_mtok": 0.056,
+        "output_per_mtok": 0.112,
+        "cache_read_per_mtok": 0.0112
       },
       "supported_efforts": [
         "high",
@@ -2160,9 +2179,9 @@
       "context_window": 1310720,
       "max_output_tokens": 131072,
       "pricing": {
-        "input_per_mtok": 0.14,
-        "output_per_mtok": 0.28,
-        "cache_read_per_mtok": 0.028
+        "input_per_mtok": 0.0658,
+        "output_per_mtok": 0.1316,
+        "cache_read_per_mtok": 0.01316
       },
       "supported_efforts": [
         "low",
@@ -2196,9 +2215,9 @@
       "context_window": 1048576,
       "max_output_tokens": 384000,
       "pricing": {
-        "input_per_mtok": 0.519216,
-        "output_per_mtok": 1.038432,
-        "cache_read_per_mtok": 0.043268
+        "input_per_mtok": 0.522,
+        "output_per_mtok": 1.044,
+        "cache_read_per_mtok": 0.0435
       },
       "supported_efforts": [
         "high",
@@ -2940,32 +2959,6 @@
     },
     {
       "provider": "openrouter",
-      "id": "inclusionai/ling-2.6-1t",
-      "display_name": "inclusionAI: Ling-2.6-1T",
-      "context_window": 262144,
-      "max_output_tokens": 32768,
-      "pricing": {
-        "input_per_mtok": 0.075,
-        "output_per_mtok": 0.625,
-        "cache_read_per_mtok": 0.015
-      },
-      "canonical_id": "inclusionai/ling-2.6-1t"
-    },
-    {
-      "provider": "openrouter",
-      "id": "inclusionai/ling-2.6-flash",
-      "display_name": "inclusionAI: Ling-2.6-flash",
-      "context_window": 262144,
-      "max_output_tokens": 32768,
-      "pricing": {
-        "input_per_mtok": 0.01,
-        "output_per_mtok": 0.03,
-        "cache_read_per_mtok": 0.002
-      },
-      "canonical_id": "inclusionai/ling-2.6-flash"
-    },
-    {
-      "provider": "openrouter",
       "id": "inclusionai/ling-3.0-flash",
       "display_name": "Ling-3.0-flash",
       "context_window": 262144,
@@ -2976,23 +2969,6 @@
         "cache_read_per_mtok": 0.004200000000000001
       },
       "canonical_id": "inclusionai/ling-3.0-flash"
-    },
-    {
-      "provider": "openrouter",
-      "id": "inclusionai/ring-2.6-1t",
-      "display_name": "inclusionAI: Ring-2.6-1T",
-      "context_window": 262144,
-      "max_output_tokens": 65536,
-      "pricing": {
-        "input_per_mtok": 0.075,
-        "output_per_mtok": 0.625,
-        "cache_read_per_mtok": 0.015
-      },
-      "supported_efforts": [
-        "high",
-        "xhigh"
-      ],
-      "canonical_id": "inclusionai/ring-2.6-1t"
     },
     {
       "provider": "openrouter",
@@ -3352,9 +3328,9 @@
       "context_window": 204800,
       "max_output_tokens": 131072,
       "pricing": {
-        "input_per_mtok": 0.24,
-        "output_per_mtok": 0.96,
-        "cache_read_per_mtok": 0.048
+        "input_per_mtok": 0.3,
+        "output_per_mtok": 1.2,
+        "cache_read_per_mtok": 0.06
       },
       "canonical_id": "minimax/minimax-m2.7"
     },
@@ -3395,6 +3371,19 @@
         "cache_read_per_mtok": 0.03
       },
       "canonical_id": "mistralai/codestral-2508"
+    },
+    {
+      "provider": "openrouter",
+      "id": "mistralai/devstral-2512",
+      "display_name": "Mistral: Devstral 2 2512",
+      "context_window": 262144,
+      "max_output_tokens": 262144,
+      "pricing": {
+        "input_per_mtok": 0.44,
+        "output_per_mtok": 2.2,
+        "cache_read_per_mtok": 0.044
+      },
+      "canonical_id": "mistralai/devstral-2512"
     },
     {
       "provider": "openrouter",
@@ -3676,9 +3665,9 @@
       "context_window": 262144,
       "max_output_tokens": 262144,
       "pricing": {
-        "input_per_mtok": 0.44999999999999996,
-        "output_per_mtok": 2.25,
-        "cache_read_per_mtok": 0.07
+        "input_per_mtok": 0.6,
+        "output_per_mtok": 3,
+        "cache_read_per_mtok": 0.09999999999999999
       },
       "canonical_id": "moonshotai/kimi-k2.5"
     },
@@ -3704,7 +3693,7 @@
       "pricing": {
         "input_per_mtok": 0.67,
         "output_per_mtok": 3.4,
-        "cache_read_per_mtok": 0.16999999999999998
+        "cache_read_per_mtok": 0.19
       },
       "canonical_id": "moonshotai/kimi-k2.7-code"
     },
@@ -3851,18 +3840,6 @@
     },
     {
       "provider": "openrouter",
-      "id": "nvidia/nemotron-3-nano-30b-a3b:free",
-      "display_name": "NVIDIA: Nemotron 3 Nano 30B A3B (free)",
-      "context_window": 256000,
-      "max_output_tokens": 256000,
-      "pricing": {
-        "input_per_mtok": 0,
-        "output_per_mtok": 0
-      },
-      "canonical_id": "nvidia/nemotron-3-nano-30b-a3b:free"
-    },
-    {
-      "provider": "openrouter",
       "id": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
       "display_name": "NVIDIA: Nemotron 3 Nano Omni (free)",
       "context_window": 256000,
@@ -3986,30 +3963,6 @@
         "output_per_mtok": 0
       },
       "canonical_id": "nvidia/nemotron-3.5-lightning:free"
-    },
-    {
-      "provider": "openrouter",
-      "id": "nvidia/nemotron-nano-12b-v2-vl:free",
-      "display_name": "NVIDIA: Nemotron Nano 12B 2 VL (free)",
-      "context_window": 128000,
-      "max_output_tokens": 128000,
-      "pricing": {
-        "input_per_mtok": 0,
-        "output_per_mtok": 0
-      },
-      "canonical_id": "nvidia/nemotron-nano-12b-v2-vl:free"
-    },
-    {
-      "provider": "openrouter",
-      "id": "nvidia/nemotron-nano-9b-v2:free",
-      "display_name": "NVIDIA: Nemotron Nano 9B V2 (free)",
-      "context_window": 128000,
-      "max_output_tokens": 128000,
-      "pricing": {
-        "input_per_mtok": 0,
-        "output_per_mtok": 0
-      },
-      "canonical_id": "nvidia/nemotron-nano-9b-v2:free"
     },
     {
       "provider": "openrouter",
@@ -5837,7 +5790,7 @@
       "provider": "openrouter",
       "id": "qwen/qwen3-235b-a22b-thinking-2507",
       "display_name": "Qwen: Qwen3 235B A22B Thinking 2507",
-      "context_window": 262144,
+      "context_window": 131072,
       "max_output_tokens": 32768,
       "pricing": {
         "input_per_mtok": 0.22999999999999998,
@@ -6920,7 +6873,7 @@
       "id": "undi95/remm-slerp-l2-13b",
       "display_name": "ReMM SLERP 13B",
       "context_window": 6144,
-      "max_output_tokens": 6144,
+      "max_output_tokens": 4096,
       "pricing": {
         "input_per_mtok": 0.44999999999999996,
         "output_per_mtok": 0.65

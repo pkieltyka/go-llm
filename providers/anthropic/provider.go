@@ -53,6 +53,10 @@ func (p *Provider) Models(ctx context.Context) ([]llm.ModelInfo, error) {
 		if info, ok := llm.LookupModelInfo(providerName, model.ID); ok {
 			if info.Pricing != nil {
 				pricing := *info.Pricing
+				if info.Pricing.Availability != nil {
+					availability := *info.Pricing.Availability
+					pricing.Availability = &availability
+				}
 				pricing.Tiers = append([]llm.ModelPricingTier(nil), info.Pricing.Tiers...)
 				models[len(models)-1].Pricing = &pricing
 			}

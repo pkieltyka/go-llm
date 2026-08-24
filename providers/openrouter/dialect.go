@@ -1,10 +1,13 @@
 package openrouter
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"math"
 	"net/http"
+	"regexp"
+	"strconv"
 	"strings"
 
 	sdk "github.com/openai/openai-go/v3"
@@ -248,12 +251,7 @@ func (dialect) Models(ctx context.Context, p *chatcompletions.Provider) ([]llm.M
 			TopProvider struct {
 				MaxCompletionTokens int `json:"max_completion_tokens"`
 			} `json:"top_provider"`
-			Pricing struct {
-				Prompt          string `json:"prompt"`
-				Completion      string `json:"completion"`
-				InputCacheRead  string `json:"input_cache_read"`
-				InputCacheWrite string `json:"input_cache_write"`
-			} `json:"pricing"`
+			Pricing       json.RawMessage `json:"pricing"`
 			Reasoning     json.RawMessage `json:"reasoning"`
 			CanonicalSlug string          `json:"canonical_slug"`
 		}
@@ -269,7 +267,7 @@ func (dialect) Models(ctx context.Context, p *chatcompletions.Provider) ([]llm.M
 			Capabilities:    openRouterModelCapabilities(row.SupportedParameters, row.Modalities, row.Architecture.InputModalities),
 			Raw:             append(json.RawMessage(nil), rawRow...),
 		}
-		if pricing := parsePricing(row.Pricing.Prompt, row.Pricing.Completion, row.Pricing.InputCacheRead, row.Pricing.InputCacheWrite); pricing != nil {
+		if pricing := parsePricing(row.Pricing); pricing != nil {
 			info.Pricing = pricing
 		}
 		mapReasoningMetadata(&info, row.Reasoning)
@@ -317,14 +315,15 @@ func openRouterModelCapabilities(parameters, legacyModalities, inputModalities [
 	return capabilities
 }
 
-func parsePricing(prompt, completion, cacheRead, cacheWrite string) *llm.ModelPricing {
-	in, inStatus := parsePrice(prompt)
-	out, outStatus := parsePrice(completion)
-	if inStatus == priceNegative || outStatus == priceNegative {
+func parsePricing(raw json.RawMessage) *llm.ModelPricing {
+	var components map[string]json.RawMessage
+	if len(raw) == 0 || json.Unmarshal(raw, &components) != nil || components == nil {
 		return nil
 	}
-	read, readStatus := parsePrice(cacheRead)
-	write, writeStatus := parsePrice(cacheWrite)
+	in, inStatus := parsePrice(components["prompt"])
+	out, outStatus := parsePrice(components["completion"])
+	read, readStatus := parsePrice(components["input_cache_read"])
+	write, writeStatus := parsePrice(components["input_cache_write"])
 	if inStatus != priceValid && outStatus != priceValid && readStatus != priceValid && writeStatus != priceValid {
 		return nil
 	}
@@ -333,6 +332,12 @@ func parsePricing(prompt, completion, cacheRead, cacheWrite string) *llm.ModelPr
 		OutputPerMTok:     out,
 		CacheReadPerMTok:  read,
 		CacheWritePerMTok: write,
+		Availability: &llm.ModelPricingAvailability{
+			InputPerMTok:      inStatus == priceValid,
+			OutputPerMTok:     outStatus == priceValid,
+			CacheReadPerMTok:  readStatus == priceValid,
+			CacheWritePerMTok: writeStatus == priceValid,
+		},
 	}
 }
 
@@ -344,13 +349,34 @@ const (
 	priceNegative
 )
 
-func parsePrice(s string) (float64, priceStatus) {
-	s = strings.TrimSpace(s)
+var decimalPricePattern = regexp.MustCompile(`^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$`)
+
+func parsePrice(raw json.RawMessage) (float64, priceStatus) {
+	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return 0, priceInvalid
+	}
+	var valueToken any
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&valueToken); err != nil {
+		return 0, priceInvalid
+	}
+	var s string
+	switch value := valueToken.(type) {
+	case string:
+		s = strings.TrimSpace(value)
+	case json.Number:
+		s = string(value)
+	default:
+		return 0, priceInvalid
+	}
 	if s == "" {
 		return 0, priceInvalid
 	}
-	var value float64
-	err := json.Unmarshal([]byte(s), &value)
+	if !decimalPricePattern.MatchString(s) {
+		return 0, priceInvalid
+	}
+	value, err := strconv.ParseFloat(s, 64)
 	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) {
 		return 0, priceInvalid
 	}

@@ -3,6 +3,7 @@ package llm
 import (
 	"bytes"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -27,9 +28,24 @@ type parsedModelTable struct {
 }
 
 type modelTableDocument struct {
-	GeneratedAt string          `json:"generated_at"`
-	Models      []modelTableRow `json:"models"`
+	SchemaVersion int                `json:"schema_version"`
+	Generator     string             `json:"generator"`
+	GeneratedAt   string             `json:"generated_at"`
+	Sources       []modelTableSource `json:"sources"`
+	Models        []modelTableRow    `json:"models"`
 }
+
+type modelTableSource struct {
+	ID     string `json:"id"`
+	URL    string `json:"url"`
+	SHA256 string `json:"sha256"`
+	ETag   string `json:"etag,omitempty"`
+}
+
+const (
+	modelTableSchemaVersion = 1
+	modelTableGenerator     = "go-llm-model-snapshot/v1"
+)
 
 type modelTableRow struct {
 	Provider         string             `json:"provider"`
@@ -103,6 +119,15 @@ func parseModelTable(raw []byte) (parsedModelTable, error) {
 		}
 		return parsedModelTable{}, fmt.Errorf("model table has trailing data: %w", err)
 	}
+	if doc.SchemaVersion != modelTableSchemaVersion {
+		return parsedModelTable{}, fmt.Errorf("model table schema_version must be %d", modelTableSchemaVersion)
+	}
+	if doc.Generator != modelTableGenerator {
+		return parsedModelTable{}, fmt.Errorf("model table generator must be %q", modelTableGenerator)
+	}
+	if err := validateModelTableSources(doc.Sources); err != nil {
+		return parsedModelTable{}, err
+	}
 	if _, err := time.Parse(time.RFC3339, doc.GeneratedAt); doc.GeneratedAt == "" || err != nil {
 		return parsedModelTable{}, fmt.Errorf("model table generated_at must be valid RFC3339: %q", doc.GeneratedAt)
 	}
@@ -145,6 +170,24 @@ func parseModelTable(raw []byte) (parsedModelTable, error) {
 	return table, nil
 }
 
+func validateModelTableSources(sources []modelTableSource) error {
+	expected := [...]string{"models.dev", "openrouter", "overrides"}
+	if len(sources) != len(expected) {
+		return fmt.Errorf("model table sources must contain models.dev, openrouter, and overrides")
+	}
+	for index, id := range expected {
+		source := sources[index]
+		if source.ID != id || strings.TrimSpace(source.URL) == "" {
+			return fmt.Errorf("model table source %d must identify %q with a URL", index, id)
+		}
+		digest, err := hex.DecodeString(source.SHA256)
+		if err != nil || len(digest) != 32 || source.SHA256 != strings.ToLower(source.SHA256) {
+			return fmt.Errorf("model table source %q must have a lowercase SHA-256 digest", id)
+		}
+	}
+	return nil
+}
+
 func validateModelTablePricing(key string, pricing *modelTablePricing) error {
 	if pricing == nil {
 		return nil
@@ -182,9 +225,6 @@ func validateModelTablePricing(key string, pricing *modelTablePricing) error {
 func validateModelTableEfforts(key string, efforts []string) error {
 	if efforts == nil {
 		return nil
-	}
-	if len(efforts) == 0 {
-		return fmt.Errorf("model table %s supported_efforts must not be empty", key)
 	}
 	ranks := map[string]int{"none": 0, "minimal": 1, "low": 2, "medium": 3, "high": 4, "xhigh": 5, "max": 6}
 	previous := -1
@@ -306,8 +346,8 @@ func (t parsedModelTable) withCanonicalFallback(info ModelInfo) ModelInfo {
 	if info.Pricing == nil && canonical.Pricing != nil {
 		info.Pricing = cloneModelPricing(canonical.Pricing)
 	}
-	if len(info.SupportedEfforts) == 0 && len(canonical.SupportedEfforts) > 0 {
-		info.SupportedEfforts = append([]Effort(nil), canonical.SupportedEfforts...)
+	if info.SupportedEfforts == nil && canonical.SupportedEfforts != nil {
+		info.SupportedEfforts = cloneEfforts(canonical.SupportedEfforts)
 	}
 	return info
 }
@@ -342,7 +382,7 @@ func (row modelTableRow) modelInfo() ModelInfo {
 	if row.Pricing != nil {
 		info.Pricing = row.Pricing.modelPricing()
 	}
-	if len(row.SupportedEfforts) > 0 {
+	if row.SupportedEfforts != nil {
 		info.SupportedEfforts = make([]Effort, len(row.SupportedEfforts))
 		for i, effort := range row.SupportedEfforts {
 			info.SupportedEfforts[i] = Effort(effort)
@@ -355,8 +395,8 @@ func cloneModelInfo(info ModelInfo) ModelInfo {
 	if info.Pricing != nil {
 		info.Pricing = cloneModelPricing(info.Pricing)
 	}
-	if len(info.SupportedEfforts) > 0 {
-		info.SupportedEfforts = append([]Effort(nil), info.SupportedEfforts...)
+	if info.SupportedEfforts != nil {
+		info.SupportedEfforts = cloneEfforts(info.SupportedEfforts)
 	}
 	if len(info.Capabilities) > 0 {
 		info.Capabilities = append([]Capability(nil), info.Capabilities...)
@@ -373,6 +413,12 @@ func (pricing *modelTablePricing) modelPricing() *ModelPricing {
 		OutputPerMTok:     valueOrZero(pricing.OutputPerMTok),
 		CacheReadPerMTok:  valueOrZero(pricing.CacheReadPerMTok),
 		CacheWritePerMTok: valueOrZero(pricing.CacheWritePerMTok),
+		Availability: &ModelPricingAvailability{
+			InputPerMTok:      pricing.InputPerMTok != nil,
+			OutputPerMTok:     pricing.OutputPerMTok != nil,
+			CacheReadPerMTok:  pricing.CacheReadPerMTok != nil,
+			CacheWritePerMTok: pricing.CacheWritePerMTok != nil,
+		},
 	}
 	if len(pricing.Tiers) > 0 {
 		out.Tiers = make([]ModelPricingTier, len(pricing.Tiers))
@@ -394,10 +440,21 @@ func cloneModelPricing(pricing *ModelPricing) *ModelPricing {
 		return nil
 	}
 	cloned := *pricing
+	if pricing.Availability != nil {
+		availability := *pricing.Availability
+		cloned.Availability = &availability
+	}
 	if len(pricing.Tiers) > 0 {
 		cloned.Tiers = append([]ModelPricingTier(nil), pricing.Tiers...)
 	}
 	return &cloned
+}
+
+func cloneEfforts(efforts []Effort) []Effort {
+	if efforts == nil {
+		return nil
+	}
+	return append(make([]Effort, 0, len(efforts)), efforts...)
 }
 
 func valueOrZero[T int | int64 | float64](value *T) T {

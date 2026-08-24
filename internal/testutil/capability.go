@@ -54,7 +54,7 @@ func CompatibleCapabilityProfile(model string) llmtest.CapabilityProfile {
 		{
 			Name:       "reasoning",
 			Capability: llm.CapabilityReasoning,
-			Paths:      []llmtest.ConformancePath{llmtest.ConformanceChat},
+			Paths:      []llmtest.ConformancePath{llmtest.ConformanceChat, llmtest.ConformanceStream},
 			Request:    func() *llm.Request { return ReasoningActivationRequest(model) },
 			Assert:     AssertActivationReasoning,
 		},
@@ -131,7 +131,12 @@ func AssertActivationToolCall(response *llm.Response) error {
 	if len(calls) != 1 {
 		return fmt.Errorf("tool calls = %d, want 1", len(calls))
 	}
-	if calls[0].Name != ActivationToolName || string(calls[0].Args) != `{"value":"activated"}` {
+	var arguments any
+	if err := json.Unmarshal(calls[0].Args, &arguments); err != nil {
+		return fmt.Errorf("tool arguments are not JSON: %w", err)
+	}
+	expectedArguments := map[string]any{"value": "activated"}
+	if calls[0].Name != ActivationToolName || !reflect.DeepEqual(arguments, expectedArguments) {
 		return fmt.Errorf("tool call = name %q args %s", calls[0].Name, calls[0].Args)
 	}
 	if response.StopReason != llm.StopReasonToolUse {
@@ -141,8 +146,11 @@ func AssertActivationToolCall(response *llm.Response) error {
 }
 
 func AssertActivationReasoning(response *llm.Response) error {
-	if response.Reasoning() != "because" || response.Text() != "activated" {
-		return fmt.Errorf("reasoning = %q text = %q", response.Reasoning(), response.Text())
+	if err := AssertActivationText(response); err != nil {
+		return err
+	}
+	if response.Reasoning() != "because" {
+		return fmt.Errorf("reasoning = %q, want because", response.Reasoning())
 	}
 	if response.Usage.ReasoningTokens != 1 {
 		return fmt.Errorf("reasoning tokens = %d, want 1", response.Usage.ReasoningTokens)
@@ -196,7 +204,11 @@ func AssertCompatibleActivationRequest(body map[string]any, invocation llmtest.C
 		if !ok || len(tools) != 1 {
 			return fmt.Errorf("tools = %#v, want one native tool", body["tools"])
 		}
-		function, ok := tools[0].(map[string]any)["function"].(map[string]any)
+		tool, ok := tools[0].(map[string]any)
+		if !ok || tool["type"] != "function" {
+			return fmt.Errorf("native tool envelope = %#v, want type function", tools[0])
+		}
+		function, ok := tool["function"].(map[string]any)
 		if !ok || function["name"] != ActivationToolName || function["strict"] != true {
 			return fmt.Errorf("native function tool = %#v", tools[0])
 		}
@@ -260,4 +272,27 @@ func CompatibleActivationResponse(invocation llmtest.CapabilityInvocation, model
 	}
 	encoded, _ := json.Marshal(payload)
 	return string(encoded)
+}
+
+// CompatibleActivationStream returns deterministic Chat Completions SSE for
+// the stream paths in CompatibleCapabilityProfile.
+func CompatibleActivationStream(invocation llmtest.CapabilityInvocation, model string) string {
+	delta := map[string]any{"role": "assistant", "content": "activated"}
+	if invocation.Capability == llm.CapabilityReasoning {
+		delta["reasoning"] = "because"
+	}
+	chunk := map[string]any{
+		"id": "activation_response", "model": model,
+		"choices": []any{map[string]any{"index": 0, "finish_reason": "stop", "delta": delta}},
+	}
+	usage := map[string]any{
+		"id": "activation_response", "model": model, "choices": []any{},
+		"usage": map[string]any{
+			"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3,
+			"completion_tokens_details": map[string]any{"reasoning_tokens": 1},
+		},
+	}
+	chunkJSON, _ := json.Marshal(chunk)
+	usageJSON, _ := json.Marshal(usage)
+	return "data: " + string(chunkJSON) + "\n\ndata: " + string(usageJSON) + "\n\ndata: [DONE]\n\n"
 }

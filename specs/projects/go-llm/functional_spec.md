@@ -683,6 +683,12 @@ and per-model `Capabilities` where the provider reports them.
 For `SupportedEfforts`, nil means the ladder was omitted or is unknown; a
 non-nil empty slice means the provider supplied a ladder containing no known
 unified effort values.
+`ModelPricing.Availability`, when non-nil, is authoritative per component and
+distinguishes an explicit zero/free input, output, cache-read, or cache-write
+rate from an unavailable component. A nil availability value preserves the
+legacy `ModelPricing` interpretation for callers constructing values directly.
+Cost estimation remains unknown when usage consumes an unavailable component;
+a complete request-wide tier remains independently estimable.
 `ReasoningRequired == false` means false or unknown. These per-model fields
 never reject or rewrite a request; provider-wide `Capabilities()` remains the
 sole request-preflight authority, and `Request.Effort` is forwarded unchanged.
@@ -702,10 +708,11 @@ explicitly invoked; construction, chat, and streaming do not fetch catalogs.
   populate advisory tool, parallel-tool, reasoning, structured-output,
   image-input, and stop capabilities plus normalized supported/default effort
   and mandatory-reasoning metadata. Unknown or malformed advisory fields stay
-  in `Raw` without failing the row. Explicit zero token prices are free and
-  retain a non-nil zero-rate `Pricing`; negative/dynamic or non-finite token
-  pricing is unknown rather than negative or free. Valid cache-read/write
-  prices populate their existing common rate fields.
+  in `Raw` without failing the row. Every input, output, cache-read, and
+  cache-write component is decoded independently: explicit zero is known/free;
+  missing, JSON `null`, non-numeric, malformed, negative/dynamic, overflowing,
+  and non-finite values are unknown rather than negative or free. Valid sibling
+  rates and the complete copied live row remain available.
 - vLLM: `GET /v1/models`, including `max_model_len` when the server reports
   it. `ResolveModel(ctx, preference)` chooses an exact, substring/normalized,
   or token-overlap match, then prefers a Qwen model and finally the first row.

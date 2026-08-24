@@ -46,7 +46,9 @@ where they exist and pulled in only by the provider package you import.
   estimated from an embedded, refreshable [models.dev](https://models.dev)
   price table, including request-wide long-context pricing tiers — with
   provenance in `CostSource` (`native` vs `estimated`) — plus `ContextUsage`
-  for context-window accounting.
+  for context-window accounting. Live model catalogs preserve independent
+  input/output/cache-read/cache-write availability, so unknown rates are not
+  displayed as free while explicit zero rates remain visible.
 - **Capabilities**: provider-wide `Capabilities()` discovery with pre-flight
   request validation, plus advisory per-model capabilities from rich live
   catalogs such as OpenRouter and Codex. Unsupported provider features fail
@@ -366,8 +368,8 @@ Repository commands:
 ```sh
 make build       # compile all packages and create bin/llm-cli
 make test        # offline tests with the race detector
-make check       # complete credential-free CI gate
-make models      # refresh the embedded root models.json snapshot
+make check       # complete credential-free, network-dependent CI gate
+make models      # refresh the embedded root models.json snapshot and provenance
 ```
 
 Live end-to-end tests are behind the `live` build tag and read credentials

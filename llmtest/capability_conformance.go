@@ -72,6 +72,8 @@ var reviewedCapabilityActivations = []llm.Capability{
 	llm.CapabilityReasoning,
 }
 
+var capabilityConformanceStreamTimeout = conformanceStreamTimeout
+
 type preparedCapabilityInvocation struct {
 	caseDef    CapabilityCase
 	invocation CapabilityInvocation
@@ -128,7 +130,7 @@ func RunCapabilityConformance(t *testing.T, newProvider CapabilityProviderFactor
 		item := item
 		t.Run(item.caseDef.Name+"/"+string(item.invocation.Path), func(t *testing.T) {
 			contextPrefix := capabilityContext(providerName, item.invocation)
-			ctx, cancel := context.WithTimeout(context.Background(), conformanceStreamTimeout)
+			ctx, cancel := context.WithTimeout(context.Background(), capabilityConformanceStreamTimeout)
 			defer cancel()
 			var (
 				response *llm.Response
@@ -296,6 +298,6 @@ func collectCapabilityStream(ctx context.Context, provider llm.Provider, request
 	case result := <-done:
 		return result.response, result.err
 	case <-ctx.Done():
-		return nil, fmt.Errorf("stream did not finish within %s: %w", time.Duration(conformanceStreamTimeout), ctx.Err())
+		return nil, fmt.Errorf("stream did not finish within %s: %w", time.Duration(capabilityConformanceStreamTimeout), ctx.Err())
 	}
 }
