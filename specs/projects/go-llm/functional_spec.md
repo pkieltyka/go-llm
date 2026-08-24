@@ -457,7 +457,7 @@ Mapping:
 | Provider | Mapping |
 |---|---|
 | Anthropic | adaptive thinking + `output_config.effort`; `display` summarized so reasoning content is returned |
-| OpenAI | `reasoning: {effort, summary: "auto"}` (Responses) — summaries → `ReasoningPart.Text`, full reasoning items (incl. `encrypted_content`) → `ReasoningPart.Raw` |
+| OpenAI | `reasoning: {effort, summary: "auto"}` (Responses) by default; `openai.Options.ReasoningSummary` can select the closed `auto`/`concise`/`detailed` vocabulary without changing `Effort` — summaries → `ReasoningPart.Text`, full reasoning items (incl. `encrypted_content`) → `ReasoningPart.Raw` |
 | OpenRouter | `reasoning: {effort}` (its `exclude`/`max_tokens` variants live in `openrouter.Options`) |
 | vLLM | `reasoning_effort` (top-level; vLLM accepts its own native `max`); thinking toggles via `chat_template_kwargs` live in `vllm.Options` |
 
@@ -784,10 +784,15 @@ service tiers), raw SDK access via `Client()`.
 **OpenAI** (`openai.Options`): Responses-specific `Store`,
 `PreviousResponseID`, `ConversationID`/`Conversation`, `Include`,
 `Background`, `HostedTools`, `Verbosity`, `Metadata`, `ServiceTier`,
-`SafetyIdentifier`, and `PromptCacheOptions`. These use library-owned or
-standard-library types; `HostedTools` is a slice of validated JSON objects so
-future hosted-tool shapes do not expose SDK unions. `Client()` remains an
-advanced vendor-typed escape hatch.
+`SafetyIdentifier`, `PromptCacheOptions`, and `ReasoningSummary`.
+`ReasoningSummary` is empty by default, preserving effort-driven
+`summary: "auto"`; its currently closed values are `auto`, `concise`, and
+`detailed`, while OpenAI owns per-model acceptance. Invalid values fail before
+network I/O. This option is not part of `llm.Request` and does not apply to
+`openaicodex`. These extensions use library-owned or standard-library types;
+`HostedTools` is a slice of validated JSON objects so future hosted-tool shapes
+do not expose SDK unions. `Client()` remains an advanced vendor-typed escape
+hatch.
 
 ## 15. Prompt Caching
 

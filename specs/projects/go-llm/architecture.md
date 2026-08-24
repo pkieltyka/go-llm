@@ -584,6 +584,11 @@ reasoning across tool-call turns. Decision record:
   `function_call_output` items keyed by `call_id`); `System` →
   `instructions`; `MaxTokens` → `max_output_tokens`; `Effort` →
   `reasoning: {effort, summary: "auto"}` (`none` supported natively);
+  `openai.Options.ReasoningSummary` validates the closed
+  `auto`/`concise`/`detailed` vocabulary in the OpenAI-only `applyOptions`
+  seam, then replaces only `reasoning.summary` (or creates a summary-only
+  reasoning object when effort is empty). Empty preserves the existing mapping;
+  OpenAI owns model acceptance, and the Codex adapter is not changed;
   `ResponseFormat` → `text: {format}`; tools → flattened function shape
   (`strict` default-on per Responses convention, disabled when
   `Tool.Strict` is false); `SessionID` → `prompt_cache_key`. Keys longer
@@ -595,9 +600,12 @@ reasoning across tool-call turns. Decision record:
   `Conversation`).
 - **Public request extensions**: `openai.Options` uses go-llm and
   standard-library types (`Include`, `Conversation`, `Metadata`, enums, and
-  `[]json.RawMessage` hosted-tool objects). Hosted tools are validated as JSON
-  objects before conversion. Ordinary consumers do not import `openai-go`;
-  `Provider.Client` is the explicit vendor-typed escape hatch.
+  `[]json.RawMessage` hosted-tool objects). `ReasoningSummary` is a
+  library-owned string enum whose empty value preserves automatic summaries;
+  unknown and whitespace-padded values fail locally instead of passing through.
+  Hosted tools are validated as JSON objects before conversion. Ordinary
+  consumers do not import `openai-go`; `Provider.Client` is the explicit
+  vendor-typed escape hatch.
 - **Response map**: `output` items → parts in order — `reasoning` item →
   `ReasoningPart{Text: joined summary, Raw: full item JSON incl.
   encrypted_content}`; `message`/`output_text` → `TextPart` (annotations

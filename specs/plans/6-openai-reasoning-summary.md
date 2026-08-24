@@ -1,7 +1,9 @@
 ---
-status: ready
+status: complete
 planned_at: c983a92
 planned_at_date: 2026-08-23
+revalidated_at: 0cb0a05
+revalidated_at_date: 2026-08-23
 ---
 
 # OpenAI Reasoning Summary Plan
@@ -11,19 +13,23 @@ provider. It is intentionally small and provider-specific. Capability
 conformance is independent work in Plan 7 and is not a prerequisite for this
 feature.
 
-The plan is written against go-llm commit
-`c983a92addf6f1b738e969c16f8b4f4b079fd0a5`. An executor must read it fully,
+The plan was written against go-llm commit
+`c983a92addf6f1b738e969c16f8b4f4b079fd0a5` and revalidated after Plan 5 at
+`0cb0a052ad6cef129072c404be626faab851f371`. An executor must read it fully,
 preserve unrelated worktree changes, and stop rather than broadening the
 provider-neutral request API or assuming protocol parity with Codex.
 
-At planning time `models.json` contains unrelated user-owned staged changes.
-This plan does not modify, regenerate, unstage, or commit that file.
+At revalidation time the maintainer has run `make models`, leaving an
+uncommitted user-owned `models.json` refresh in the worktree. This plan does
+not regenerate, rewrite, stage, revert, or commit that file. The unrelated
+untracked `reviews/` directory must also remain untouched and outside every
+implementation commit.
 
 ## Evidence baseline and dispositions
 
 | Finding | Pinned evidence | Disposition |
 |---|---|---|
-| OpenAI Responses accepts bounded `auto`, `concise`, and `detailed` reasoning-summary selectors. | Gollem `6e024b44eea2c15dab9576c226ed18a586f8704f`, `provider/openai/responses.go`, reasoning summary mapping; the installed OpenAI Go SDK constants are the implementation authority | Implement as an OpenAI-owned option. |
+| OpenAI Responses accepts bounded `auto`, `concise`, and `detailed` reasoning-summary selectors. | Gollem `6e024b44eea2c15dab9576c226ed18a586f8704f`, `provider/openai/responses.go`, reasoning summary mapping; official OpenAI Responses documentation rechecked 2026-08-23; installed `openai-go/v3` v3.52.0 constants in `shared.ReasoningSummary` | Implement as an OpenAI-owned option using `reasoning.summary`, never deprecated `reasoning.generate_summary`. |
 | go-llm currently requests `summary: auto` whenever unified effort is set. | go-llm `providers/internal/responsesapi/adapter.go`, effort mapping | Preserve byte-for-byte when the new option is empty. |
 | Provider activation conformance can verify native request fields. | Gollem `6e024b44eea2c15dab9576c226ed18a586f8704f`, `provider/conformance/conformance.go` | Moved to independent Plan 7; do not duplicate the summary tests there. |
 | The Codex subscription backend shares some Responses event shapes. | go-llm OpenAI and Codex adapters | Rejected as support evidence: do not add the option to Codex without a separately approved protocol contract. |
@@ -45,14 +51,14 @@ gates, and remote catalog behavior are outside this plan and remain unchanged.
 
 ## Outcomes
 
-- [ ] OpenAI callers can explicitly select `auto`, `concise`, or `detailed`.
-- [ ] Existing effort-only requests still send `summary: "auto"` unchanged.
-- [ ] Unknown or whitespace-padded values fail as `ErrBadRequest` before any
+- [x] OpenAI callers can explicitly select `auto`, `concise`, or `detailed`.
+- [x] Existing effort-only requests still send `summary: "auto"` unchanged.
+- [x] Unknown or whitespace-padded values fail as `ErrBadRequest` before any
   network request.
-- [ ] Blocking and fully consumed streaming requests serialize the same
+- [x] Blocking and fully consumed streaming requests serialize the same
   reasoning object.
-- [ ] Existing normalized reasoning-summary output remains unchanged.
-- [ ] No provider-neutral API, model-name gate, Codex support, or conformance
+- [x] Existing normalized reasoning-summary output remains unchanged.
+- [x] No provider-neutral API, model-name gate, Codex support, or conformance
   framework is added by this plan.
 
 ## Priority, effort, and dependencies
@@ -73,28 +79,38 @@ Before implementation:
 cd /home/peter/Dev/pkieltyka/go-llm
 git status --short --branch
 git diff --cached --stat
-git diff --stat c983a92addf6f1b738e969c16f8b4f4b079fd0a5
+git diff --stat 0cb0a052ad6cef129072c404be626faab851f371
 make test
 ```
 
-Preserve these planning-time object IDs:
+Expected revalidation state:
+
+- `models.json` has an unstaged maintainer-owned refresh from `make models`;
+- `reviews/` is untracked and unrelated;
+- the branch source otherwise matches `0cb0a05` before this plan edit.
+
+Preserve these revalidation object IDs:
 
 ```text
-index  models.json: dd552b022cd493159bbaaf7f69ccfb6f25e64ded
-worktree models.json: dd552b022cd493159bbaaf7f69ccfb6f25e64ded
+HEAD     models.json: dd552b022cd493159bbaaf7f69ccfb6f25e64ded
+index    models.json: dd552b022cd493159bbaaf7f69ccfb6f25e64ded
+worktree models.json: ff84f2c6eed559d9bbf1192fe792fb5fc614f602
 ```
 
 Before and after every implementation commit:
 
 ```sh
+git rev-parse HEAD:models.json
 git rev-parse :models.json
 git hash-object models.json
+git diff -- models.json
 git diff --cached -- models.json
 ```
 
-Both IDs must remain unchanged. Never use a plain `git commit` while this
-unrelated path is staged. Use `git commit --only <explicit changed paths>` with
-the necessary intent-to-add step for new files, or use a dedicated temporary
+All three IDs must remain unchanged and the user-owned unstaged diff must remain
+byte-for-byte intact. Do not use `git add -A`, `git add .`, or another broad
+staging command. Use `git commit --only <explicit changed paths>` with the
+necessary intent-to-add step for new files, or use a dedicated temporary
 index. If safe isolation is unavailable, leave the changes uncommitted.
 
 ## Boundaries and invariants
@@ -147,8 +163,18 @@ library explicitly supports it.
 
 ### Mapping contract
 
-Apply the provider option after the shared Responses adapter maps
-`Request.Effort`:
+Apply the provider option in `providers/openai/request_options.go` inside
+`applyOptions`, which already runs after the shared Responses adapter maps
+`Request.Effort`. Do not change
+`providers/internal/responsesapi.buildReasoning`: that adapter is shared with
+Codex, while this option is intentionally OpenAI-only.
+
+Validate the bounded option in `applyOptions`, then assign only
+`params.Reasoning.Summary` using the installed SDK's
+`shared.ReasoningSummary`. Never set the deprecated
+`params.Reasoning.GenerateSummary` field.
+
+The mapping cases are:
 
 1. No effort and no option: omit the complete `reasoning` object as today.
 2. Effort set and no option: retain the current effort plus
@@ -174,7 +200,12 @@ Assert exact request JSON for:
 - `EffortNone` plus a selected summary;
 - invalid and whitespace-padded values returning `ErrBadRequest`;
 - the existing wrong-provider-options concrete-type error;
-- caller-owned request and options values remaining unchanged.
+- caller-owned request and options values remaining unchanged;
+- the external-package API-surface compile fixture initializes
+  `openai.Options{ReasoningSummary: openai.ReasoningSummaryConcise}` and still
+  proves no vendor SDK type leaks into the public option surface;
+- every exact wire assertion contains `reasoning.summary` and never the
+  deprecated `reasoning.generate_summary` key.
 
 For both Chat and ChatStream:
 
@@ -230,13 +261,17 @@ Review the final diff for:
 
 - a provider-neutral summary field or model-name gate;
 - changed default `summary: "auto"` behavior;
+- a change to shared `responsesapi.buildReasoning` instead of the OpenAI-only
+  `applyOptions` seam;
+- deprecated `reasoning.generate_summary` on the wire;
 - Codex or OpenRouter summary support;
 - lazy streaming tests that were never consumed;
 - capability-conformance machinery;
-- accidental changes to the staged `models.json`.
+- changes to the maintainer's unstaged generated `models.json` or untracked
+  `reviews/` artifacts.
 
-Re-check the recorded `models.json` object IDs and cached diff before any
-commit and at final verification.
+Re-check all three recorded `models.json` object IDs plus its worktree and
+cached diffs before any commit and at final verification.
 
 ## Acceptance criteria
 
@@ -244,14 +279,17 @@ commit and at final verification.
 - Empty option preserves all existing request behavior.
 - Invalid values fail locally without a request.
 - Summary output normalization remains unchanged.
+- Only `reasoning.summary` is emitted; deprecated `reasoning.generate_summary`
+  is absent.
 - No common request type, capability, model gate, or Codex surface changes.
 - Focused tests, vet, `make test`, `make check`, and diff checks pass.
-- The staged snapshot remains intact and outside every implementation commit.
+- The maintainer's unstaged generated snapshot and untracked review artifacts
+  remain intact and outside every implementation commit.
 
 ## Suggested implementation commits
 
 1. `Add OpenAI reasoning summary selection`
 2. `Document OpenAI reasoning summary selection`
 
-Use explicit path-limited commits or a temporary index, and verify the staged
-snapshot object IDs after each commit.
+Use explicit path-limited commits or a temporary index, and verify all recorded
+snapshot object IDs and diffs after each commit.

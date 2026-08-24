@@ -150,6 +150,27 @@ openai.New()     // OPENAI_API_KEY
 openrouter.New() // OPENROUTER_API_KEY
 ```
 
+OpenAI Responses callers can select the user-visible reasoning-summary detail
+without adding an OpenAI-specific field to `llm.Request`:
+
+```go
+resp, err := p.Chat(ctx, &llm.Request{
+	Model:    "gpt-5.5",
+	Effort:   llm.EffortHigh,
+	Messages: []llm.Message{llm.UserText("Compare the two proposals.")},
+	ProviderOptions: openai.Options{
+		ReasoningSummary: openai.ReasoningSummaryConcise,
+	},
+})
+```
+
+The supported selectors are `ReasoningSummaryAuto`,
+`ReasoningSummaryConcise`, and `ReasoningSummaryDetailed`. Leaving the field
+empty preserves the existing behavior (`summary: "auto"` when `Effort` is
+set); unknown values fail before a request is sent. OpenAI remains
+authoritative about which models accept each selector. This option is not
+available on the separate `openaicodex` subscription provider.
+
 Subscription providers consume credentials minted by compatible existing
 tools — go-llm refreshes tokens automatically and hands renewals
 back to your code to persist; it never writes credential files itself:

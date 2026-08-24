@@ -20,6 +20,7 @@ var publicOptions = openai.Options{
 	Include:            []openai.Include{openai.IncludeMessageOutputTextLogprobs},
 	HostedTools:        []json.RawMessage{json.RawMessage(`{"type":"web_search"}`)},
 	Verbosity:          openai.VerbosityLow,
+	ReasoningSummary:   openai.ReasoningSummaryConcise,
 	Metadata:           openai.Metadata{"purpose": "test"},
 	ServiceTier:        openai.ServiceTierDefault,
 	PromptCacheOptions: &openai.PromptCacheOptions{TTL: openai.PromptCacheTTL30m},
