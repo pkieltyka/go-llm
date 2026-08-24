@@ -1,5 +1,5 @@
 ---
-status: ready
+status: complete
 planned_at: c983a92
 planned_at_date: 2026-08-23
 ---
@@ -12,17 +12,21 @@ the expected normalized result. It complements the existing base
 `llmtest.RunConformance` suite and the credentialed `internal/e2e` registry; it
 does not replace either one.
 
-The plan is written against go-llm commit
-`c983a92addf6f1b738e969c16f8b4f4b079fd0a5`. It is independent of Plans 5 and
-6. In particular, OpenAI reasoning-summary selection remains fully covered by
-Plan 6 and is not an extension case in this conformance framework.
+The plan was written against go-llm commit
+`c983a92addf6f1b738e969c16f8b4f4b079fd0a5` and is implemented against the
+authoritative clean baseline
+`d776f149cc62bba96653838b5bb202eefcf148c4`. Plans 5 and 6 are complete. In
+particular, OpenAI reasoning-summary selection remains fully covered by Plan 6
+and is not an extension case in this conformance framework.
 
 An executor must read this plan fully, preserve unrelated worktree changes,
 and stop rather than adding provider policy, model-name inference, live
 credentials, or application/agent behavior.
 
-At planning time `models.json` contains unrelated user-owned staged changes.
-This plan does not modify, regenerate, unstage, or commit that file.
+At implementation start `models.json` is clean at object
+`ff84f2c6eed559d9bbf1192fe792fb5fc614f602` in HEAD, index, and worktree. This
+plan does not modify or regenerate that file. The unrelated untracked
+`reviews/` directory is also preserved and excluded.
 
 ## Evidence baseline and dispositions
 
@@ -58,19 +62,19 @@ stream watchdogs are outside this plan.
 
 ## Outcomes
 
-- [ ] `llmtest` can run isolated Chat and ChatStream activation cases while
+- [x] `llmtest` can run isolated Chat and ChatStream activation cases while
   preserving each request's real model.
-- [ ] Every targeted capability advertised by an included first-party provider
+- [x] Every targeted capability advertised by an included first-party provider
   has a deterministic case or a non-empty reviewed exemption.
-- [ ] Tools and required tool choice receive native wire proof rather than only
+- [x] Tools and required tool choice receive native wire proof rather than only
   normalized tool-response proof.
-- [ ] OpenRouter cache-control and Codex prompt-cache-key activation are proven
+- [x] OpenRouter cache-control and Codex prompt-cache-key activation are proven
   offline.
-- [ ] Codex cases explicitly exercise both gpt-5.6 Responses Lite and legacy
+- [x] Codex cases explicitly exercise both gpt-5.6 Responses Lite and legacy
   request branches where the shapes differ.
-- [ ] Malformed profiles fail with actionable test errors and no framework
+- [x] Malformed profiles fail with actionable test errors and no framework
   panic.
-- [ ] No ordinary test requires credentials or public network access.
+- [x] No ordinary test requires credentials or public network access.
 
 ## Priority, effort, and dependencies
 
@@ -92,15 +96,14 @@ Before implementation:
 cd /home/peter/Dev/pkieltyka/go-llm
 git status --short --branch
 git diff --cached --stat
-git diff --stat c983a92addf6f1b738e969c16f8b4f4b079fd0a5
+git diff --stat d776f149cc62bba96653838b5bb202eefcf148c4
 make test
 ```
 
 Preserve these planning-time object IDs:
 
 ```text
-index  models.json: dd552b022cd493159bbaaf7f69ccfb6f25e64ded
-worktree models.json: dd552b022cd493159bbaaf7f69ccfb6f25e64ded
+HEAD/index/worktree models.json: ff84f2c6eed559d9bbf1192fe792fb5fc614f602
 ```
 
 Before and after every implementation commit:
@@ -111,10 +114,9 @@ git hash-object models.json
 git diff --cached -- models.json
 ```
 
-Both IDs must remain unchanged. Never use a plain `git commit` while this
-unrelated path is staged. Use `git commit --only <explicit changed paths>` with
-the necessary intent-to-add step for new files, or use a dedicated temporary
-index. If safe isolation is unavailable, leave the changes uncommitted.
+The ID must remain unchanged. Keep every implementation commit explicitly
+path-limited so the unrelated `reviews/` directory stays excluded. If safe
+isolation is unavailable, leave the changes uncommitted.
 
 ## Boundaries and invariants
 

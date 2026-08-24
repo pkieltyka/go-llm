@@ -928,6 +928,18 @@ code (and `go-agent`) can be tested offline:
   against fixture servers — single-use streams, mid-stream cancellation
   without goroutine leaks, concurrent use, panic-freedom on odd requests,
   and `Collect`'s partial-on-error shape.
+- Exports additive `RunCapabilityConformance` for a reviewed set of
+  activation-sensitive standard capabilities. Profiles preserve real request
+  models, use `CapabilityInvocation` only as out-of-band fixture control data,
+  assert provider-native request fields in provider packages, and assert the
+  normalized result in the common runner. Every advertised reviewed
+  capability needs one or more cases or one explicit non-empty exemption;
+  exemptions identify offline evidence gaps rather than capability denials.
+- `RunConformance` proves common lifecycle/normalization behavior;
+  `RunCapabilityConformance` proves deterministic native activation plus a
+  normalized result. Neither is evidence of live model/account availability,
+  quota, cache admission, or service reliability; §9's credentialed suite is
+  authoritative for those properties.
 
 ## 17B. Observability: Logging, Telemetry, Debugging
 

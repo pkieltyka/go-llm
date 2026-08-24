@@ -15,6 +15,28 @@ status: complete
 empty means unknown. Provider-wide `Provider.Capabilities()` remains the sole
 request-validation authority.
 
+## Capability evidence layers
+
+An advertised provider-wide capability is a request-validation claim: it says
+the adapter can construct and normalize that feature. Evidence for the claim
+is intentionally layered:
+
+1. `llmtest.RunConformance` proves the common Provider lifecycle, streaming,
+   and normalized-result contract.
+2. `llmtest.RunCapabilityConformance` proves deterministic provider-native
+   activation for the reviewed feature set plus the expected normalized
+   result. Case identity reaches the fixture only as out-of-band
+   `CapabilityInvocation` data and never changes the real request/model.
+3. Credentialed `internal/e2e` scenarios prove live account/model acceptance
+   and service behavior where deterministic assertions are possible.
+
+An offline `CapabilityExemption` is an explicit evidence gap, not a denial of
+the advertised capability. Conversely, fixture wire proof does not establish
+live availability, quota, cache admission/effectiveness, or reliability.
+OpenRouter cache-control and Codex prompt-cache-key mappings are deterministic
+offline evidence even though positive cache admission is nondeterministic
+live.
+
 | Provider | Model metadata source | Advisory capabilities currently populated |
 |---|---|---|
 | OpenAI Codex | Explicit authenticated catalog requested by `Models(ctx)` | Tools, tool choice, parallel tools, JSON schema, reasoning, image input, stop sequences, and prompt caching when explicitly advertised. Curated fallback rows remain unknown/empty. |

@@ -346,7 +346,22 @@ p.EnqueueResponse(&llm.Response{Parts: []llm.Part{llm.Text(`{"ok":true}`)}})
 
 Script responses, streams, and errors; assert on the requests your code made
 via `p.Requests()`. See [`examples/testing`](examples/testing) for a complete
-worked example. Repository commands:
+worked example.
+
+Provider authors should run two complementary offline suites. `RunConformance`
+checks the common lifecycle, streaming, and normalized-result contract.
+`RunCapabilityConformance` checks that each reviewed advertised capability
+activates its exact native request fields and returns the expected normalized
+result. Its `CapabilityInvocation` is fixture control data passed to an
+isolated provider factory; it never changes the real request or its model.
+Explicit profile exemptions mean “offline evidence gap,” not “unsupported.”
+Neither suite proves live account/model availability, quota, cache admission,
+or service reliability; credentialed e2e scenarios remain the live evidence.
+The advanced `chatcompletions.NewWithDialect` conformance suite intentionally
+stays base-only; the public generic engine owns the reusable compatible-engine
+activation profile.
+
+Repository commands:
 
 ```sh
 make build       # compile all packages and create bin/llm-cli

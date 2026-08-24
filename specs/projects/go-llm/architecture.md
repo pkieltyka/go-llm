@@ -1144,6 +1144,24 @@ exports `llmtest.RunConformance(t, newProvider)`, the machine-checked form
 of the Provider contract; every provider package in the module runs it
 against its offline fixture servers.
 
+`llmtest.RunCapabilityConformance` sits beside that unchanged base suite. It
+first probes a provider's name and reviewed capability claims, validates the
+entire structured profile, then creates an isolated provider and fresh request
+for every Chat/Stream path. `CapabilityInvocation{CaseName, Capability, Path}`
+travels only to the fixture factory; the runner never stamps `Request.Model`
+or parses provider bodies to recover case identity. Provider packages own
+their wire structs and exact native assertions. The runner owns profile
+integrity, claim-drift detection, bounded full stream collection, normalized
+assertions, and actionable provider/case/capability/path errors.
+
+Cases cover only the reviewed activation-sensitive standard set; structured
+slice exemptions stay duplicate-detectable and represent evidence gaps, not
+capability denials. This is deterministic offline wire proof, deliberately
+separate from live availability/quota/cache-admission evidence. The public
+generic chat-completions engine supplies the reusable compatible profile;
+the advanced `NewWithDialect`/replayDialect suite remains base-only so the
+dialect seam is covered without duplicating activation ownership.
+
 ## 7C. `cmd/llm-cli`
 
 Design per FS §19. Structure: a single `main` package —
@@ -1271,6 +1289,12 @@ via `llm.StreamText` or collect for `--json`/`--no-stream`), `models.go`
   correctness, one capture per retry attempt.
 - **`llmtest` self-tests** double as the `Provider` interface conformance
   suite.
+- **Offline capability activation profiles** run next to base conformance for
+  OpenAI, Anthropic, OpenRouter, vLLM, generic Chat Completions, Ollama, and
+  OpenAI Codex. Native request assertions prove tools/required choice,
+  structured output, images, stop/reasoning where advertised, explicit cache
+  mappings, and both Codex Lite/legacy branches. Fixture success is never
+  treated as proof of live admission.
 - **Live e2e suite** (`internal/e2e`, `//go:build live`): a
   capability-driven scenario harness run against the real provider APIs.
   One scenario per standard capability, written once and parameterized by
