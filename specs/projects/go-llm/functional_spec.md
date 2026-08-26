@@ -52,10 +52,10 @@ Decisions:
 - OpenRouter, vLLM, and Ollama are presets over one public
   OpenAI-compatible, chat-completions-shaped engine. OpenRouter and vLLM add
   typed provider options and response mappings; Ollama is a data-only preset.
-- **Subscription auth is in scope** (§17C): Anthropic gains an OAuth mode
-  (Claude Pro/Max) and a separate `openai-codex` provider serves ChatGPT
-  Plus/Pro — both *consume and refresh* credentials minted by existing
-  CLIs; interactive login flows are deferred.
+- **Subscription auth is in scope for OpenAI Codex** (§17C): the separate
+  `openai-codex` provider serves ChatGPT Plus/Pro, consumes and refreshes
+  compatible credentials, and mints initial credentials through a
+  provider-owned browser PKCE login. Anthropic supports API keys only.
 
 ## 3. In Scope / Out of Scope
 
@@ -989,10 +989,23 @@ vocabulary — `WireCapture`, `NewWireTap`, `WithWireCapture`,
 
 ## 17C. Subscription Auth (OAuth)
 
-In scope (promoted from the deferred list): **consuming** subscription
-credentials minted by compatible existing CLIs. go-llm does not
-implement interactive login flows in v1 (PKCE/device-code minting stays
-deferred; natural future home: `llm-cli auth login`).
+In scope: consuming and refreshing OpenAI Codex subscription credentials,
+minting initial Codex credentials through browser authorization-code PKCE,
+and a reusable public interactive-login lifecycle. Provider protocol details
+stay in provider packages.
+
+- **Login-flow contract**: `llm.LoginFlow` is a single-use, context-aware
+  `Begin` / `Complete` / `Submit` / `Cancel` lifecycle. `Begin` returns a
+  redacting `LoginAuthorization` containing a short-lived, non-secret launch
+  URL and display instructions. `Complete` waits for provider completion
+  delivered automatically or through `Submit`; `Submit` is an optional
+  provider-specific manual/fallback path. The provider owns endpoints, scopes,
+  callback choice, PKCE, CSRF state validation, response parsing, token
+  exchange, provider-owned input/code/state byte limits, and bounded cleanup.
+  Transport failures are mapped to stable normalized/sentinel-classified
+  errors without wrapping credential-bearing request errors. Errors and
+  formatted flow values never expose credentials, authorization codes, state,
+  or PKCE verifiers.
 
 - **Credential shape**: the `oauth` variant of the documented auth format
   (§17): `{access, refresh?, expires?, accountId?}`.
@@ -1010,21 +1023,31 @@ deferred; natural future home: `llm-cli auth login`).
   Callers may deliberately pass an explicit context-aware no-op for
   in-memory-only rotation, but doing so risks restart with a stale stored
   refresh token.
-- **Anthropic (Claude Pro/Max)** — an auth *mode* on the existing
-  provider, not a new one: same Messages API, `Authorization: Bearer` +
-  refresh via Anthropic's OAuth token endpoint. **Identity requirements**:
-  subscription tokens are served only to Claude-Code-identified traffic —
-  per the reference implementations the request path must send
-  `anthropic-beta: claude-code-20250219,oauth-2025-04-20`, the
-  `claude-cli` user-agent + `x-app: cli` headers, and the Claude Code
-  identity line as the first system block. Must be **live-verified with a real
-  subscription credential** before this mode is considered done.
+- **Anthropic** — API-key authentication only. go-llm does not consume or
+  mint Anthropic subscription credentials and does not emulate Claude Code
+  identity. An Agent SDK layer, if desired by a host application, belongs
+  outside this transport library.
 - **`openai-codex` (ChatGPT Plus/Pro)** — a separate provider (id
   `openai-codex`): the
   Responses wire shape against `chatgpt.com/backend-api/codex`, extra
   headers (`chatgpt-account-id` resolved per request from the stored
   credential, `originator`), refresh via OpenAI's OAuth token endpoint.
-  Capabilities mirror `providers/openai`.
+  `openaicodex.NewLoginFlow` mints the initial credential using the official
+  browser authorization-code PKCE client identity, endpoints, scopes, flags,
+  and originator. It binds only `127.0.0.1`, advertises the exact
+  `http://localhost:{port}/auth/callback` redirect, tries port 1455 then the
+  registered 1457 fallback, and accepts a complete copied callback URL/query
+  through `Submit`. Independent CSRF state and PKCE verifier, constant-time
+  state checks, bounded callback/token data, total and exchange deadlines,
+  redirect refusal, and sanitized errors protect the flow. Only a
+  matching-state success or provider denial is terminal; stray, malformed,
+  wrong-method/path/state, missing, and oversized callbacks remain
+  non-terminal. Account ID comes from the ID token's namespaced claim with
+  access-token fallback and login fails if neither contains it. The ID token
+  is not stored. The host receives and persists the credential. Device flow
+  and a built-in CLI login UX remain deferred. Automated tests are offline;
+  live login verification remains required. Capabilities mirror
+  `providers/openai`.
 
 ## 18. Edge Cases & Behaviors
 
@@ -1102,7 +1125,10 @@ llm-cli models -p openrouter
   `OPENAI_CODEX_ACCESS_TOKEN`, then compatibility `--api-key`; files are
   never loaded unless the flag is supplied. The compatibility flag exposes
   its value through process argv and often shell history, so the file or env
-  forms are preferred. Refreshes from an auth file are persisted atomically.
+  forms are preferred. Refreshes from an auth file hold a bounded
+  cross-process advisory lock across the full read/modify/durable-publication
+  transaction, retain restrictive temporary-file permissions, and replace
+  the file atomically.
 - **Tool calls are printed, not executed**: with `--tool <file.json>`
   (repeatable tool declarations), a `tool_use` stop prints the tool calls
   as JSON and exits — execution loops are `go-agent` territory; the CLI

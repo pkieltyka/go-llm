@@ -42,7 +42,7 @@ go-llm/
 ├── cmd/llm-cli/                                  # curl-like CLI frontend (stdlib flag; public API only)
 ├── internal/e2e/                                 # live e2e scenario harness (build tag: live)
 ├── providers/
-│   ├── anthropic/                                # wraps anthropic-sdk-go (Messages API, direct; incl. OAuth mode §17C)
+│   ├── anthropic/                                # wraps anthropic-sdk-go (Messages API, API key)
 │   ├── openai/                                   # wraps openai-go Responses API (direct)
 │   ├── openaicodex/                              # ChatGPT-subscription provider (shared Responses mapping, §3.2A)
 │   ├── openrouter/                               # chatcompletions + OpenRouter dialect
@@ -575,16 +575,8 @@ syntaxes/message splicing are explicitly rejected feature requests.
   header honored).
 - `Models()`: `GET /v1/models` via SDK, mapped to `ModelInfo` (context
   window, max output, capabilities available on that endpoint).
-- **OAuth mode** (FS §17C): `anthropic.WithOAuth(cred, persist)` — the
-  SDK's auth-token option (bearer) + the full Claude Code identity set
-  (FS §17C: `anthropic-beta: claude-code-20250219,oauth-2025-04-20`,
-  `claude-cli` user-agent, `x-app: cli`, Claude Code identity line as
-  first system block — subscription tokens are rejected otherwise); token
-  lifecycle via the internal `provideroauth.Source` (§3.4 auth block): refresh
-  before expiry, one forced-refresh retry on 401, renewed credentials →
-  the context-aware persistence callback. Refresh-endpoint 4xx
-  (`invalid_grant` etc.) maps to `ErrAuth`, not `ErrBadRequest` — a stale
-  token is an auth failure.
+- Authentication is API-key only. Subscription OAuth and Claude Code identity
+  emulation are intentionally absent (FS §17C).
 
 ### 3.2 OpenAI (direct wrap, Responses API)
 
@@ -670,7 +662,24 @@ wire shape at `chatgpt.com/backend-api/codex`:
   authentication and context failures remain visible. Construction and chat
   calls never trigger discovery.
 - Exact refresh endpoint and public client id are pinned and covered by
-  focused authentication tests.
+  focused authentication tests. Request construction and transport failures
+  are sanitized without wrapping credential-bearing errors while retaining
+  context, timeout, unsafe-redirect, auth, rate-limit, and server classes.
+- Initial login is `openaicodex.NewLoginFlow(...LoginOption)`. The provider
+  owns its client identity, authorization/token endpoints, scopes, official
+  flags, `codex_cli_rs` originator, `/auth/callback` path, and fixed 1455 →
+  1457 port selection. The listener binds `127.0.0.1`; the registered
+  redirect uses `localhost`. `Complete` accepts an automatic callback or a
+  copied callback passed through `Submit`. Wrong method/path/state, stray,
+  missing, and oversized requests are non-terminal. Matching-state success
+  or denial alone consumes the flow. The implementation uses independent
+  state/verifier entropy, constant-time state checks, request/header/body
+  limits, `ReadHeaderTimeout`, no-store/no-referrer responses, total and
+  exchange timeouts, redirect refusal, prompt shutdown, strict bounded token
+  JSON, and sanitized errors. Account ID is extracted from the ID token first
+  and the access token second; the ID token is not retained. The host persists
+  the returned `AuthCredential`. Device and CLI login UX are deferred, and a
+  live-account verification remains required outside automated tests.
 - **Reasoning-replay matching**: the shared Responses mapping takes the
   accepting provider id as a parameter. `openai` and `openai-codex` are
   **not mutually replayable** in v1 — each accepts only reasoning parts
@@ -945,9 +954,9 @@ type AuthCredential struct {
 ```
 
 Unknown `type` values are retained, while unknown fields are tolerated and
-ignored for forward compatibility with pi additions. Secrets never appear in
-`String()`/log output (no `Stringer` that prints them; the e2e harness logs
-provider names only).
+ignored for forward compatibility with pi additions. `AuthCredential`
+implements redacting `String`, `GoString`, and `LogValue`; explicit JSON
+credential persistence remains available.
 
 **OAuth consumption** (FS §17C) builds on these types:
 
@@ -956,7 +965,7 @@ provider names only).
 // per-provider refresh endpoints/client ids, goroutine-safe single-flight
 // refresh. No exported llm.TokenSource type exists.
 
-// Subscription-capable provider packages expose:
+// The OpenAI Codex provider exposes:
 //   WithOAuth(cred llm.AuthCredential, persist llm.OAuthPersistenceFunc) Option
 // OAuthPersistenceFunc is func(context.Context, llm.AuthCredential) error.
 // Semantics: refresh before expiry; one forced-refresh retry on 401
@@ -968,6 +977,33 @@ provider names only).
 // access-only credentials may pass nil. An explicit context-aware no-op is the
 // opt-in for in-memory-only rotation and carries stale-on-restart risk.
 ```
+
+**Interactive login** uses a provider-neutral lifecycle while leaving wire
+protocols in provider packages:
+
+```go
+type LoginFlow interface {
+    Begin(context.Context) (LoginAuthorization, error)
+    Complete(context.Context) (AuthCredential, error)
+    Submit(context.Context, string) error
+    Cancel()
+}
+
+// LoginAuthorization keeps its URL/instructions private, exposes URL() and
+// Instructions(), and redacts String, GoString, structured logs, and JSON.
+// OpenAI Codex exposes NewLoginFlow(...LoginOption) (LoginFlow, error).
+```
+
+`Complete`, `Submit`, and `Cancel` are safe from different goroutines.
+`Complete` waits for automatic provider completion or the optional
+provider-specific `Submit` fallback. A flow
+is single-use; cancel, expiry, or completion closes its loopback launcher and
+zeroes reachable ephemeral strings. Provider-owned total response, code, and
+state byte limits run before parsing/exchange. Credential-bearing transport
+errors are classified into stable safe sentinels without wrapping the raw
+transport error. Codex returns the minted credential without writing it.
+The caller must durably store a refreshable result and pass a real
+`OAuthPersistenceFunc` to `WithOAuth` before provider use.
 
 ## 4. Request Pipeline (all providers)
 
@@ -1206,7 +1242,9 @@ via `llm.StreamText` or collect for `--json`/`--no-stream`), `models.go`
 - OpenAI Codex authentication precedence is `--auth-file`,
   `OPENAI_CODEX_ACCESS_TOKEN`, then compatibility `--api-key`. The auth file
   is loaded only when explicitly named, and refreshes are persisted through a
-  context-aware atomic writer. Help warns that command-line secrets are
+  context-aware atomic writer holding a bounded cross-process advisory lock
+  for the full read/modify/fsync/rename/directory-sync transaction. Help warns
+  that command-line secrets are
   exposed through argv and often shell history.
 - `--version` via `runtime/debug.ReadBuildInfo`.
 - `make build` compiles every package and emits `bin/llm-cli`; CI executes

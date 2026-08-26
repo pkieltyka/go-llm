@@ -130,7 +130,7 @@ visibly and the phase still completes — never fail a phase on missing keys.
   - ⏸ **Checkpoint: ask the user for their OpenAI API key**, then run the
     e2e suite vs OpenAI.
 
-- [x] **Phase 6: Subscription auth — Anthropic OAuth mode + `openai-codex` provider**
+- [x] **Phase 6: Subscription auth — `openai-codex` provider**
   - Core (`auth.go`): OAuth consumption per ARCH §3.4 — `TokenSource`
     (per-provider refresh, single-flight, goroutine-safe),
     `WithOAuth(cred, persist)` option pattern: bearer from
@@ -138,9 +138,6 @@ visibly and the phase still completes — never fail a phase on missing keys.
     forced-refresh retry on 401, renewals → context-aware, error-returning
     durable persistence callback (required when a refresh token is present;
     go-llm never writes credential files).
-  - `providers/anthropic` OAuth mode (ARCH §3.1, FS §17C): SDK auth-token
-    option + `anthropic-beta: oauth-2025-04-20` header + Anthropic OAuth
-    token-endpoint refresh (reference: pi `oauth/anthropic.ts`).
   - `providers/openaicodex` (ARCH §3.2A, FS §17C): extract the phase-5
     Responses mapping into a shared internal package; codex base URL,
     bearer + `chatgpt-account-id` (re-resolved per request) +
@@ -148,20 +145,43 @@ visibly and the phase still completes — never fail a phase on missing keys.
     (references: pi `oauth/openai-codex.ts`, zero's codex client);
     curated static `Models()`.
   - Reconcile the phase-4 e2e loader with the pi-compatible credential
-    format (`LoadAuthFile`, ARCH §3.4/§9) if it predates it; e2e
-    constructs providers by credential `type` (api_key → `WithAPIKey`,
-    oauth → `WithOAuth`).
-  - NOT in scope: interactive login flows (PKCE/device-code minting) —
-    deferred (`llm-cli auth login` candidate); credentials come from
-    pi/claude/codex CLIs.
+    format (`LoadAuthFile`, ARCH §3.4/§9) if it predates it; Anthropic e2e
+    accepts only `api_key` → `WithAPIKey`, while OpenAI Codex accepts only
+    `oauth` → `WithOAuth`.
+  - Initial delivery consumed compatible existing Codex credentials. The
+    provider-neutral login lifecycle and Codex browser PKCE minting were
+    promoted later as Phase 6A; device-code and CLI login remain deferred.
   - Tests: token-refresh state machine vs `httptest` (expiry, 401
     retry-once, durable persistence, single-flight under -race), codex
     request-build goldens (headers, account id), Responses fixtures
     reused from phase 5.
-  - ⏸ **Checkpoint: ask the user to populate `oauth` entries** in
-    `gollm-test.json` (paste from `~/.pi/agent/auth.json`) for
-    `anthropic` and/or `openai-codex`, then run the e2e suite over both
-    subscription paths.
+  - ⏸ **Checkpoint: ask the user to populate the `openai-codex` OAuth entry**
+    in `gollm-test.json`, then run its subscription e2e suite.
+
+- [x] **Phase 6A: Public login-flow lifecycle + Codex initial OAuth hardening**
+  - Core (`auth.go`): single-use, context-aware `LoginFlow` with
+    `Begin`/`Complete`/`Submit`/`Cancel`; redacting `LoginAuthorization` and
+    stable expired/state-mismatch/closed errors.
+  - Remove Anthropic subscription OAuth and Claude Code identity emulation;
+    Anthropic remains API-key-only.
+  - `providers/openaicodex`: authorization-code PKCE S256 with independent
+    CSRF state; provider-owned official endpoints/client/scopes/flags/
+    originator; automatic `127.0.0.1` callback using localhost ports 1455
+    then 1457 and `/auth/callback`; copied-URL/query `Submit` fallback;
+    non-terminal stray/invalid callbacks; strict bounded token decoding;
+    ID-token then access-token account extraction; cancellation cleanup;
+    total/exchange bounds; and credential-POST redirect refusal. Device-code
+    and built-in CLI login UX remain deferred; live verification is required.
+  - The flow returns `AuthCredential` without storage. Hosts durably persist a
+    refreshable result before constructing `WithOAuth`, preserving Phase 6's
+    publication-after-persistence contract.
+  - Add `AuthCredential` format/log redaction without changing explicit JSON
+    persistence; sanitize Codex refresh failures; and protect CLI credential
+    RMW publication with bounded cross-process advisory locking.
+  - Tests pin URL/ports/path/redaction, PKCE/state/form shape, callback state
+    machine, collision fallback, limits, cancellation/expiry, one-shot use,
+    strict token/account decoding, redirect refusal, transport/body redaction,
+    listener shutdown, and concurrent CLI updates under the race detector.
 
 - [x] **Phase 7: chatcompletions adapter + OpenRouter provider**
   - `providers/internal/chatcompletions` per ARCH §3.3: `Dialect` interface,
@@ -352,13 +372,12 @@ normalization invariant → FS §11):
   providers): zero unconditionally sets `cache_control` on the system
   block + last tool — a good opinionated default; ours would be opt-in
   atop the existing `CacheHint` machinery.
-- **Interactive OAuth login flows** (PKCE/device-code credential
-  *minting*): the subscription auth paths themselves were **promoted into
-  scope** (phase 6, FS §17C) — consuming + refreshing credentials minted
-  by pi/claude/codex CLIs. Minting new ones (`llm-cli auth login`-style
-  loopback PKCE; references: zero's provideroauth, pi's oauth/) stays
-  deferred. Design rules for when it lands (recorded 2026-07-22 with the
-  credential-POST redirect hardening): one exported endpoint validator
+- **Additional interactive OAuth login flows** (Codex device-code, built-in
+  CLI login UX, and providers other than Codex): the Codex subscription auth
+  path and browser PKCE implementation are in scope (phases 6/6A). Further
+  provider minting remains deferred. Design rules for future discovery-based
+  flows (recorded
+  2026-07-22 with the credential-POST redirect hardening): one exported endpoint validator
   (https-or-loopback) applied to every endpoint at discovery-merge time,
   plus a backstop validation at the authorize-URL choke point so a missed
   merge site can't open a downgraded URL; skip network discovery entirely

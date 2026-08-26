@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -255,6 +256,97 @@ func TestCodexAuthFilePersistencePreservesOAuthFormat(t *testing.T) {
 	}
 	if !bytes.Contains(raw, []byte(`"accountId": "acct"`)) || bytes.Contains(raw, []byte(`"AccountID"`)) {
 		t.Fatalf("auth file is not pi-compatible JSON: %s", raw)
+	}
+}
+
+func TestCodexAuthFilePersistenceHonorsLockContention(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auth.json")
+	original := `{"providers":{"openai-codex":{"type":"oauth","access":"old","refresh":"old-refresh"}}}`
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := acquireAuthFileLock(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persist := codexAuthFilePersistence(path)
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	err = persist(ctx, llm.AuthCredential{Type: "oauth", Access: "blocked", Refresh: "blocked-refresh"})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("contended persistence error = %v, want context deadline", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != original {
+		t.Fatalf("contended persistence changed auth file: %s", data)
+	}
+	if err := lock.Release(); err != nil {
+		t.Fatal(err)
+	}
+	want := llm.AuthCredential{Type: "oauth", Access: "new", Refresh: "new-refresh"}
+	if err := persist(context.Background(), want); err != nil {
+		t.Fatal(err)
+	}
+	auth, err := llm.LoadAuthFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := auth["openai-codex"]; got != want {
+		t.Fatalf("credential after lock release = %#v", got)
+	}
+	if info, err := os.Stat(path + ".lock"); err != nil || info.Mode().Perm()&0o077 != 0 {
+		t.Fatalf("lock file mode/error = %v/%v", info, err)
+	}
+}
+
+func TestAuthFilePersistenceConcurrentUpdatesDoNotLoseEntries(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auth.json")
+	if err := os.WriteFile(path, []byte(`{"meta":{"keep":true},"providers":{"openai-codex":{"type":"oauth","access":"old-codex"},"peer":{"type":"oauth","access":"old-peer"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	codex := llm.AuthCredential{Type: "oauth", Access: "new-codex", Refresh: "codex-refresh", AccountID: "codex-account"}
+	peer := llm.AuthCredential{Type: "oauth", Access: "new-peer", Refresh: "peer-refresh", AccountID: "peer-account"}
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var wait sync.WaitGroup
+	for _, update := range []struct {
+		provider   string
+		credential llm.AuthCredential
+	}{
+		{provider: "openai-codex", credential: codex},
+		{provider: "peer", credential: peer},
+	} {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			<-start
+			errs <- authFileCredentialPersistence(path, update.provider)(context.Background(), update.credential)
+		}()
+	}
+	close(start)
+	wait.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	auth, err := llm.LoadAuthFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auth["openai-codex"] != codex || auth["peer"] != peer {
+		t.Fatalf("concurrent credentials = %#v", auth)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte(`"keep": true`)) {
+		t.Fatalf("concurrent persistence lost wrapper sibling: %s", data)
 	}
 }
 

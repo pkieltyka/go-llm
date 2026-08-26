@@ -44,10 +44,6 @@ func ValidateLiveProviderConfig(provider string, pc ProviderConfig) error {
 			if pc.Auth.Key == "" {
 				return fmt.Errorf("%w: anthropic API key", errLiveCredentialsMissing)
 			}
-		case "oauth":
-			if pc.Auth.Access == "" {
-				return errors.New("anthropic OAuth credential is configured without an access token")
-			}
 		default:
 			return fmt.Errorf("anthropic credential has unsupported type %q", pc.Auth.Type)
 		}

@@ -61,7 +61,7 @@ func (p *Provider) buildParamsAfterValidation(req *llm.Request) (sdk.MessageNewP
 		Messages:  messages,
 	}
 
-	params.System = p.systemBlocks(req)
+	params.System = systemBlocks(req)
 	if req.Temperature != nil {
 		params.Temperature = sdk.Float(*req.Temperature)
 	}
@@ -96,20 +96,8 @@ func (p *Provider) buildParamsAfterValidation(req *llm.Request) (sdk.MessageNewP
 	return params, opts, nil
 }
 
-// systemBlocks builds the request's system blocks. In OAuth mode ONLY
-// (FS §17C / ARCH §3.1), the Claude Code identity line is injected as the
-// FIRST system block — subscription tokens are rejected without it — and the
-// caller's System text becomes the second block. API-key requests carry only the
-// caller's System text.
-func (p *Provider) systemBlocks(req *llm.Request) []sdk.TextBlockParam {
-	blocks := make([]sdk.TextBlockParam, 0, 2)
-	if p.oauth {
-		block := sdk.TextBlockParam{Text: claudeCodeSystemPrompt}
-		if req.SystemCache != nil {
-			block.CacheControl = cacheControl(req.SystemCache)
-		}
-		blocks = append(blocks, block)
-	}
+func systemBlocks(req *llm.Request) []sdk.TextBlockParam {
+	blocks := make([]sdk.TextBlockParam, 0, 1)
 	if req.System != "" {
 		block := sdk.TextBlockParam{Text: req.System}
 		if req.SystemCache != nil {
