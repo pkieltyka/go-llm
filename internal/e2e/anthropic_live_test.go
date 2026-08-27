@@ -55,14 +55,7 @@ func TestLiveAnthropic(t *testing.T) {
 		anthropic.WithMaxRetries(0),
 		anthropic.WithWireCapture(captures.Capture),
 	}
-	if providerCfg.Auth.Type == "oauth" {
-		// Persist rotated refresh tokens back to gollm-test.json — dropping
-		// them strands the stored credential after the provider refreshes.
-		persist := AuthFilePersistence(filepath.Join(root, "gollm-test.json"), "anthropic", t.Logf, secrets)
-		opts = append(opts, anthropic.WithOAuth(providerCfg.Auth, persist))
-	} else {
-		opts = append(opts, anthropic.WithAPIKey(providerCfg.Auth.Key))
-	}
+	opts = append(opts, anthropic.WithAPIKey(providerCfg.Auth.Key))
 	if providerCfg.BaseURL != "" {
 		opts = append(opts, anthropic.WithBaseURL(providerCfg.BaseURL))
 	}

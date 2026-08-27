@@ -1,38 +1,35 @@
 # Release Checklist
 
 This checklist is version-neutral. Replace `$VERSION` with the intended tag.
-Release verification requires Go 1.26.5 or newer.
+The supported interval starts at Go 1.26.0. Release verification requires the
+pinned `.go-version` (currently 1.27.0) or newer. CI exercises the minimum,
+the pin, and the current stable toolchain.
 
-## Offline Gates
+## Credential-Free, Network-Dependent Gates
 
-Run the same commands after any fixture or model snapshot refresh:
+Run the same credential-free gate used by CI after any fixture or model snapshot
+refresh:
 
 ```sh
-go version
-go mod tidy
+test -z "$(git status --porcelain=v1)"
+VERIFIED_COMMIT=$(git rev-parse --verify 'HEAD^{commit}')
+make check-release-go-version
 go mod verify
-pnpm --dir scripts install --frozen-lockfile
-pnpm --dir scripts test
-test -z "$(gofmt -l $(git ls-files '*.go'))"
-git diff --check
-go vet ./...
-go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2 run --default=none --enable=govet --enable=ineffassign --enable=unused ./...
-go test -count=1 ./...
-go test -race -count=1 ./...
+make check
 go test -shuffle=on -count=10 ./...
-./scripts/check-coverage_test.sh
-./scripts/check-coverage.sh
-go test -count=1 -tags=live -run '^TestLiveRunnerManifests$' ./internal/e2e
-go test -count=1 -tags=live -run '^$' ./...
-go run golang.org/x/vuln/cmd/govulncheck@v1.5.0 ./...
-make build
-test -x bin/llm-cli
-./bin/llm-cli --help >/dev/null
-./bin/llm-cli --version >/dev/null
 go test -count=1 ./internal/e2e -run '^TestRecordedFixturesAreRedacted$'
 gitleaks detect --source . --no-git --redact --no-banner
 gitleaks detect --source . --redact --no-banner
 ```
+
+These gates require the Go module proxy (unless the module cache is already
+populated), the npm registry for `pnpm install`, and the Go vulnerability
+database for `govulncheck`. They require no provider credentials. An air-gapped
+run must pre-populate those caches and configure a local vulnerability database.
+
+`make check` builds and smoke-tests the CLI, runs vet and the pinned lint gate,
+race tests, snapshot tests, live-tag compilation without credentials, coverage
+floors, the pinned vulnerability scan, and short fuzz smoke tests.
 
 The root-only entries in `.gitleaksignore` suppress the known rule findings
 from the ignored local `gollm-test.json` by their no-git fingerprints. Git
@@ -40,9 +37,9 @@ history findings include a commit hash in the fingerprint, so committing that
 file still fails the history scan. Keep the credential file at mode `0600`;
 update the narrow fingerprints only when its line layout changes.
 
-CI also runs the frozen snapshot fixture suite and the CLI smoke gate. Every
-external `uses:` entry in `.github/workflows` uses an explicit release tag;
-review and advance those tags deliberately when new releases are available.
+CI runs `make check` directly. Every external `uses:` entry in
+`.github/workflows` uses an explicit release tag; review and advance those tags
+deliberately when new releases are available.
 
 ## Credentials
 
@@ -115,8 +112,9 @@ must ship with matching redaction tests before its recordings are accepted.
 Refresh only when model sources or overrides change:
 
 ```sh
-make models
+make models MODEL_ARGS='--generated-at 2026-08-27T00:50:40.624Z --capture-dir scripts/model-sources/2026-08-26'
 pnpm --dir scripts test
+make check-models-reproducible
 ```
 
 The script validates the models.dev object-map and OpenRouter `data[]`
@@ -128,6 +126,16 @@ merges deterministically without replacing known values with `undefined`, writes
 atomically, and refuses destructive changes unless `--allow-destructive` is
 explicitly supplied after review. ZAI is not in the current snapshot provider
 set.
+
+Every snapshot records schema and generator versions plus ordered source IDs,
+URLs, and SHA-256 content digests. The exact models.dev and OpenRouter response
+bytes are retained as deterministic gzip files under the dated
+`scripts/model-sources/` directory. `--generated-at` controls the timestamp;
+the reproducibility gate replays those captured inputs, inherits that timestamp
+from `models.json`, verifies the source digests, and compares the complete file
+byte-for-byte. Update `MODEL_SOURCE_DIR` in the Makefile when a reviewed refresh
+advances the capture. Keep each future generated refresh, its captured inputs,
+and that pointer change in a dedicated commit.
 
 ## Coverage Floors
 
@@ -160,6 +168,12 @@ the script in the same change.
 After review approval and all applicable gates pass:
 
 ```sh
-git tag "$VERSION"
+test "$VERIFIED_COMMIT" = "$(git rev-parse --verify 'HEAD^{commit}')"
+test -z "$(git status --porcelain=v1)"
+git tag -a "$VERSION" "$VERIFIED_COMMIT" -m "Release $VERSION"
 git push origin "$VERSION"
 ```
+
+The commit object named by `VERIFIED_COMMIT` is therefore exactly the clean
+commit that passed the release gates; generated or tidy changes cannot remain
+only in the index or worktree when the tag is created.

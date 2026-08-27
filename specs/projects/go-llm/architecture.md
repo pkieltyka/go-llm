@@ -42,7 +42,7 @@ go-llm/
 ├── cmd/llm-cli/                                  # curl-like CLI frontend (stdlib flag; public API only)
 ├── internal/e2e/                                 # live e2e scenario harness (build tag: live)
 ├── providers/
-│   ├── anthropic/                                # wraps anthropic-sdk-go (Messages API, direct; incl. OAuth mode §17C)
+│   ├── anthropic/                                # wraps anthropic-sdk-go (Messages API, API key)
 │   ├── openai/                                   # wraps openai-go Responses API (direct)
 │   ├── openaicodex/                              # ChatGPT-subscription provider (shared Responses mapping, §3.2A)
 │   ├── openrouter/                               # chatcompletions + OpenRouter dialect
@@ -69,7 +69,7 @@ Dependencies (pinned at implementation time):
 | `github.com/openai/openai-go/v3` | `providers/openai` (Responses) + `providers/chatcompletions` and its presets | Official OpenAI SDK; ordinary OpenAI options do not expose its types |
 
 The minimum Go version for users of the module is 1.26. Releases are verified
-with Go 1.26.5 or newer.
+with Go 1.26.6 or newer.
 
 ## 2. Core Types (package `llm`)
 
@@ -224,9 +224,25 @@ type ModelInfo struct {
     ContextWindow    int
     MaxOutputTokens  int
     Pricing          *ModelPricing // when reported (OpenRouter) or from table
-    SupportedEfforts []Effort      // advisory; empty means unknown
+    SupportedEfforts []Effort      // advisory; nil = unknown, non-nil empty = advertised/no known unified values
+    DefaultEffort    Effort        // provider-advertised default; advisory
+    ReasoningRequired bool         // positive provider claim; advisory
     Capabilities     []Capability  // advisory positive claims; empty means unknown
     Raw              any
+}
+
+type ModelPricing struct {
+    InputPerMTok, OutputPerMTok           float64
+    CacheReadPerMTok, CacheWritePerMTok   float64
+    Availability                          *ModelPricingAvailability
+    // ...request-wide tiers...
+}
+
+// A non-nil value is authoritative and distinguishes known zero/free rates
+// from unavailable components. Nil preserves the legacy value interpretation.
+type ModelPricingAvailability struct {
+    InputPerMTok, OutputPerMTok           bool
+    CacheReadPerMTok, CacheWritePerMTok   bool
 }
 ```
 
@@ -242,8 +258,9 @@ Design notes:
 - Raw-client escape hatch is per-package via type assertion:
   `p.(*anthropic.Provider).Client()` returns the SDK client.
 - Provider-level `Capabilities()` remains the request-validation authority.
-  `ModelInfo.Capabilities` is discovery metadata only and never causes a
-  model-specific preflight rejection.
+  `ModelInfo` reasoning/capability fields are discovery metadata only and
+  never cause model-specific preflight rejection, effort clamping, or request
+  rewriting.
 
 ### 2.5 Stream events
 
@@ -558,16 +575,8 @@ syntaxes/message splicing are explicitly rejected feature requests.
   header honored).
 - `Models()`: `GET /v1/models` via SDK, mapped to `ModelInfo` (context
   window, max output, capabilities available on that endpoint).
-- **OAuth mode** (FS §17C): `anthropic.WithOAuth(cred, persist)` — the
-  SDK's auth-token option (bearer) + the full Claude Code identity set
-  (FS §17C: `anthropic-beta: claude-code-20250219,oauth-2025-04-20`,
-  `claude-cli` user-agent, `x-app: cli`, Claude Code identity line as
-  first system block — subscription tokens are rejected otherwise); token
-  lifecycle via the internal `provideroauth.Source` (§3.4 auth block): refresh
-  before expiry, one forced-refresh retry on 401, renewed credentials →
-  the context-aware persistence callback. Refresh-endpoint 4xx
-  (`invalid_grant` etc.) maps to `ErrAuth`, not `ErrBadRequest` — a stale
-  token is an auth failure.
+- Authentication is API-key only. Subscription OAuth and Claude Code identity
+  emulation are intentionally absent (FS §17C).
 
 ### 3.2 OpenAI (direct wrap, Responses API)
 
@@ -581,6 +590,11 @@ reasoning across tool-call turns. Decision record:
   `function_call_output` items keyed by `call_id`); `System` →
   `instructions`; `MaxTokens` → `max_output_tokens`; `Effort` →
   `reasoning: {effort, summary: "auto"}` (`none` supported natively);
+  `openai.Options.ReasoningSummary` validates the closed
+  `auto`/`concise`/`detailed` vocabulary in the OpenAI-only `applyOptions`
+  seam, then replaces only `reasoning.summary` (or creates a summary-only
+  reasoning object when effort is empty). Empty preserves the existing mapping;
+  OpenAI owns model acceptance, and the Codex adapter is not changed;
   `ResponseFormat` → `text: {format}`; tools → flattened function shape
   (`strict` default-on per Responses convention, disabled when
   `Tool.Strict` is false); `SessionID` → `prompt_cache_key`. Keys longer
@@ -592,9 +606,12 @@ reasoning across tool-call turns. Decision record:
   `Conversation`).
 - **Public request extensions**: `openai.Options` uses go-llm and
   standard-library types (`Include`, `Conversation`, `Metadata`, enums, and
-  `[]json.RawMessage` hosted-tool objects). Hosted tools are validated as JSON
-  objects before conversion. Ordinary consumers do not import `openai-go`;
-  `Provider.Client` is the explicit vendor-typed escape hatch.
+  `[]json.RawMessage` hosted-tool objects). `ReasoningSummary` is a
+  library-owned string enum whose empty value preserves automatic summaries;
+  unknown and whitespace-padded values fail locally instead of passing through.
+  Hosted tools are validated as JSON objects before conversion. Ordinary
+  consumers do not import `openai-go`; `Provider.Client` is the explicit
+  vendor-typed escape hatch.
 - **Response map**: `output` items → parts in order — `reasoning` item →
   `ReasoningPart{Text: joined summary, Raw: full item JSON incl.
   encrypted_content}`; `message`/`output_text` → `TextPart` (annotations
@@ -645,7 +662,24 @@ wire shape at `chatgpt.com/backend-api/codex`:
   authentication and context failures remain visible. Construction and chat
   calls never trigger discovery.
 - Exact refresh endpoint and public client id are pinned and covered by
-  focused authentication tests.
+  focused authentication tests. Request construction and transport failures
+  are sanitized without wrapping credential-bearing errors while retaining
+  context, timeout, unsafe-redirect, auth, rate-limit, and server classes.
+- Initial login is `openaicodex.NewLoginFlow(...LoginOption)`. The provider
+  owns its client identity, authorization/token endpoints, scopes, official
+  flags, `codex_cli_rs` originator, `/auth/callback` path, and fixed 1455 →
+  1457 port selection. The listener binds `127.0.0.1`; the registered
+  redirect uses `localhost`. `Complete` accepts an automatic callback or a
+  copied callback passed through `Submit`. Wrong method/path/state, stray,
+  missing, and oversized requests are non-terminal. Matching-state success
+  or denial alone consumes the flow. The implementation uses independent
+  state/verifier entropy, constant-time state checks, request/header/body
+  limits, `ReadHeaderTimeout`, no-store/no-referrer responses, total and
+  exchange timeouts, redirect refusal, prompt shutdown, strict bounded token
+  JSON, and sanitized errors. Account ID is extracted from the ID token first
+  and the access token second; the ID token is not retained. The host persists
+  the returned `AuthCredential`. Device and CLI login UX are deferred, and a
+  live-account verification remains required outside automated tests.
 - **Reasoning-replay matching**: the shared Responses mapping takes the
   accepting provider id as a parameter. `openai` and `openai-codex` are
   **not mutually replayable** in v1 — each accepts only reasoning parts
@@ -765,7 +799,9 @@ vendor-coupled, and stability-exempt before v1. Ordinary callers use `New`,
 `Compat`, `Chat`, and `ChatStream`.
 
 The adapter owns everything common: message/part conversion, tools, response
-format, **fail-open schema adaptation** (per-dialect strict-mode
+format, **compatible tool-schema normalization** (an object schema with
+missing/null `properties` gets a new `{}` on the decoded copy; non-object
+roots/types/properties fail before transport), **fail-open schema adaptation** (per-dialect strict-mode
 sanitization of tool/output schemas — unsupported keywords stripped;
 if adaptation still fails, degrade to `strict: false` rather than
 erroring), streaming loop (`stream_options.include_usage` set where a
@@ -788,7 +824,13 @@ Dialect specifics (surface per functional spec §14):
   extracts `provider`, `native_finish_reason`, annotations,
   `reasoning_details` into typed response extras; enables cache-aware
   role-tool text blocks after a focused live write/read cache probe (accessor
-  `openrouter.Extras(resp *llm.Response) (*ResponseExtras, bool)`).
+  `openrouter.Extras(resp *llm.Response) (*ResponseExtras, bool)`). An explicit
+  `Models(ctx)` issues exactly one OpenRouter `/models` request with no cache,
+  models.dev fallback, or hidden construction/chat fetch. It retains each
+  complete row in `Raw`, maps valid token and cache prices per million (zero
+  is free; negative/dynamic and non-finite token pricing is unknown), and
+  normalizes supported/default/mandatory reasoning data into advisory
+  `ModelInfo` fields without changing request mapping.
 - **vllm** (upstream research: `vllm_research.md`): current-stable v0.26.0,
   host-first `vllm.New(baseURL, opts...)`, key-optional. Reasoning replay and
   response parsing use `reasoning`; JSON-schema output uses
@@ -912,9 +954,9 @@ type AuthCredential struct {
 ```
 
 Unknown `type` values are retained, while unknown fields are tolerated and
-ignored for forward compatibility with pi additions. Secrets never appear in
-`String()`/log output (no `Stringer` that prints them; the e2e harness logs
-provider names only).
+ignored for forward compatibility with pi additions. `AuthCredential`
+implements redacting `String`, `GoString`, and `LogValue`; explicit JSON
+credential persistence remains available.
 
 **OAuth consumption** (FS §17C) builds on these types:
 
@@ -923,7 +965,7 @@ provider names only).
 // per-provider refresh endpoints/client ids, goroutine-safe single-flight
 // refresh. No exported llm.TokenSource type exists.
 
-// Subscription-capable provider packages expose:
+// The OpenAI Codex provider exposes:
 //   WithOAuth(cred llm.AuthCredential, persist llm.OAuthPersistenceFunc) Option
 // OAuthPersistenceFunc is func(context.Context, llm.AuthCredential) error.
 // Semantics: refresh before expiry; one forced-refresh retry on 401
@@ -935,6 +977,33 @@ provider names only).
 // access-only credentials may pass nil. An explicit context-aware no-op is the
 // opt-in for in-memory-only rotation and carries stale-on-restart risk.
 ```
+
+**Interactive login** uses a provider-neutral lifecycle while leaving wire
+protocols in provider packages:
+
+```go
+type LoginFlow interface {
+    Begin(context.Context) (LoginAuthorization, error)
+    Complete(context.Context) (AuthCredential, error)
+    Submit(context.Context, string) error
+    Cancel()
+}
+
+// LoginAuthorization keeps its URL/instructions private, exposes URL() and
+// Instructions(), and redacts String, GoString, structured logs, and JSON.
+// OpenAI Codex exposes NewLoginFlow(...LoginOption) (LoginFlow, error).
+```
+
+`Complete`, `Submit`, and `Cancel` are safe from different goroutines.
+`Complete` waits for automatic provider completion or the optional
+provider-specific `Submit` fallback. A flow
+is single-use; cancel, expiry, or completion closes its loopback launcher and
+zeroes reachable ephemeral strings. Provider-owned total response, code, and
+state byte limits run before parsing/exchange. Credential-bearing transport
+errors are classified into stable safe sentinels without wrapping the raw
+transport error. Codex returns the minted credential without writing it.
+The caller must durably store a refreshable result and pass a real
+`OAuthPersistenceFunc` to `WithOAuth` before provider use.
 
 ## 4. Request Pipeline (all providers)
 
@@ -965,13 +1034,24 @@ boundary) so the taxonomy can't drift between code paths.
   scans for the highest valid input-occupancy threshold strictly exceeded by
   input + cache-read + cache-write tokens; exact equality uses the lower
   tier. Tier slices are deep-copied with catalog/model values.
+- Live OpenRouter catalog pricing decodes input, output, cache-read, and
+  cache-write independently. `ModelPricing.Availability` preserves explicit
+  zero as known/free and marks missing, null, malformed, non-numeric,
+  negative/dynamic, overflowing, or non-finite values unknown without losing
+  valid sibling rates or the copied raw catalog row. Estimation returns no
+  cost when a nonzero usage component has no known rate; a selected complete
+  request-wide tier supplies all four rates.
 - **Model table = embedded JSON snapshot** (`models.json`), refreshed by
   `make models` through `scripts/snapshot-models-table.ts` (tsx; dev-time only):
   validates the models.dev provider object maps and OpenRouter `data[]`,
   trims them to Anthropic, OpenAI, and OpenRouter fields consumed by the
   library, omits invalid limit/pricing sentinels, applies
-  `scripts/overrides.json`, and deterministically writes a `generated_at`
-  snapshot. Provider/count minimums, model-identity replacement, and material
+  `scripts/overrides.json`, and deterministically writes a versioned snapshot
+  with a controllable `generated_at` plus ordered source IDs, URLs, and SHA-256
+  content digests. Exact remote response bytes are retained as deterministic
+  gzip files; the reproducibility gate replays them, verifies their digests,
+  inherits the reviewed timestamp, and byte-compares the complete output.
+  Provider/count minimums, model-identity replacement, and material
   metadata loss are guarded; destructive changes require an explicit
   `--allow-destructive` review override. Writes are atomic and preserve the
   previous file on failure. The root package `go:embed`s the result and parses
@@ -980,8 +1060,8 @@ boundary) so the taxonomy can't drift between code paths.
   runtime; only an explicit provider `Models(ctx)` call may use a remote model
   endpoint.
   Parsing fails closed on unknown fields, duplicate/unsorted identities,
-  invalid limits/prices/tiers/efforts, invalid timestamps, and trailing or
-  concatenated JSON.
+  invalid schema/generator/source provenance, invalid limits/prices/tiers/
+  efforts, invalid timestamps, and trailing or concatenated JSON.
   Snapshot refresh is a release-phase step and documented maintenance
   task. `PriceTableDate` is read from `generated_at`. Users override via
   `WithPriceTable`.
@@ -1121,6 +1201,24 @@ exports `llmtest.RunConformance(t, newProvider)`, the machine-checked form
 of the Provider contract; every provider package in the module runs it
 against its offline fixture servers.
 
+`llmtest.RunCapabilityConformance` sits beside that unchanged base suite. It
+first probes a provider's name and reviewed capability claims, validates the
+entire structured profile, then creates an isolated provider and fresh request
+for every Chat/Stream path. `CapabilityInvocation{CaseName, Capability, Path}`
+travels only to the fixture factory; the runner never stamps `Request.Model`
+or parses provider bodies to recover case identity. Provider packages own
+their wire structs and exact native assertions. The runner owns profile
+integrity, claim-drift detection, bounded full stream collection, normalized
+assertions, and actionable provider/case/capability/path errors.
+
+Cases cover only the reviewed activation-sensitive standard set; structured
+slice exemptions stay duplicate-detectable and represent evidence gaps, not
+capability denials. This is deterministic offline wire proof, deliberately
+separate from live availability/quota/cache-admission evidence. The public
+generic chat-completions engine supplies the reusable compatible profile;
+the advanced `NewWithDialect`/replayDialect suite remains base-only so the
+dialect seam is covered without duplicating activation ownership.
+
 ## 7C. `cmd/llm-cli`
 
 Design per FS §19. Structure: a single `main` package —
@@ -1144,7 +1242,9 @@ via `llm.StreamText` or collect for `--json`/`--no-stream`), `models.go`
 - OpenAI Codex authentication precedence is `--auth-file`,
   `OPENAI_CODEX_ACCESS_TOKEN`, then compatibility `--api-key`. The auth file
   is loaded only when explicitly named, and refreshes are persisted through a
-  context-aware atomic writer. Help warns that command-line secrets are
+  context-aware atomic writer holding a bounded cross-process advisory lock
+  for the full read/modify/fsync/rename/directory-sync transaction. Help warns
+  that command-line secrets are
   exposed through argv and often shell history.
 - `--version` via `runtime/debug.ReadBuildInfo`.
 - `make build` compiles every package and emits `bin/llm-cli`; CI executes
@@ -1248,6 +1348,12 @@ via `llm.StreamText` or collect for `--json`/`--no-stream`), `models.go`
   correctness, one capture per retry attempt.
 - **`llmtest` self-tests** double as the `Provider` interface conformance
   suite.
+- **Offline capability activation profiles** run next to base conformance for
+  OpenAI, Anthropic, OpenRouter, vLLM, generic Chat Completions, Ollama, and
+  OpenAI Codex. Native request assertions prove tools/required choice,
+  structured output, images, stop/reasoning where advertised, explicit cache
+  mappings, and both Codex Lite/legacy branches. Fixture success is never
+  treated as proof of live admission.
 - **Live e2e suite** (`internal/e2e`, `//go:build live`): a
   capability-driven scenario harness run against the real provider APIs.
   One scenario per standard capability, written once and parameterized by

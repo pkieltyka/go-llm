@@ -145,16 +145,7 @@ func handoffProvider(ctx context.Context, t *testing.T, root string, cfg Config,
 			}
 			t.Fatalf("invalid anthropic handoff configuration: %v", err)
 		}
-		opts := []anthropic.Option{anthropic.WithMaxRetries(0)}
-		switch {
-		case providerCfg.Auth.Type == "oauth" && providerCfg.Auth.Access != "":
-			persist := AuthFilePersistence(filepath.Join(root, "gollm-test.json"), "anthropic", t.Logf, secrets)
-			opts = append(opts, anthropic.WithOAuth(providerCfg.Auth, persist))
-		case providerCfg.Auth.Key != "":
-			opts = append(opts, anthropic.WithAPIKey(providerCfg.Auth.Key))
-		default:
-			return nil, "", false
-		}
+		opts := []anthropic.Option{anthropic.WithMaxRetries(0), anthropic.WithAPIKey(providerCfg.Auth.Key)}
 		if providerCfg.BaseURL != "" {
 			opts = append(opts, anthropic.WithBaseURL(providerCfg.BaseURL))
 		}

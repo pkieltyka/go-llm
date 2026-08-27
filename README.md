@@ -1,6 +1,6 @@
 # go-llm
 
-One clean Go interface to chat LLMs — Anthropic, OpenAI, ChatGPT/Claude
+One clean Go interface to chat LLMs — Anthropic, OpenAI, ChatGPT
 subscription plans, OpenRouter, and self-hosted servers (vLLM, Ollama, any
 OpenAI-compatible endpoint) — with normalized streaming, tool calling,
 structured output, reasoning, usage, cost, and errors.
@@ -15,18 +15,21 @@ where they exist and pulled in only by the provider package you import.
 - **One `llm.Provider` interface** — blocking `Chat` and streaming
   `ChatStream` (`iter.Seq2` iterators), the same request/response model
   everywhere, per-provider escape hatches down to the raw SDK client.
-- **Providers**: Anthropic (API key *or* Claude Pro/Max OAuth), OpenAI
+- **Providers**: Anthropic (API key), OpenAI
   (Responses API), OpenAI Codex (ChatGPT Plus/Pro subscription OAuth),
   OpenRouter, and self-hosted vLLM. First-party presets run the shared offline
   conformance suite, and credentialed presets have capability-driven live
   scenarios. `chatcompletions.New(baseURL)` covers any other
   OpenAI-compatible server (Ollama, llama.cpp, Groq, Together, ...).
-- **Subscription auth**: consume and auto-refresh OAuth credentials minted by
-  compatible existing CLIs. `llm.LoadAuthFile` reads the documented
-  credential union; renewed tokens are handed back to your code to persist.
+- **Subscription auth**: OpenAI Codex can mint browser PKCE credentials or
+  consume and auto-refresh compatible existing credentials.
+  `llm.LoadAuthFile` reads the documented credential union; minted and
+  renewed tokens are returned to your code to persist.
 - **Tools**: parallel calls, streamed arguments, and a defined contract for
   malformed tool calls — rescue what's rescuable, drop the rest *visibly*
   (`ToolCallDropped`), with an opt-in `llm.RetryDroppedToolCalls` middleware.
+  OpenAI-compatible no-argument tool schemas are sent with
+  `parameters.properties: {}`; non-object `properties` values fail locally.
 - **Structured output**: `llm.Parse[T]` decodes model output straight into
   your struct (native JSON-schema mode where supported, forced-tool or
   JSON-mode fallback elsewhere), and `schema.For[T]` generates JSON Schema
@@ -44,7 +47,9 @@ where they exist and pulled in only by the provider package you import.
   estimated from an embedded, refreshable [models.dev](https://models.dev)
   price table, including request-wide long-context pricing tiers — with
   provenance in `CostSource` (`native` vs `estimated`) — plus `ContextUsage`
-  for context-window accounting.
+  for context-window accounting. Live model catalogs preserve independent
+  input/output/cache-read/cache-write availability, so unknown rates are not
+  displayed as free while explicit zero rates remain visible.
 - **Capabilities**: provider-wide `Capabilities()` discovery with pre-flight
   request validation, plus advisory per-model capabilities from rich live
   catalogs such as OpenRouter and Codex. Unsupported provider features fail
@@ -67,9 +72,9 @@ where they exist and pulled in only by the provider package you import.
 go get github.com/pkieltyka/go-llm
 ```
 
-Go 1.26 is the minimum version for users of the module. Releases are verified with
-Go 1.26.5 or newer. Provider SDK dependencies are pulled only when importing provider
-packages.
+Go 1.26 is the minimum version for users of the module. Development and releases
+use Go 1.27.0 or newer, while CI retains a Go 1.26 compatibility lane. Provider SDK
+dependencies are pulled only when importing provider packages.
 
 ## Quick start
 
@@ -134,10 +139,10 @@ _, _ = summary, resp
 
 | Package | Auth | Notes |
 |---|---|---|
-| `providers/anthropic` | `ANTHROPIC_API_KEY`, `WithAPIKey`, or `WithOAuth` (Claude Pro/Max) | Messages API |
+| `providers/anthropic` | `ANTHROPIC_API_KEY` or `WithAPIKey` | Messages API |
 | `providers/openai` | `OPENAI_API_KEY` or `WithAPIKey` | Responses API — reasoning survives across tool-call turns |
 | `providers/openaicodex` | `WithOAuth` only (ChatGPT Plus/Pro) | Responses wire shape; explicit `Models` calls use cached authenticated discovery with a curated fallback |
-| `providers/openrouter` | `OPENROUTER_API_KEY` or `WithAPIKey` | Chat Completions; routing/plugins, rich model discovery, and native per-request cost reporting |
+| `providers/openrouter` | `OPENROUTER_API_KEY` or `WithAPIKey` | Chat Completions; routing/plugins, explicit rich model discovery, and native per-request cost reporting |
 | `providers/vllm` | optional `WithAPIKey` (vLLM `--api-key`) | Self-hosted vLLM preset: host-first, era-aware, live-tested |
 | `providers/ollama` | none | Data-only local-Ollama preset over the engine below (community-verified) |
 | `providers/chatcompletions` | optional `WithAPIKey` | Public engine for ANY OpenAI-compatible server: `New(baseURL, ...)` + declarative `Compat` quirks |
@@ -148,9 +153,30 @@ openai.New()     // OPENAI_API_KEY
 openrouter.New() // OPENROUTER_API_KEY
 ```
 
-Subscription providers consume credentials minted by compatible existing
-tools — go-llm refreshes tokens automatically and hands renewals
-back to your code to persist; it never writes credential files itself:
+OpenAI Responses callers can select the user-visible reasoning-summary detail
+without adding an OpenAI-specific field to `llm.Request`:
+
+```go
+resp, err := p.Chat(ctx, &llm.Request{
+	Model:    "gpt-5.5",
+	Effort:   llm.EffortHigh,
+	Messages: []llm.Message{llm.UserText("Compare the two proposals.")},
+	ProviderOptions: openai.Options{
+		ReasoningSummary: openai.ReasoningSummaryConcise,
+	},
+})
+```
+
+The supported selectors are `ReasoningSummaryAuto`,
+`ReasoningSummaryConcise`, and `ReasoningSummaryDetailed`. Leaving the field
+empty preserves the existing behavior (`summary: "auto"` when `Effort` is
+set); unknown values fail before a request is sent. OpenAI remains
+authoritative about which models accept each selector. This option is not
+available on the separate `openaicodex` subscription provider.
+
+OpenAI Codex consumes credentials minted by compatible existing tools,
+refreshes them automatically, and hands renewals back to your code to
+persist; the root library never writes credential files itself:
 
 ```go
 auth, err := llm.LoadAuthFile("auth.json") // documented credential union
@@ -163,13 +189,31 @@ codex, err := openaicodex.New(openaicodex.WithOAuth(auth["openai-codex"], func(c
 }))
 ```
 
-The same `WithOAuth(cred, persist)` option exists on `providers/anthropic`
-for Claude Pro/Max subscriptions. Persistence callbacks must honor their
-context and return only after the rotated credential is durably stored; an
-error prevents the provider from publishing it. A credential containing a
-refresh token requires a non-nil callback; access-only credentials may pass
-`nil`. To deliberately keep rotations only in memory, pass an explicit
-context-aware no-op:
+Codex can also mint the initial credential through its provider-owned browser
+PKCE flow. `Begin` returns a redacting loopback launch target; `Complete`
+waits for the automatic callback, while `Submit` accepts a copied complete
+callback URL/query if the browser cannot reach localhost. The host must store
+the returned credential before passing it to `WithOAuth`:
+
+```go
+flow, err := openaicodex.NewLoginFlow()
+authorization, err := flow.Begin(ctx)
+showLoginURL(authorization.URL())
+credential, err := flow.Complete(ctx)
+err = persistCredential(ctx, credential)
+```
+
+The callback binds only `127.0.0.1`, uses the registered localhost path on
+port 1455 with port 1457 as its fallback, and never persists the credential.
+Live OAuth verification is still required because automated tests cannot
+complete an account login. Device authorization and a built-in CLI login UX
+remain deferred.
+
+Persistence callbacks must honor their context and return only after the
+rotated credential is durably stored; an error prevents the provider from
+publishing it. A credential containing a refresh token requires a non-nil
+callback; access-only credentials may pass `nil`. To deliberately keep
+rotations only in memory, pass an explicit context-aware no-op:
 
 ```go
 discardRotation := func(ctx context.Context, _ llm.AuthCredential) error {
@@ -294,6 +338,15 @@ llm-cli -p openai -m gpt-5.5 --save chat.json "Start a checklist"
 llm-cli -p anthropic -m claude-opus-4-8 --load chat.json --save chat.json "Continue it"
 ```
 
+`llm-cli models` explicitly performs provider model-discovery network I/O.
+OpenRouter uses exactly its `/models` response and does not fall back to
+models.dev. Listings include advisory supported/default reasoning effort,
+whether the provider positively reports reasoning as required, and model
+capabilities. Text output shows `EFFORTS`, `DEFAULT EFFORT`, and
+`REASONING REQUIRED`; `--json` emits the corresponding optional fields.
+`ReasoningRequired` is selection metadata only and never overrides the
+caller's `Request.Effort`.
+
 The last pair saves a conversation with one provider and continues it with
 another — the handoff described above, from the shell.
 
@@ -301,6 +354,9 @@ For OpenAI Codex, authentication precedence is `--auth-file`, then
 `OPENAI_CODEX_ACCESS_TOKEN`, then compatibility `--api-key`. Prefer the first
 two forms: command-line API-key values are visible in process arguments and
 often shell history. Auth files are loaded only when explicitly requested.
+Refresh publication holds a bounded cross-process advisory lock across the
+full read/modify/atomic-write transaction so concurrent CLI processes do not
+lose one another's credential updates.
 
 ## Testing your code
 
@@ -314,12 +370,28 @@ p.EnqueueResponse(&llm.Response{Parts: []llm.Part{llm.Text(`{"ok":true}`)}})
 
 Script responses, streams, and errors; assert on the requests your code made
 via `p.Requests()`. See [`examples/testing`](examples/testing) for a complete
-worked example. Repository commands:
+worked example.
+
+Provider authors should run two complementary offline suites. `RunConformance`
+checks the common lifecycle, streaming, and normalized-result contract.
+`RunCapabilityConformance` checks that each reviewed advertised capability
+activates its exact native request fields and returns the expected normalized
+result. Its `CapabilityInvocation` is fixture control data passed to an
+isolated provider factory; it never changes the real request or its model.
+Explicit profile exemptions mean “offline evidence gap,” not “unsupported.”
+Neither suite proves live account/model availability, quota, cache admission,
+or service reliability; credentialed e2e scenarios remain the live evidence.
+The advanced `chatcompletions.NewWithDialect` conformance suite intentionally
+stays base-only; the public generic engine owns the reusable compatible-engine
+activation profile.
+
+Repository commands:
 
 ```sh
 make build       # compile all packages and create bin/llm-cli
 make test        # offline tests with the race detector
-make models      # refresh the embedded root models.json snapshot
+make check       # complete credential-free, network-dependent CI gate
+make models      # refresh the embedded root models.json snapshot and provenance
 ```
 
 Live end-to-end tests are behind the `live` build tag and read credentials

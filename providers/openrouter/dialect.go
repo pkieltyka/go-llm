@@ -1,9 +1,13 @@
 package openrouter
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
+	"regexp"
+	"strconv"
 	"strings"
 
 	sdk "github.com/openai/openai-go/v3"
@@ -247,11 +251,9 @@ func (dialect) Models(ctx context.Context, p *chatcompletions.Provider) ([]llm.M
 			TopProvider struct {
 				MaxCompletionTokens int `json:"max_completion_tokens"`
 			} `json:"top_provider"`
-			Pricing struct {
-				Prompt     string `json:"prompt"`
-				Completion string `json:"completion"`
-			} `json:"pricing"`
-			CanonicalSlug string `json:"canonical_slug"`
+			Pricing       json.RawMessage `json:"pricing"`
+			Reasoning     json.RawMessage `json:"reasoning"`
+			CanonicalSlug string          `json:"canonical_slug"`
 		}
 		if err := json.Unmarshal(rawRow, &row); err != nil {
 			return nil, providerutil.NormalizeRemoteError(providerName, err)
@@ -265,9 +267,10 @@ func (dialect) Models(ctx context.Context, p *chatcompletions.Provider) ([]llm.M
 			Capabilities:    openRouterModelCapabilities(row.SupportedParameters, row.Modalities, row.Architecture.InputModalities),
 			Raw:             append(json.RawMessage(nil), rawRow...),
 		}
-		if pricing := parsePricing(row.Pricing.Prompt, row.Pricing.Completion); pricing != nil {
+		if pricing := parsePricing(row.Pricing); pricing != nil {
 			info.Pricing = pricing
 		}
+		mapReasoningMetadata(&info, row.Reasoning)
 		models = append(models, info)
 	}
 	return models, nil
@@ -312,25 +315,199 @@ func openRouterModelCapabilities(parameters, legacyModalities, inputModalities [
 	return capabilities
 }
 
-func parsePricing(prompt, completion string) *llm.ModelPricing {
-	in, okIn := parseFloat(prompt)
-	out, okOut := parseFloat(completion)
-	if !okIn && !okOut {
+func parsePricing(raw json.RawMessage) *llm.ModelPricing {
+	var components map[string]json.RawMessage
+	if len(raw) == 0 || json.Unmarshal(raw, &components) != nil || components == nil {
 		return nil
 	}
-	return &llm.ModelPricing{InputPerMTok: in * 1_000_000, OutputPerMTok: out * 1_000_000}
+	in, inStatus := parsePrice(components["prompt"])
+	out, outStatus := parsePrice(components["completion"])
+	read, readStatus := parsePrice(components["input_cache_read"])
+	write, writeStatus := parsePrice(components["input_cache_write"])
+	if inStatus != priceValid && outStatus != priceValid && readStatus != priceValid && writeStatus != priceValid {
+		return nil
+	}
+	return &llm.ModelPricing{
+		InputPerMTok:      in,
+		OutputPerMTok:     out,
+		CacheReadPerMTok:  read,
+		CacheWritePerMTok: write,
+		Availability: &llm.ModelPricingAvailability{
+			InputPerMTok:      inStatus == priceValid,
+			OutputPerMTok:     outStatus == priceValid,
+			CacheReadPerMTok:  readStatus == priceValid,
+			CacheWritePerMTok: writeStatus == priceValid,
+		},
+	}
 }
 
-func parseFloat(s string) (float64, bool) {
-	s = strings.TrimSpace(s)
+type priceStatus uint8
+
+const (
+	priceInvalid priceStatus = iota
+	priceValid
+	priceNegative
+)
+
+var decimalPricePattern = regexp.MustCompile(`^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$`)
+
+func parsePrice(raw json.RawMessage) (float64, priceStatus) {
+	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return 0, priceInvalid
+	}
+	var valueToken any
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&valueToken); err != nil {
+		return 0, priceInvalid
+	}
+	var s string
+	switch value := valueToken.(type) {
+	case string:
+		s = strings.TrimSpace(value)
+	case json.Number:
+		s = string(value)
+	default:
+		return 0, priceInvalid
+	}
 	if s == "" {
-		return 0, false
+		return 0, priceInvalid
 	}
-	var out float64
-	if err := json.Unmarshal([]byte(s), &out); err == nil {
-		return out, true
+	if !decimalPricePattern.MatchString(s) {
+		return 0, priceInvalid
 	}
-	return 0, false
+	value, err := strconv.ParseFloat(s, 64)
+	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) {
+		return 0, priceInvalid
+	}
+	if value < 0 {
+		return 0, priceNegative
+	}
+	perMillion := value * 1_000_000
+	if math.IsNaN(perMillion) || math.IsInf(perMillion, 0) || perMillion < 0 {
+		return 0, priceInvalid
+	}
+	return perMillion, priceValid
+}
+
+var knownEfforts = [...]llm.Effort{
+	llm.EffortNone,
+	llm.EffortMinimal,
+	llm.EffortLow,
+	llm.EffortMedium,
+	llm.EffortHigh,
+	llm.EffortXHigh,
+	llm.EffortMax,
+}
+
+func mapReasoningMetadata(info *llm.ModelInfo, raw json.RawMessage) {
+	if len(raw) == 0 {
+		return
+	}
+	var reasoning map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &reasoning); err != nil || reasoning == nil {
+		return
+	}
+
+	mandatory := false
+	if mandatoryRaw, ok := reasoning["mandatory"]; ok {
+		_ = json.Unmarshal(mandatoryRaw, &mandatory)
+	}
+	info.ReasoningRequired = mandatory
+
+	efforts, ladderState := parseSupportedEfforts(reasoning, mandatory)
+	if ladderState != effortLadderUnknown {
+		info.SupportedEfforts = efforts
+	}
+
+	defaultRaw, ok := reasoning["default_effort"]
+	if !ok {
+		return
+	}
+	var defaultValue string
+	if err := json.Unmarshal(defaultRaw, &defaultValue); err != nil {
+		return
+	}
+	defaultEffort, known := knownEffort(defaultValue)
+	if !known || (mandatory && defaultEffort == llm.EffortNone) {
+		return
+	}
+	switch ladderState {
+	case effortLadderKnown:
+		if len(efforts) > 0 && effortIncluded(efforts, defaultEffort) {
+			info.DefaultEffort = defaultEffort
+		}
+	case effortLadderUnknown:
+		if defaultEffort != llm.EffortNone {
+			info.DefaultEffort = defaultEffort
+		}
+	}
+}
+
+type effortLadderState uint8
+
+const (
+	effortLadderUnknown effortLadderState = iota
+	effortLadderKnown
+)
+
+func parseSupportedEfforts(reasoning map[string]json.RawMessage, mandatory bool) ([]llm.Effort, effortLadderState) {
+	raw, ok := reasoning["supported_efforts"]
+	if !ok {
+		return nil, effortLadderUnknown
+	}
+	if strings.TrimSpace(string(raw)) == "null" {
+		return filterMandatoryEffort(append([]llm.Effort(nil), knownEfforts[:]...), mandatory), effortLadderKnown
+	}
+	var values []string
+	if err := json.Unmarshal(raw, &values); err != nil || values == nil {
+		return nil, effortLadderUnknown
+	}
+
+	seen := make(map[llm.Effort]bool, len(values))
+	for _, value := range values {
+		if effort, known := knownEffort(value); known {
+			seen[effort] = true
+		}
+	}
+	efforts := make([]llm.Effort, 0, len(seen))
+	for _, effort := range knownEfforts {
+		if seen[effort] && (!mandatory || effort != llm.EffortNone) {
+			efforts = append(efforts, effort)
+		}
+	}
+	// Preserve the distinction between an explicit empty/unknown-only ladder
+	// and an omitted or malformed ladder.
+	if efforts == nil {
+		efforts = []llm.Effort{}
+	}
+	return efforts, effortLadderKnown
+}
+
+func filterMandatoryEffort(efforts []llm.Effort, mandatory bool) []llm.Effort {
+	if !mandatory {
+		return efforts
+	}
+	return efforts[1:]
+}
+
+func knownEffort(value string) (llm.Effort, bool) {
+	effort := llm.Effort(value)
+	for _, known := range knownEfforts {
+		if effort == known {
+			return effort, true
+		}
+	}
+	return "", false
+}
+
+func effortIncluded(efforts []llm.Effort, want llm.Effort) bool {
+	for _, effort := range efforts {
+		if effort == want {
+			return true
+		}
+	}
+	return false
 }
 
 func marshalRaw(value any) json.RawMessage {

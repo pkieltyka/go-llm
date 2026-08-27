@@ -1,12 +1,14 @@
 package ollama_test
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	llm "github.com/pkieltyka/go-llm"
+	"github.com/pkieltyka/go-llm/internal/testutil"
 	"github.com/pkieltyka/go-llm/llmtest"
 	"github.com/pkieltyka/go-llm/providers/chatcompletions"
 	"github.com/pkieltyka/go-llm/providers/ollama"
@@ -66,4 +68,42 @@ func TestOllamaConformance(t *testing.T) {
 		}
 		return p
 	})
+}
+
+// TestOllamaCapabilityConformance applies the generic compatible-engine
+// activation profile to the data-only Ollama preset.
+func TestOllamaCapabilityConformance(t *testing.T) {
+	const model = "qwen3:8b"
+	llmtest.RunCapabilityConformance(t, func(t *testing.T, invocation llmtest.CapabilityInvocation) llm.Provider {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode activation request: %v", err)
+				http.Error(w, "invalid JSON", http.StatusBadRequest)
+				return
+			}
+			if err := testutil.AssertCompatibleActivationRequest(body, invocation, model); err != nil {
+				t.Errorf("%s native request: %v; body=%#v", invocation.CaseName, err, body)
+			}
+			if invocation.Capability == llm.CapabilityReasoning && body["reasoning_effort"] != "high" {
+				t.Errorf("reasoning_effort = %#v, want high", body["reasoning_effort"])
+			}
+			if invocation.Path == llmtest.ConformanceStream {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, testutil.CompatibleActivationStream(invocation, model))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, testutil.CompatibleActivationResponse(invocation, model))
+		}))
+		t.Cleanup(server.Close)
+		provider, err := ollama.New(server.URL,
+			chatcompletions.WithHTTPClient(server.Client()),
+			chatcompletions.WithMaxRetries(0),
+		)
+		if err != nil {
+			t.Fatalf("ollama.New returned error: %v", err)
+		}
+		return provider
+	}, testutil.CompatibleCapabilityProfile(model))
 }

@@ -1,5 +1,5 @@
 // Package llm provides one clean, provider-neutral Go interface to chat
-// LLMs — Anthropic, OpenAI, ChatGPT/Claude subscription plans, OpenRouter,
+// LLMs — Anthropic, OpenAI, ChatGPT subscription access, OpenRouter,
 // and self-hosted OpenAI-compatible servers — with normalized streaming,
 // tool calling, structured output, reasoning, usage, cost, and errors.
 //
@@ -12,12 +12,13 @@
 //
 // Every provider implements the small Provider interface: Name,
 // Capabilities, Models, blocking Chat, and streaming ChatStream. Shipped
-// providers live under providers/: anthropic (API key or Claude Pro/Max
-// OAuth), openai (Responses API), openaicodex (ChatGPT Plus/Pro
-// subscription OAuth), openrouter, vllm, ollama, and the generic
+// providers live under providers/: anthropic (API key), openai (Responses
+// API), openaicodex (ChatGPT Plus/Pro subscription OAuth), openrouter, vllm,
+// ollama, and the generic
 // chatcompletions engine. Concrete providers expose advanced escape hatches,
 // and typed extension options travel through Request.ProviderOptions.
-// Subscription credentials minted by existing CLIs are consumed and
+// OpenAI Codex credentials can be minted through the provider-owned browser
+// login flow or loaded from compatible existing tools, then consumed and
 // auto-refreshed; LoadAuthFile reads the documented credential union.
 // Refreshable credentials require a context-aware persistence callback, and
 // renewed credentials publish only after durable persistence succeeds.

@@ -24,6 +24,14 @@ var (
 	ErrContentFiltered     = errors.New("llm: content filtered")
 	ErrContextTooLong      = errors.New("llm: context too long")
 	ErrUnsupported         = errors.New("llm: unsupported")
+	// ErrLoginExpired reports that an interactive login exceeded its bounded
+	// lifetime and must be restarted.
+	ErrLoginExpired = errors.New("llm: login expired")
+	// ErrLoginStateMismatch reports a rejected OAuth response whose CSRF state
+	// did not match the pending login.
+	ErrLoginStateMismatch = errors.New("llm: login state mismatch")
+	// ErrLoginClosed reports use of a cancelled or already-consumed login flow.
+	ErrLoginClosed = errors.New("llm: login flow closed")
 )
 
 // ProviderError carries normalized and provider-specific error details.

@@ -3,6 +3,7 @@ package anthropic_test
 import (
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	llm "github.com/pkieltyka/go-llm"
@@ -35,4 +36,30 @@ func TestReplayRecordedFixtures(t *testing.T) {
 		ToolCallMarkers:  []string{`"tool_use"`},
 		ReasoningMarkers: []string{`"thinking"`},
 	})
+}
+
+func TestRecordedFixturesUseAPIKeyAuthentication(t *testing.T) {
+	root, err := e2e.RepoRoot(".")
+	if err != nil {
+		t.Fatalf("RepoRoot returned error: %v", err)
+	}
+	fixture := filepath.Join(root, "internal", "e2e", "fixtures", "anthropic", "live.json")
+	exchanges, err := e2e.LoadRecordedExchanges(fixture)
+	if err != nil {
+		t.Fatalf("LoadRecordedExchanges returned error: %v", err)
+	}
+	for index, exchange := range exchanges {
+		if got := exchange.RequestHeaders.Get("X-Api-Key"); got != "[REDACTED]" {
+			t.Errorf("exchange %d does not contain a redacted API key", index)
+		}
+		for _, header := range []string{"Authorization", "X-App"} {
+			if got := exchange.RequestHeaders.Get(header); got != "" {
+				t.Errorf("exchange %d retained legacy %s header", index, header)
+			}
+		}
+		legacy := exchange.RequestHeaders.Get("Anthropic-Beta") + exchange.RequestHeaders.Get("User-Agent") + exchange.RequestBody
+		if strings.Contains(legacy, "oauth-2025-04-20") || strings.Contains(legacy, "claude-code") || strings.Contains(legacy, "Claude Code") {
+			t.Errorf("exchange %d retained Claude subscription identity", index)
+		}
+	}
 }

@@ -1246,12 +1246,8 @@ func TestAnthropicStatusFallbackTable(t *testing.T) {
 
 func TestAnthropicOptionsAndDebugCapture(t *testing.T) {
 	var sawKey string
-	var sawUserAgent string
-	var sawXApp string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sawKey = r.Header.Get("X-Api-Key")
-		sawUserAgent = r.Header.Get("User-Agent")
-		sawXApp = r.Header.Get("x-app")
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"id":"msg_1","type":"message","role":"assistant","model":"claude-test","content":[{"type":"text","text":"pong"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
 	}))
@@ -1282,10 +1278,6 @@ func TestAnthropicOptionsAndDebugCapture(t *testing.T) {
 	if resp.Text() != "pong" || sawKey != "dynamic-secret" {
 		t.Fatalf("response/key = %q/%q", resp.Text(), sawKey)
 	}
-	// Claude Code OAuth identity headers must NOT leak into api-key mode.
-	if strings.HasPrefix(sawUserAgent, "claude-cli/") || sawXApp != "" {
-		t.Fatalf("api-key request carried OAuth identity headers: ua=%q x-app=%q", sawUserAgent, sawXApp)
-	}
 	if len(captures) != 1 {
 		t.Fatalf("captures len = %d, want 1", len(captures))
 	}
@@ -1294,240 +1286,6 @@ func TestAnthropicOptionsAndDebugCapture(t *testing.T) {
 	}
 	if bytes.Contains(captures[0].RequestBody, []byte("dynamic-secret")) || bytes.Contains(captures[0].ResponseBody, []byte("dynamic-secret")) {
 		t.Fatalf("capture leaked API key: %+v", captures[0])
-	}
-}
-
-func TestAnthropicOAuthHeadersAndRetry(t *testing.T) {
-	var messageAuth []string
-	var messageAPIKeys []string
-	var messageBetas []string
-	var messageUserAgents []string
-	var messageXApps []string
-	var messageBodies []string
-	var refreshBody string
-	var refreshed llm.AuthCredential
-	var persistenceHadDeadline bool
-	messageCalls := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/v1/messages":
-			messageCalls++
-			body, _ := io.ReadAll(r.Body)
-			messageBodies = append(messageBodies, string(body))
-			messageAuth = append(messageAuth, r.Header.Get("Authorization"))
-			messageAPIKeys = append(messageAPIKeys, r.Header.Get("X-Api-Key"))
-			messageBetas = append(messageBetas, r.Header.Get("anthropic-beta"))
-			messageUserAgents = append(messageUserAgents, r.Header.Get("User-Agent"))
-			messageXApps = append(messageXApps, r.Header.Get("x-app"))
-			if messageCalls == 1 {
-				http.Error(w, `{"error":{"type":"authentication_error","message":"expired"}}`, http.StatusUnauthorized)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = io.WriteString(w, `{"id":"msg_1","type":"message","role":"assistant","model":"claude-test","content":[{"type":"text","text":"pong"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
-		case "/oauth/token":
-			body, _ := io.ReadAll(r.Body)
-			refreshBody = string(body)
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = io.WriteString(w, `{"access_token":"new-access","refresh_token":"new-refresh","expires_in":3600}`)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer server.Close()
-
-	p, err := New(
-		WithOAuth(llm.AuthCredential{Type: "oauth", Access: "old-access", Refresh: "old-refresh"}, func(ctx context.Context, cred llm.AuthCredential) error {
-			_, persistenceHadDeadline = ctx.Deadline()
-			refreshed = cred
-			return nil
-		}),
-		withOAuthTokenURL(server.URL+"/oauth/token"),
-		WithBaseURL(server.URL),
-		WithHTTPClient(server.Client()),
-		WithMaxRetries(0),
-	)
-	if err != nil {
-		t.Fatalf("New returned error: %v", err)
-	}
-	resp, err := p.Chat(context.Background(), &llm.Request{
-		Model:     "claude-test",
-		System:    "You are terse.",
-		MaxTokens: 8,
-		Messages:  []llm.Message{llm.UserText("ping")},
-		ProviderOptions: Options{
-			BetaHeaders: []string{"structured-outputs-2025-11-13"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("Chat returned error: %v", err)
-	}
-	if resp.Text() != "pong" {
-		t.Fatalf("response text = %q", resp.Text())
-	}
-	if !reflect.DeepEqual(messageAuth, []string{"Bearer old-access", "Bearer new-access"}) {
-		t.Fatalf("Authorization headers = %+v", messageAuth)
-	}
-	if !reflect.DeepEqual(messageAPIKeys, []string{"", ""}) {
-		t.Fatalf("X-Api-Key headers = %+v", messageAPIKeys)
-	}
-	wantBeta := anthropicClaudeCodeBeta + "," + anthropicOAuthBeta + ",structured-outputs-2025-11-13"
-	if !reflect.DeepEqual(messageBetas, []string{wantBeta, wantBeta}) {
-		t.Fatalf("anthropic-beta headers = %+v, want %q", messageBetas, wantBeta)
-	}
-	if !reflect.DeepEqual(messageUserAgents, []string{anthropicOAuthUserAgent, anthropicOAuthUserAgent}) {
-		t.Fatalf("User-Agent headers = %+v", messageUserAgents)
-	}
-	if !reflect.DeepEqual(messageXApps, []string{"cli", "cli"}) {
-		t.Fatalf("x-app headers = %+v", messageXApps)
-	}
-	for _, body := range messageBodies {
-		var payload struct {
-			System []struct {
-				Text string `json:"text"`
-			} `json:"system"`
-		}
-		if err := json.Unmarshal([]byte(body), &payload); err != nil {
-			t.Fatalf("request body is invalid JSON: %v\n%s", err, body)
-		}
-		if len(payload.System) != 2 || payload.System[0].Text != claudeCodeSystemPrompt || payload.System[1].Text != "You are terse." {
-			t.Fatalf("OAuth system blocks = %+v, want Claude Code identity first", payload.System)
-		}
-	}
-	if !strings.Contains(refreshBody, `"refresh_token":"old-refresh"`) || !strings.Contains(refreshBody, `"client_id":"`+anthropicOAuthClientID+`"`) {
-		t.Fatalf("refresh body missing expected non-secret fields: %s", refreshBody)
-	}
-	if refreshed.Access != "new-access" || refreshed.Refresh != "new-refresh" {
-		t.Fatalf("refreshed credential = %+v", refreshed)
-	}
-	if !persistenceHadDeadline {
-		t.Fatal("persistence callback did not receive generation deadline")
-	}
-}
-
-func TestAnthropicOAuthPersistenceContract(t *testing.T) {
-	networkCalls := 0
-	client := &http.Client{Transport: testutil.RoundTripFunc(func(*http.Request) (*http.Response, error) {
-		networkCalls++
-		return nil, errors.New("unexpected network request")
-	})}
-
-	p, err := New(
-		WithOAuth(llm.AuthCredential{Type: "oauth", Access: "access", Refresh: "refresh"}, nil),
-		WithHTTPClient(client),
-	)
-	if !errors.Is(err, llm.ErrBadRequest) {
-		t.Fatalf("refreshable New error = %v, want ErrBadRequest", err)
-	}
-	if p != nil || networkCalls != 0 {
-		t.Fatalf("refreshable New provider/network calls = %+v/%d, want nil/0", p, networkCalls)
-	}
-
-	p, err = New(
-		WithOAuth(llm.AuthCredential{Type: "oauth", Access: "access-only"}, nil),
-		WithHTTPClient(client),
-	)
-	if err != nil {
-		t.Fatalf("access-only New returned error: %v", err)
-	}
-	if p == nil || networkCalls != 0 {
-		t.Fatalf("access-only New provider/network calls = %+v/%d, want non-nil/0", p, networkCalls)
-	}
-}
-
-func TestAnthropicOAuthPersistenceErrorStopsRetry(t *testing.T) {
-	persistErr := errors.New("persist anthropic credential")
-	messageCalls := 0
-	persistenceCalls := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/v1/messages":
-			messageCalls++
-			http.Error(w, `{"error":{"type":"authentication_error","message":"expired"}}`, http.StatusUnauthorized)
-		case "/oauth/token":
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = io.WriteString(w, `{"access_token":"new-access","refresh_token":"new-refresh","expires_in":3600}`)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer server.Close()
-
-	p, err := New(
-		WithOAuth(llm.AuthCredential{Type: "oauth", Access: "old-access", Refresh: "old-refresh"}, func(ctx context.Context, _ llm.AuthCredential) error {
-			persistenceCalls++
-			if _, ok := ctx.Deadline(); !ok {
-				t.Error("persistence context has no generation deadline")
-			}
-			return persistErr
-		}),
-		withOAuthTokenURL(server.URL+"/oauth/token"),
-		WithBaseURL(server.URL),
-		WithHTTPClient(server.Client()),
-		WithMaxRetries(0),
-	)
-	if err != nil {
-		t.Fatalf("New returned error: %v", err)
-	}
-	resp, err := p.Chat(context.Background(), &llm.Request{
-		Model:     "claude-test",
-		MaxTokens: 8,
-		Messages:  []llm.Message{llm.UserText("ping")},
-	})
-	if !errors.Is(err, persistErr) {
-		t.Fatalf("Chat error = %v, want persistence error", err)
-	}
-	if resp != nil {
-		t.Fatalf("Chat response = %+v, want nil", resp)
-	}
-	if messageCalls != 1 || persistenceCalls != 1 {
-		t.Fatalf("message/persistence calls = %d/%d, want 1/1", messageCalls, persistenceCalls)
-	}
-}
-
-func TestAnthropicOAuthSystemBlockGoldens(t *testing.T) {
-	oauthProvider := &Provider{defaultMaxTokens: 8, oauth: true}
-	params, _, err := oauthProvider.buildParams(&llm.Request{
-		Model:       "claude-test",
-		System:      "You are terse.",
-		SystemCache: &llm.CacheHint{TTL: time.Hour},
-		Messages:    []llm.Message{llm.UserText("hello")},
-	})
-	if err != nil {
-		t.Fatalf("buildParams returned error: %v", err)
-	}
-	got := testutil.MustCompactJSON(t, params.System)
-	want := `[{"text":"You are Claude Code, Anthropic's official CLI for Claude.","cache_control":{"ttl":"1h","type":"ephemeral"},"type":"text"},{"text":"You are terse.","cache_control":{"ttl":"1h","type":"ephemeral"},"type":"text"}]`
-	testutil.AssertJSONEqual(t, got, want)
-
-	// Without user System text the identity block still leads (and is alone).
-	params, _, err = oauthProvider.buildParams(&llm.Request{
-		Model:    "claude-test",
-		Messages: []llm.Message{llm.UserText("hello")},
-	})
-	if err != nil {
-		t.Fatalf("buildParams returned error: %v", err)
-	}
-	if len(params.System) != 1 || params.System[0].Text != claudeCodeSystemPrompt {
-		t.Fatalf("OAuth system blocks without user system = %+v", params.System)
-	}
-
-	// Api-key mode must NOT inject the identity block.
-	apiKeyProvider := &Provider{defaultMaxTokens: 8}
-	params, _, err = apiKeyProvider.buildParams(&llm.Request{
-		Model:    "claude-test",
-		System:   "You are terse.",
-		Messages: []llm.Message{llm.UserText("hello")},
-	})
-	if err != nil {
-		t.Fatalf("buildParams returned error: %v", err)
-	}
-	if len(params.System) != 1 || params.System[0].Text != "You are terse." {
-		t.Fatalf("api-key system blocks = %+v", params.System)
-	}
-	raw := testutil.MustCompactJSON(t, params)
-	if strings.Contains(raw, "Claude Code") {
-		t.Fatalf("api-key request contains Claude Code identity: %s", raw)
 	}
 }
 
@@ -1554,32 +1312,6 @@ func TestAnthropicStopReasonTable(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			if got := mapStopReason(tt.raw); got != tt.want {
 				t.Fatalf("mapStopReason(%q) = %q, want %q", tt.raw, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestAnthropicRefreshErrorMapping(t *testing.T) {
-	tests := []struct {
-		status int
-		want   error
-	}{
-		{status: http.StatusBadRequest, want: llm.ErrAuth},
-		{status: http.StatusUnauthorized, want: llm.ErrAuth},
-		{status: http.StatusForbidden, want: llm.ErrAuth},
-		{status: http.StatusRequestTimeout, want: llm.ErrTimeout},
-		{status: http.StatusTooManyRequests, want: llm.ErrRateLimited},
-		{status: http.StatusInternalServerError, want: llm.ErrServer},
-	}
-	for _, tt := range tests {
-		t.Run(http.StatusText(tt.status), func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				http.Error(w, `{"error":"invalid_grant"}`, tt.status)
-			}))
-			defer server.Close()
-			_, err := refreshAnthropicOAuth(context.Background(), server.Client(), server.URL, llm.AuthCredential{Refresh: "stale"})
-			if !errors.Is(err, tt.want) {
-				t.Fatalf("refresh error = %v, want %v", err, tt.want)
 			}
 		})
 	}

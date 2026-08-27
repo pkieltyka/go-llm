@@ -146,10 +146,23 @@ func resolveCodexAuth(cfg providerConfig) (llm.AuthCredential, llm.OAuthPersiste
 }
 
 func codexAuthFilePersistence(path string) llm.OAuthPersistenceFunc {
+	return authFileCredentialPersistence(path, "openai-codex")
+}
+
+func authFileCredentialPersistence(path, provider string) llm.OAuthPersistenceFunc {
 	return func(ctx context.Context, cred llm.AuthCredential) error {
+		if ctx == nil {
+			ctx = context.Background()
+		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		lock, err := acquireAuthFileLock(ctx, path)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = lock.Release() }()
+
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return err
@@ -158,6 +171,9 @@ func codexAuthFilePersistence(path string) llm.OAuthPersistenceFunc {
 		if err := json.Unmarshal(data, &root); err != nil {
 			return err
 		}
+		if root == nil {
+			root = make(map[string]json.RawMessage)
+		}
 		providers := root
 		wrapped := false
 		if raw, ok := root["providers"]; ok {
@@ -165,12 +181,15 @@ func codexAuthFilePersistence(path string) llm.OAuthPersistenceFunc {
 			if err := json.Unmarshal(raw, &providers); err != nil {
 				return fmt.Errorf("parse auth providers: %w", err)
 			}
+			if providers == nil {
+				providers = make(map[string]json.RawMessage)
+			}
 		}
 		encoded, err := json.Marshal(authCredentialJSON(cred))
 		if err != nil {
 			return err
 		}
-		providers["openai-codex"] = encoded
+		providers[provider] = encoded
 		if wrapped {
 			encoded, err = json.Marshal(providers)
 			if err != nil {
@@ -245,10 +264,5 @@ func writeAuthFileAtomic(ctx context.Context, path string, data []byte) error {
 	if err := os.Rename(tmpPath, path); err != nil {
 		return err
 	}
-	dir, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		return err
-	}
-	defer dir.Close()
-	return dir.Sync()
+	return syncAuthFileDirectory(filepath.Dir(path))
 }

@@ -58,13 +58,17 @@ func modelIDHasBoundaryPrefix(modelID, prefix string) bool {
 }
 
 // EstimateCost returns a copy of usage with CostUSD populated from pricing
-// and CostSource set to CostSourceEstimated. Provider-reported costs are
+// and CostSource set to CostSourceEstimated. It leaves cost unknown when a
+// nonzero usage component has no available rate. Provider-reported costs are
 // left untouched.
 func EstimateCost(usage Usage, pricing ModelPricing) Usage {
 	if usage.CostUSD != nil {
 		return usage
 	}
 	pricing = pricingForUsage(usage, pricing)
+	if !pricingCoversUsage(usage, pricing) {
+		return usage
+	}
 	cost := (float64(usage.InputTokens)*pricing.InputPerMTok +
 		float64(usage.OutputTokens)*pricing.OutputPerMTok +
 		float64(usage.CacheReadTokens)*pricing.CacheReadPerMTok +
@@ -86,8 +90,22 @@ func pricingForUsage(usage Usage, pricing ModelPricing) ModelPricing {
 		pricing.OutputPerMTok = tier.OutputPerMTok
 		pricing.CacheReadPerMTok = tier.CacheReadPerMTok
 		pricing.CacheWritePerMTok = tier.CacheWritePerMTok
+		pricing.Availability = &ModelPricingAvailability{
+			InputPerMTok: true, OutputPerMTok: true,
+			CacheReadPerMTok: true, CacheWritePerMTok: true,
+		}
 	}
 	return pricing
+}
+
+func pricingCoversUsage(usage Usage, pricing ModelPricing) bool {
+	if pricing.Availability == nil {
+		return true
+	}
+	return (usage.InputTokens == 0 || pricing.HasInputPrice()) &&
+		(usage.OutputTokens == 0 || pricing.HasOutputPrice()) &&
+		(usage.CacheReadTokens == 0 || pricing.HasCacheReadPrice()) &&
+		(usage.CacheWriteTokens == 0 || pricing.HasCacheWritePrice())
 }
 
 func validPricingTier(tier ModelPricingTier) bool {

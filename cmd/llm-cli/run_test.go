@@ -8,12 +8,17 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"math"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
 	llm "github.com/pkieltyka/go-llm"
 	"github.com/pkieltyka/go-llm/llmtest"
+	"github.com/pkieltyka/go-llm/providers/openrouter"
 )
 
 func TestRunChatSavesConversation(t *testing.T) {
@@ -177,13 +182,17 @@ func TestRunChatSchemaValidatesBeforeOutput(t *testing.T) {
 }
 
 func TestRunModelsOutput(t *testing.T) {
-	price := &llm.ModelPricing{InputPerMTok: 1.25, OutputPerMTok: 2.5}
+	price := &llm.ModelPricing{InputPerMTok: 1.25, OutputPerMTok: 2.5, CacheReadPerMTok: 0.25, CacheWritePerMTok: 0.75}
 	fake := llmtest.New(llmtest.WithModels(llm.ModelInfo{
-		ID:              "model-1",
-		DisplayName:     "Model One",
-		ContextWindow:   1000,
-		MaxOutputTokens: 200,
-		Pricing:         price,
+		ID:                "model-1",
+		DisplayName:       "Model One",
+		ContextWindow:     1000,
+		MaxOutputTokens:   200,
+		Pricing:           price,
+		SupportedEfforts:  []llm.Effort{llm.EffortLow, llm.EffortHigh},
+		DefaultEffort:     llm.EffortHigh,
+		ReasoningRequired: true,
+		Capabilities:      []llm.Capability{llm.CapabilityTools, llm.CapabilityReasoning},
 	}))
 	var stdout, stderr bytes.Buffer
 	a := testApp(fake, &stdout, &stderr)
@@ -191,9 +200,18 @@ func TestRunModelsOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := stdout.String()
-	for _, want := range []string{"ID", "model-1", "Model One", "1.25", "2.5"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("table output missing %q: %q", want, got)
+	lines := strings.Split(strings.TrimSuffix(got, "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("table lines = %d, want header and one row: %q", len(lines), got)
+	}
+	for _, association := range []struct{ header, value string }{
+		{"ID", "model-1"}, {"DISPLAY", "Model One"}, {"CONTEXT", "1000"}, {"MAX OUTPUT", "200"},
+		{"INPUT $/M", "1.25"}, {"OUTPUT $/M", "2.5"}, {"CACHE READ $/M", "0.25"}, {"CACHE WRITE $/M", "0.75"},
+		{"EFFORTS", "low,high"}, {"DEFAULT EFFORT", "high"}, {"REASONING REQUIRED", "true"}, {"CAPABILITIES", "tools,reasoning"},
+	} {
+		column := strings.Index(lines[0], association.header)
+		if column < 0 || column >= len(lines[1]) || !strings.HasPrefix(lines[1][column:], association.value) {
+			t.Fatalf("table column %q is not associated with %q: %q", association.header, association.value, got)
 		}
 	}
 
@@ -201,10 +219,133 @@ func TestRunModelsOutput(t *testing.T) {
 	if err := a.runModels(context.Background(), modelsConfig{provider: "llmtest", jsonOutput: true}); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"id": "model-1"`, `"input_per_mtok": "1.25"`} {
-		if !strings.Contains(stdout.String(), want) {
-			t.Fatalf("JSON output missing %q: %q", want, stdout.String())
+	var gotRows []modelRow
+	if err := json.Unmarshal(stdout.Bytes(), &gotRows); err != nil {
+		t.Fatalf("decode JSON rows: %v\n%s", err, stdout.String())
+	}
+	efforts := []llm.Effort{llm.EffortLow, llm.EffortHigh}
+	wantRows := []modelRow{{
+		ID: "model-1", DisplayName: "Model One", ContextWindow: 1000, MaxOutputTokens: 200,
+		InputPerMTok: "1.25", OutputPerMTok: "2.5", CacheReadPerMTok: "0.25", CacheWritePerMTok: "0.75",
+		SupportedEfforts: &efforts, DefaultEffort: llm.EffortHigh, ReasoningRequired: true,
+		Capabilities: []llm.Capability{llm.CapabilityTools, llm.CapabilityReasoning},
+	}}
+	if !reflect.DeepEqual(gotRows, wantRows) {
+		t.Fatalf("decoded rows = %#v, want %#v", gotRows, wantRows)
+	}
+}
+
+func TestModelRowsHideInvalidPricesAndPreserveFreePricing(t *testing.T) {
+	rows := modelRows([]llm.ModelInfo{
+		{ID: "negative", Pricing: &llm.ModelPricing{InputPerMTok: -1, OutputPerMTok: 2}},
+		{ID: "non-finite", Pricing: &llm.ModelPricing{InputPerMTok: math.NaN(), OutputPerMTok: math.Inf(1)}},
+		{ID: "free", Pricing: &llm.ModelPricing{}},
+		{ID: "partial", Pricing: &llm.ModelPricing{OutputPerMTok: 2, Availability: &llm.ModelPricingAvailability{OutputPerMTok: true}}},
+		{ID: "free-cache", Pricing: &llm.ModelPricing{Availability: &llm.ModelPricingAvailability{CacheReadPerMTok: true, CacheWritePerMTok: true}}},
+	})
+	if rows[0].InputPerMTok != "" || rows[0].OutputPerMTok != "2" {
+		t.Fatalf("negative row = %+v", rows[0])
+	}
+	if rows[1].InputPerMTok != "" || rows[1].OutputPerMTok != "" {
+		t.Fatalf("non-finite row = %+v", rows[1])
+	}
+	if rows[2].InputPerMTok != "0" || rows[2].OutputPerMTok != "0" {
+		t.Fatalf("free row = %+v", rows[2])
+	}
+	if rows[3].InputPerMTok != "" || rows[3].OutputPerMTok != "2" {
+		t.Fatalf("partial row = %+v", rows[3])
+	}
+	if rows[4].CacheReadPerMTok != "0" || rows[4].CacheWritePerMTok != "0" {
+		t.Fatalf("free cache row = %+v", rows[4])
+	}
+	raw, err := json.Marshal(rows)
+	if err != nil {
+		t.Fatalf("marshal rows: %v", err)
+	}
+	for _, forbidden := range []string{"-1", "NaN", "Inf"} {
+		if strings.Contains(string(raw), forbidden) {
+			t.Fatalf("JSON leaked %q: %s", forbidden, raw)
 		}
+	}
+}
+
+func TestRunModelsOpenRouterPartialPricingAndEffortStates(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"data":[
+			{"id":"partial","pricing":{"prompt":true,"completion":"0.000002","input_cache_read":null,"input_cache_write":"0"},"reasoning":{"supported_efforts":[]}},
+			{"id":"future-effort","pricing":{"prompt":"0","completion":{}},"reasoning":{"supported_efforts":["turbo"]}},
+			{"id":"unknown"}
+		]}`)
+	}))
+	t.Cleanup(server.Close)
+	provider, err := openrouter.New(openrouter.WithAPIKey("test"), openrouter.WithBaseURL(server.URL), openrouter.WithHTTPClient(server.Client()), openrouter.WithMaxRetries(0))
+	if err != nil {
+		t.Fatalf("openrouter.New: %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+	a := testApp(provider, &stdout, &stderr)
+	if err := a.runModels(context.Background(), modelsConfig{provider: "openrouter", jsonOutput: true}); err != nil {
+		t.Fatalf("runModels: %v", err)
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &rows); err != nil {
+		t.Fatalf("decode rows: %v\n%s", err, stdout.String())
+	}
+	if len(rows) != 3 {
+		t.Fatalf("rows = %d, want 3", len(rows))
+	}
+	if _, present := rows[0]["input_per_mtok"]; present || rows[0]["output_per_mtok"] != "2" || rows[0]["cache_write_per_mtok"] != "0" {
+		t.Fatalf("partial pricing row = %#v", rows[0])
+	}
+	for _, index := range []int{0, 1} {
+		efforts, present := rows[index]["supported_efforts"].([]any)
+		if !present || len(efforts) != 0 {
+			t.Fatalf("row %d supported_efforts = %#v, want explicit []", index, rows[index]["supported_efforts"])
+		}
+	}
+	if rows[1]["input_per_mtok"] != "0" {
+		t.Fatalf("explicit free prompt row = %#v", rows[1])
+	}
+	if _, present := rows[1]["output_per_mtok"]; present {
+		t.Fatalf("invalid output price presented as free: %#v", rows[1])
+	}
+	if _, present := rows[2]["supported_efforts"]; present {
+		t.Fatalf("unknown effort ladder should be omitted: %#v", rows[2])
+	}
+}
+
+func TestModelRowsPreserveEmptyEffortsWithoutAliasingCapacity(t *testing.T) {
+	efforts := make([]llm.Effort, 0, 4)
+	rows := modelRows([]llm.ModelInfo{{ID: "explicit-empty", SupportedEfforts: efforts}, {ID: "unknown"}})
+	if rows[0].SupportedEfforts == nil || len(*rows[0].SupportedEfforts) != 0 || rows[1].SupportedEfforts != nil {
+		t.Fatalf("effort states = %#v", rows)
+	}
+	efforts = append(efforts, llm.EffortMax)
+	if len(*rows[0].SupportedEfforts) != 0 {
+		t.Fatalf("modelRows retained caller backing storage: %#v", *rows[0].SupportedEfforts)
+	}
+	*rows[0].SupportedEfforts = append(*rows[0].SupportedEfforts, llm.EffortLow)
+	if efforts[0] != llm.EffortMax {
+		t.Fatalf("modelRows shares caller backing storage: %#v", efforts)
+	}
+	*rows[0].SupportedEfforts = (*rows[0].SupportedEfforts)[:0]
+	raw, err := json.Marshal(rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"supported_efforts":[]`) || strings.Count(string(raw), "supported_efforts") != 1 {
+		t.Fatalf("effort JSON states = %s", raw)
+	}
+}
+
+func TestModelRowsOmitUnknownReasoningPolicy(t *testing.T) {
+	rows := modelRows([]llm.ModelInfo{{ID: "unknown"}})
+	raw, err := json.Marshal(rows)
+	if err != nil {
+		t.Fatalf("marshal rows: %v", err)
+	}
+	if strings.Contains(string(raw), "default_effort") || strings.Contains(string(raw), "reasoning_required") {
+		t.Fatalf("unknown reasoning metadata should be omitted: %s", raw)
 	}
 }
 

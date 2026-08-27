@@ -239,6 +239,9 @@ func parseCodexCatalog(body []byte, p *Provider) ([]llm.ModelInfo, error) {
 }
 
 func codexReasoningEfforts(row codexCatalogRow) []llm.Effort {
+	if row.ReasoningEfforts == nil && (len(row.SupportedReasoningLevels) == 0 || string(row.SupportedReasoningLevels) == "null") {
+		return nil
+	}
 	values := codexReasoningLevelValues(row)
 	seen := map[llm.Effort]struct{}{}
 	efforts := make([]llm.Effort, 0, len(values))
@@ -359,7 +362,7 @@ func enrichCodexModel(model llm.ModelInfo, p *Provider) llm.ModelInfo {
 		if fallback.MaxOutputTokens == 0 {
 			fallback.MaxOutputTokens = embedded.MaxOutputTokens
 		}
-		if len(fallback.SupportedEfforts) == 0 {
+		if fallback.SupportedEfforts == nil {
 			fallback.SupportedEfforts = embedded.SupportedEfforts
 		}
 		fallback.Pricing = embedded.Pricing
@@ -373,8 +376,8 @@ func enrichCodexModel(model llm.ModelInfo, p *Provider) llm.ModelInfo {
 	if model.MaxOutputTokens == 0 {
 		model.MaxOutputTokens = fallback.MaxOutputTokens
 	}
-	if len(model.SupportedEfforts) == 0 {
-		model.SupportedEfforts = append([]llm.Effort(nil), fallback.SupportedEfforts...)
+	if model.SupportedEfforts == nil {
+		model.SupportedEfforts = cloneCodexEfforts(fallback.SupportedEfforts)
 	}
 	if p != nil && p.priceTable != nil {
 		model.Pricing = priceForModel(p.priceTable, model.ID)
@@ -392,7 +395,7 @@ func cloneCodexModels(models []llm.ModelInfo) []llm.ModelInfo {
 	for i, model := range models {
 		cloned[i] = model
 		cloned[i].Pricing = cloneModelPricing(model.Pricing)
-		cloned[i].SupportedEfforts = append([]llm.Effort(nil), model.SupportedEfforts...)
+		cloned[i].SupportedEfforts = cloneCodexEfforts(model.SupportedEfforts)
 		cloned[i].Capabilities = append([]llm.Capability(nil), model.Capabilities...)
 		switch raw := model.Raw.(type) {
 		case json.RawMessage:
@@ -409,8 +412,19 @@ func cloneModelPricing(pricing *llm.ModelPricing) *llm.ModelPricing {
 		return nil
 	}
 	cloned := *pricing
+	if pricing.Availability != nil {
+		availability := *pricing.Availability
+		cloned.Availability = &availability
+	}
 	cloned.Tiers = append([]llm.ModelPricingTier(nil), pricing.Tiers...)
 	return &cloned
+}
+
+func cloneCodexEfforts(efforts []llm.Effort) []llm.Effort {
+	if efforts == nil {
+		return nil
+	}
+	return append(make([]llm.Effort, 0, len(efforts)), efforts...)
 }
 
 func firstNonEmpty(values ...string) string {

@@ -6,13 +6,11 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	sdk "github.com/anthropics/anthropic-sdk-go"
 	sdkoption "github.com/anthropics/anthropic-sdk-go/option"
 	llm "github.com/pkieltyka/go-llm"
-	"github.com/pkieltyka/go-llm/providers/internal/provideroauth"
 	"github.com/pkieltyka/go-llm/providers/internal/providerutil"
 )
 
@@ -52,10 +50,6 @@ type config struct {
 	logger           *slog.Logger
 	wireCapture      func(llm.WireCapture)
 	defaultMaxTokens int
-	oauth            bool
-	oauthCred        llm.AuthCredential
-	oauthPersistence llm.OAuthPersistenceFunc
-	oauthTokenURL    string
 }
 
 func defaultConfig() config {
@@ -71,7 +65,6 @@ func WithAPIKey(key string) Option {
 	return func(c *config) {
 		c.apiKey = key
 		c.apiKeyFunc = nil
-		c.oauth = false
 	}
 }
 
@@ -79,22 +72,6 @@ func WithAPIKey(key string) Option {
 func WithAPIKeyFunc(fn func(context.Context) (string, error)) Option {
 	return func(c *config) {
 		c.apiKeyFunc = fn
-		c.oauth = false
-	}
-}
-
-// WithOAuth enables Claude subscription OAuth credentials. A credential with
-// a refresh token requires non-nil persist; access-only credentials may pass
-// nil. persist must honor its context and return only after durable storage.
-// An explicit no-op opts into in-memory-only rotation and risks a stale stored
-// refresh token after restart.
-func WithOAuth(cred llm.AuthCredential, persist llm.OAuthPersistenceFunc) Option {
-	return func(c *config) {
-		c.oauth = true
-		c.oauthCred = cred
-		c.oauthPersistence = persist
-		c.apiKey = ""
-		c.apiKeyFunc = nil
 	}
 }
 
@@ -147,19 +124,8 @@ func WithDefaultMaxTokens(n int) Option {
 	return func(c *config) { c.defaultMaxTokens = n }
 }
 
-func withOAuthTokenURL(url string) Option {
-	return func(c *config) { c.oauthTokenURL = url }
-}
-
 func (c config) validate() error {
-	if c.oauth {
-		if c.oauthCred.Access == "" && c.oauthCred.Refresh == "" {
-			return fmt.Errorf("%w: missing Anthropic OAuth credential", llm.ErrAuth)
-		}
-		if err := provideroauth.ValidatePersistence(c.oauthCred, c.oauthPersistence); err != nil {
-			return err
-		}
-	} else if c.apiKeyFunc == nil && c.apiKey == "" {
+	if c.apiKeyFunc == nil && c.apiKey == "" {
 		return fmt.Errorf("%w: missing Anthropic API key; set WithAPIKey or %s", llm.ErrAuth, apiKeyEnv)
 	}
 	if c.httpClient == nil {
@@ -174,7 +140,7 @@ func (c config) validate() error {
 	return nil
 }
 
-func (c config) sdkOptions(source *provideroauth.Source) []sdkoption.RequestOption {
+func (c config) sdkOptions() []sdkoption.RequestOption {
 	maxRetries := 2
 	if c.maxRetries != nil {
 		maxRetries = *c.maxRetries
@@ -192,15 +158,7 @@ func (c config) sdkOptions(source *provideroauth.Source) []sdkoption.RequestOpti
 	if c.baseURL != "" {
 		opts = append(opts, sdkoption.WithBaseURL(c.baseURL))
 	}
-	if c.oauth {
-		opts = append(opts,
-			sdkoption.WithAuthToken("oauth"),
-			sdkoption.WithHeaderDel("X-Api-Key"),
-			sdkoption.WithMiddleware(func(req *http.Request, next sdkoption.MiddlewareNext) (*http.Response, error) {
-				return provideroauth.DoWithAuthRetry(req, provideroauth.MiddlewareNext(next), source, applyAnthropicOAuthHeaders)
-			}),
-		)
-	} else if c.apiKeyFunc != nil {
+	if c.apiKeyFunc != nil {
 		opts = append(opts, sdkoption.WithMiddleware(func(req *http.Request, next sdkoption.MiddlewareNext) (*http.Response, error) {
 			key, err := c.apiKeyFunc(req.Context())
 			if err != nil {
@@ -215,54 +173,14 @@ func (c config) sdkOptions(source *provideroauth.Source) []sdkoption.RequestOpti
 	return opts
 }
 
-// applyAnthropicOAuthHeaders applies the full Claude Code identity set
-// required in OAuth mode (FS §17C / ARCH §3.1): subscription tokens are only
-// served to Claude-Code-identified traffic, so alongside bearer auth the
-// request must carry the claude-code + oauth betas, a claude-cli user-agent,
-// and x-app: cli — matching the reference Claude-compatible OAuth clients.
-// These headers are set ONLY on the OAuth path; api-key requests are
-// untouched.
-func applyAnthropicOAuthHeaders(req *http.Request, cred llm.AuthCredential) {
-	req.Header.Del("X-Api-Key")
-	req.Header.Set("Authorization", "Bearer "+cred.Access)
-	req.Header.Set("User-Agent", anthropicOAuthUserAgent)
-	req.Header.Set("X-App", "cli")
-	req.Header.Set("anthropic-beta", oauthBetaHeaderValue(req.Header.Values("anthropic-beta")))
-}
-
-// oauthBetaHeaderValue builds the single comma-joined anthropic-beta value pi
-// sends in OAuth mode: the Claude Code identity betas first, then any
-// caller-requested beta features (Options.BetaHeaders), deduplicated.
-func oauthBetaHeaderValue(existing []string) string {
-	betas := []string{anthropicClaudeCodeBeta, anthropicOAuthBeta}
-	seen := map[string]struct{}{anthropicClaudeCodeBeta: {}, anthropicOAuthBeta: {}}
-	for _, value := range existing {
-		for beta := range strings.SplitSeq(value, ",") {
-			beta = strings.TrimSpace(beta)
-			if beta == "" {
-				continue
-			}
-			if _, ok := seen[beta]; ok {
-				continue
-			}
-			seen[beta] = struct{}{}
-			betas = append(betas, beta)
-		}
-	}
-	return strings.Join(betas, ",")
-}
-
 // Provider is the Anthropic Messages API implementation of llm.Provider. It
-// wraps anthropic-sdk-go directly and supports both api-key auth and Claude
-// subscription OAuth (WithOAuth), which adds the Claude Code identity
-// headers and system block required by subscription tokens.
+// wraps anthropic-sdk-go directly using API-key authentication.
 type Provider struct {
 	client           *sdk.Client
 	defaultMaxTokens int
 	priceTable       llm.PriceTable
 	logger           *slog.Logger
 	timeout          time.Duration
-	oauth            bool
 }
 
 // New constructs an Anthropic provider.
@@ -274,22 +192,13 @@ func New(opts ...Option) (*Provider, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
-	var source *provideroauth.Source
-	if cfg.oauth {
-		var err error
-		source, err = newAnthropicOAuthSource(cfg)
-		if err != nil {
-			return nil, err
-		}
-	}
-	client := sdk.NewClient(cfg.sdkOptions(source)...)
+	client := sdk.NewClient(cfg.sdkOptions()...)
 	return &Provider{
 		client:           &client,
 		defaultMaxTokens: cfg.defaultMaxTokens,
 		priceTable:       cfg.priceTable,
 		logger:           cfg.logger,
 		timeout:          cfg.timeout,
-		oauth:            cfg.oauth,
 	}, nil
 }
 

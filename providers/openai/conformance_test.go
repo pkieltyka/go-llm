@@ -1,6 +1,8 @@
 package openai
 
 import (
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +10,7 @@ import (
 	"testing"
 
 	llm "github.com/pkieltyka/go-llm"
+	"github.com/pkieltyka/go-llm/internal/testutil"
 	"github.com/pkieltyka/go-llm/llmtest"
 )
 
@@ -74,6 +77,159 @@ func TestOpenAIConformance(t *testing.T) {
 		}
 		return p
 	})
+}
+
+// TestOpenAICapabilityConformance proves reviewed Responses API fields and
+// their normalized results without credentials. Reasoning-summary selection
+// remains covered by its dedicated focused tests.
+func TestOpenAICapabilityConformance(t *testing.T) {
+	const model = "gpt-5.4-mini"
+	profile := llmtest.CapabilityProfile{Cases: []llmtest.CapabilityCase{
+		{Name: "tools", Capability: llm.CapabilityTools, Paths: []llmtest.ConformancePath{llmtest.ConformanceChat}, Request: func() *llm.Request { return testutil.ToolActivationRequest(model, llm.ToolChoiceAuto) }, Assert: testutil.AssertActivationToolCall},
+		{Name: "required-tool-choice", Capability: llm.CapabilityToolChoiceRequired, Paths: []llmtest.ConformancePath{llmtest.ConformanceChat}, Request: func() *llm.Request { return testutil.ToolActivationRequest(model, llm.ToolChoiceRequired) }, Assert: testutil.AssertActivationToolCall},
+		{Name: "json-schema", Capability: llm.CapabilityJSONSchema, Paths: []llmtest.ConformancePath{llmtest.ConformanceChat}, Request: func() *llm.Request { return testutil.JSONSchemaActivationRequest(model) }, Assert: testutil.AssertActivationText},
+		{Name: "image-input", Capability: llm.CapabilityImageInput, Paths: []llmtest.ConformancePath{llmtest.ConformanceChat}, Request: func() *llm.Request { return testutil.ImageActivationRequest(model) }, Assert: testutil.AssertActivationText},
+		{Name: "prompt-cache-key", Capability: llm.CapabilityPromptCaching, Paths: []llmtest.ConformancePath{llmtest.ConformanceChat, llmtest.ConformanceStream}, Request: func() *llm.Request {
+			return &llm.Request{Model: model, Messages: []llm.Message{llm.UserText("cache")}, SessionID: "session.activation/1"}
+		}, Assert: assertOpenAICacheResponse},
+		{Name: "reasoning", Capability: llm.CapabilityReasoning, Paths: []llmtest.ConformancePath{llmtest.ConformanceChat, llmtest.ConformanceStream}, Request: func() *llm.Request { return testutil.ReasoningActivationRequest(model) }, Assert: testutil.AssertActivationReasoning},
+	}}
+
+	llmtest.RunCapabilityConformance(t, func(t *testing.T, invocation llmtest.CapabilityInvocation) llm.Provider {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode activation request: %v", err)
+				http.Error(w, "invalid JSON", http.StatusBadRequest)
+				return
+			}
+			if err := assertOpenAIActivationRequest(body, invocation); err != nil {
+				t.Errorf("%s native request: %v; body=%#v", invocation.CaseName, err, body)
+			}
+			if invocation.Path == llmtest.ConformanceStream {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, openAIActivationStream(invocation, model))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, openAIActivationResponse(invocation, model))
+		}))
+		t.Cleanup(server.Close)
+		provider, err := New(WithAPIKey("test-key"), WithBaseURL(server.URL), WithHTTPClient(server.Client()), WithMaxRetries(0))
+		if err != nil {
+			t.Fatalf("New returned error: %v", err)
+		}
+		return provider
+	}, profile)
+}
+
+func assertOpenAIActivationRequest(body map[string]any, invocation llmtest.CapabilityInvocation) error {
+	if body["model"] != "gpt-5.4-mini" {
+		return fmt.Errorf("model = %#v", body["model"])
+	}
+	switch invocation.Capability {
+	case llm.CapabilityTools, llm.CapabilityToolChoiceRequired:
+		tools, _ := body["tools"].([]any)
+		if len(tools) != 1 {
+			return fmt.Errorf("tools = %#v", body["tools"])
+		}
+		tool, _ := tools[0].(map[string]any)
+		if tool["type"] != "function" || tool["name"] != testutil.ActivationToolName || tool["strict"] != true {
+			return fmt.Errorf("function tool = %#v", tool)
+		}
+		if err := testutil.AssertActivationToolSchema(tool["parameters"]); err != nil {
+			return err
+		}
+		if invocation.Capability == llm.CapabilityToolChoiceRequired && body["tool_choice"] != "required" {
+			return fmt.Errorf("tool_choice = %#v, want required", body["tool_choice"])
+		}
+	case llm.CapabilityJSONSchema:
+		text, _ := body["text"].(map[string]any)
+		format, _ := text["format"].(map[string]any)
+		if format["type"] != "json_schema" || format["name"] != "activation_result" || format["strict"] != true {
+			return fmt.Errorf("text.format = %#v", format)
+		}
+		if err := testutil.AssertActivationResponseSchema(format["schema"]); err != nil {
+			return err
+		}
+	case llm.CapabilityImageInput:
+		input, _ := body["input"].([]any)
+		if len(input) != 1 {
+			return fmt.Errorf("input = %#v", body["input"])
+		}
+		content, _ := input[0].(map[string]any)["content"].([]any)
+		if len(content) != 2 {
+			return fmt.Errorf("image content = %#v", input[0])
+		}
+		image, _ := content[1].(map[string]any)
+		if image["type"] != "input_image" || image["image_url"] != "data:image/png;base64,AQID" {
+			return fmt.Errorf("input_image = %#v", image)
+		}
+	case llm.CapabilityPromptCaching:
+		if body["prompt_cache_key"] != "session.activation/1" {
+			return fmt.Errorf("prompt_cache_key = %#v", body["prompt_cache_key"])
+		}
+	case llm.CapabilityReasoning:
+		reasoning, _ := body["reasoning"].(map[string]any)
+		if reasoning["effort"] != "high" {
+			return fmt.Errorf("reasoning.effort = %#v", reasoning["effort"])
+		}
+	}
+	return nil
+}
+
+func openAIActivationResponse(invocation llmtest.CapabilityInvocation, model string) string {
+	output := []any{map[string]any{
+		"id": "msg_activation", "type": "message", "role": "assistant", "status": "completed",
+		"content": []any{map[string]any{"type": "output_text", "text": "activated", "annotations": []any{}}},
+	}}
+	usage := map[string]any{
+		"input_tokens": 1, "input_tokens_details": map[string]any{"cached_tokens": 0},
+		"output_tokens": 2, "output_tokens_details": map[string]any{"reasoning_tokens": 0}, "total_tokens": 3,
+	}
+	switch invocation.Capability {
+	case llm.CapabilityTools, llm.CapabilityToolChoiceRequired:
+		output = []any{map[string]any{"id": "fc_activation", "type": "function_call", "call_id": "call_activation", "name": testutil.ActivationToolName, "arguments": `{"value":"activated"}`, "status": "completed"}}
+	case llm.CapabilityReasoning:
+		output = append([]any{map[string]any{"id": "rs_activation", "type": "reasoning", "summary": []any{map[string]any{"type": "summary_text", "text": "because"}}, "status": "completed"}}, output...)
+		usage["output_tokens_details"] = map[string]any{"reasoning_tokens": 1}
+	case llm.CapabilityPromptCaching:
+		usage["input_tokens"] = 3
+		usage["input_tokens_details"] = map[string]any{"cached_tokens": 2}
+		usage["total_tokens"] = 5
+	}
+	payload := map[string]any{"id": "resp_activation", "model": model, "status": "completed", "output": output, "usage": usage}
+	encoded, _ := json.Marshal(payload)
+	return string(encoded)
+}
+
+func openAIActivationStream(invocation llmtest.CapabilityInvocation, model string) string {
+	response := openAIActivationResponse(invocation, model)
+	parts := []string{
+		"event: response.created\n" + `data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_activation","model":"` + model + `","status":"in_progress","output":[]}}` + "\n\n",
+	}
+	sequence := 1
+	outputIndex := 0
+	if invocation.Capability == llm.CapabilityReasoning {
+		parts = append(parts, "event: response.reasoning_summary_text.delta\n"+`data: {"type":"response.reasoning_summary_text.delta","sequence_number":1,"item_id":"rs_activation","output_index":0,"summary_index":0,"delta":"because"}`+"\n\n")
+		sequence++
+		outputIndex = 1
+	}
+	parts = append(parts,
+		"event: response.output_text.delta\n"+fmt.Sprintf(`data: {"type":"response.output_text.delta","sequence_number":%d,"item_id":"msg_activation","output_index":%d,"content_index":0,"delta":"activated","logprobs":[]}`, sequence, outputIndex)+"\n\n",
+		"event: response.completed\n"+fmt.Sprintf(`data: {"type":"response.completed","sequence_number":%d,"response":%s}`, sequence+1, response)+"\n\n",
+	)
+	return strings.Join(parts, "")
+}
+
+func assertOpenAICacheResponse(response *llm.Response) error {
+	if err := testutil.AssertActivationText(response); err != nil {
+		return err
+	}
+	if response.Usage.InputTokens != 1 || response.Usage.CacheReadTokens != 2 || response.Usage.TotalTokens != 5 {
+		return fmt.Errorf("cache usage = %+v", response.Usage)
+	}
+	return nil
 }
 
 // TestProviderIdentitySurface pins the trivial identity accessors.

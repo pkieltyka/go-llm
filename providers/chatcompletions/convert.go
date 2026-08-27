@@ -343,6 +343,9 @@ func buildTools(tools []llm.Tool, provider string) ([]sdk.ChatCompletionToolUnio
 		if err != nil {
 			return nil, fmt.Errorf("%w: %s tool %q schema: %v", llm.ErrBadRequest, provider, tool.Name, err)
 		}
+		if err := normalizeToolSchema(schema); err != nil {
+			return nil, fmt.Errorf("%w: %s tool %q schema: %v", llm.ErrBadRequest, provider, tool.Name, err)
+		}
 		strict := tool.Strict && providerutil.StrictSchemaSupported(schema)
 		raw := jsonObject{
 			"type": "function",
@@ -356,6 +359,30 @@ func buildTools(tools []llm.Tool, provider string) ([]sdk.ChatCompletionToolUnio
 		out = append(out, sdkparam.Override[sdk.ChatCompletionToolUnionParam](raw))
 	}
 	return out, nil
+}
+
+// normalizeToolSchema keeps the function schema structurally compatible with
+// servers that require object-valued properties even for no-argument tools.
+// SchemaAsMap has already made a decoded copy, so normalization never mutates
+// caller-owned schema values.
+func normalizeToolSchema(schema map[string]any) error {
+	if schema == nil {
+		return fmt.Errorf("root must be an object")
+	}
+	if schemaType, ok := schema["type"]; ok {
+		if schemaType != "object" {
+			return fmt.Errorf("root type must be %q", "object")
+		}
+	}
+	properties, ok := schema["properties"]
+	if !ok || properties == nil {
+		schema["properties"] = map[string]any{}
+		return nil
+	}
+	if _, ok := properties.(map[string]any); !ok {
+		return fmt.Errorf("properties must be an object")
+	}
+	return nil
 }
 
 func buildToolChoice(choice llm.ToolChoice) sdk.ChatCompletionToolChoiceOptionUnionParam {

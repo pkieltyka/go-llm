@@ -37,6 +37,16 @@ const (
 	VerbosityHigh   Verbosity = "high"
 )
 
+// ReasoningSummary selects the detail level of OpenAI's user-visible
+// reasoning summary. Empty preserves go-llm's existing behavior.
+type ReasoningSummary string
+
+const (
+	ReasoningSummaryAuto     ReasoningSummary = "auto"
+	ReasoningSummaryConcise  ReasoningSummary = "concise"
+	ReasoningSummaryDetailed ReasoningSummary = "detailed"
+)
+
 // ServiceTier selects OpenAI's request processing tier.
 type ServiceTier string
 
@@ -111,6 +121,9 @@ type Options struct {
 	HostedTools []json.RawMessage
 	// Verbosity controls generated text detail.
 	Verbosity Verbosity
+	// ReasoningSummary selects OpenAI Responses reasoning.summary. Empty leaves
+	// the existing effort-driven automatic-summary behavior unchanged.
+	ReasoningSummary ReasoningSummary
 	// Metadata attaches string metadata to the response.
 	Metadata Metadata
 	// ServiceTier selects OpenAI's processing tier.
@@ -139,6 +152,13 @@ func requestOptions(req *llm.Request) (*Options, error) {
 func applyOptions(options *Options, params *responses.ResponseNewParams) error {
 	if options == nil {
 		return nil
+	}
+	switch options.ReasoningSummary {
+	case "":
+	case ReasoningSummaryAuto, ReasoningSummaryConcise, ReasoningSummaryDetailed:
+		params.Reasoning.Summary = shared.ReasoningSummary(options.ReasoningSummary)
+	default:
+		return fmt.Errorf("%w: OpenAI ReasoningSummary %q is not a known value", llm.ErrBadRequest, options.ReasoningSummary)
 	}
 	if options.Store != nil {
 		params.Store = sdk.Bool(*options.Store)

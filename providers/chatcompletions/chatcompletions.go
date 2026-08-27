@@ -9,6 +9,10 @@
 // packages (providers/openrouter, providers/vllm, providers/ollama) build on
 // this engine and pre-configure the quirks for you.
 //
+// Before sending function tools, the engine normalizes missing or null
+// properties on object schemas to an empty object. Structurally non-object
+// tool schemas fail before network I/O.
+//
 //	p, err := chatcompletions.New("http://localhost:8000/v1",
 //		chatcompletions.WithName("myserver"),          // provider name in responses/logs
 //		chatcompletions.WithAPIKey("sk-..."),          // only if the server requires one

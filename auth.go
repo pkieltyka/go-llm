@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"net/url"
 	"os"
 )
 
@@ -22,6 +24,17 @@ type AuthCredential struct {
 	BaseURL   string
 }
 
+// String redacts credential material from formatted output.
+func (AuthCredential) String() string { return "llm: auth credential (redacted)" }
+
+// GoString redacts credential material from Go-syntax formatted output.
+func (AuthCredential) GoString() string { return "llm.AuthCredential{redacted}" }
+
+// LogValue redacts credential material from structured logs.
+func (AuthCredential) LogValue() slog.Value {
+	return slog.StringValue("llm: auth credential (redacted)")
+}
+
 // OAuthPersistenceFunc durably persists a renewed OAuth credential before it
 // becomes visible to provider requests. Implementations MUST honor ctx and
 // return only after persistence is durable; returning an error prevents the
@@ -30,6 +43,65 @@ type AuthCredential struct {
 // in-memory-only rotation, which can leave stored refresh tokens stale after a
 // restart.
 type OAuthPersistenceFunc func(context.Context, AuthCredential) error
+
+// LoginFlow is a single-use interactive provider login. Begin prepares the
+// provider authorization and returns a non-secret launch target. Complete
+// waits for provider completion delivered automatically or through Submit.
+// Submit is an optional provider-specific manual or fallback path. Cancel is
+// idempotent and interrupts pending waits and network work.
+//
+// Implementations own all provider protocol details and sensitive ephemeral
+// state. They must be safe for Complete, Submit, and Cancel to run from
+// different goroutines, must honor context cancellation, and must redact
+// credentials, authorization codes, PKCE verifiers, and CSRF state from
+// errors and formatted output.
+type LoginFlow interface {
+	// Begin prepares the provider authorization and returns display data.
+	Begin(ctx context.Context) (LoginAuthorization, error)
+	// Complete waits for provider completion and returns the minted credential.
+	Complete(ctx context.Context) (AuthCredential, error)
+	// Submit forwards one complete provider-specific manual response to
+	// Complete. Implementations may use it only as a fallback.
+	Submit(ctx context.Context, response string) error
+	// Cancel interrupts the flow and releases its resources.
+	Cancel()
+}
+
+// LoginAuthorization describes how the host should begin a login without
+// exposing the provider authorization URL or its ephemeral state. URL is a
+// short-lived loopback launch target that redirects to the provider. It must
+// be treated as transient UI data and must not be persisted.
+type LoginAuthorization struct {
+	url          string
+	instructions string
+}
+
+// NewLoginAuthorization constructs transient login instructions for a
+// provider implementation. url must be an absolute HTTP(S) URL.
+func NewLoginAuthorization(launchURL, instructions string) (LoginAuthorization, error) {
+	parsed, err := url.Parse(launchURL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return LoginAuthorization{}, fmt.Errorf("%w: login authorization URL must be absolute HTTP(S)", ErrBadRequest)
+	}
+	return LoginAuthorization{url: launchURL, instructions: instructions}, nil
+}
+
+// URL returns the transient, non-secret launch URL for the user's browser.
+func (authorization LoginAuthorization) URL() string { return authorization.url }
+
+// Instructions returns provider-neutral display guidance for the host.
+func (authorization LoginAuthorization) Instructions() string { return authorization.instructions }
+
+// String redacts the transient launch target from formatted output.
+func (LoginAuthorization) String() string { return "llm: login authorization (redacted)" }
+
+// GoString redacts the transient launch target from Go-syntax formatting.
+func (LoginAuthorization) GoString() string { return "llm.LoginAuthorization{redacted}" }
+
+// LogValue redacts the transient launch target from structured logs.
+func (LoginAuthorization) LogValue() slog.Value {
+	return slog.StringValue("llm: login authorization (redacted)")
+}
 
 // LoadAuthFile parses a pi-compatible credential file from path.
 func LoadAuthFile(path string) (AuthFile, error) {

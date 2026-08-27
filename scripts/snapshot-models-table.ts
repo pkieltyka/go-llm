@@ -1,8 +1,9 @@
 import { Buffer } from "node:buffer";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { gunzipSync, gzipSync } from "node:zlib";
 
 export type Pricing = {
   input_per_mtok?: number;
@@ -32,8 +33,18 @@ export type ModelRow = {
 };
 
 export type SnapshotDocument = {
+  schema_version: number;
+  generator: string;
   generated_at: string;
+  sources: SnapshotSource[];
   models: ModelRow[];
+};
+
+export type SnapshotSource = {
+  id: string;
+  url: string;
+  sha256: string;
+  etag?: string;
 };
 
 export type SourceMinimums = {
@@ -78,6 +89,7 @@ const pricingRateNames = [
 type BuildOptions = {
   generatedAt?: string;
   minimums?: SourceMinimums;
+  sources?: SnapshotSource[];
 };
 
 type CLIOptions = {
@@ -87,19 +99,57 @@ type CLIOptions = {
   outputPath: string;
   allowDestructive: boolean;
   dryRun: boolean;
+  verify: boolean;
   minimums?: SourceMinimums;
+  generatedAt?: string;
+  modelsDevURL: string;
+  openRouterURL: string;
+  overridesURL: string;
+  captureDirectory?: string;
 };
+
+type LoadedJSON = {
+  value: unknown;
+  bytes: Uint8Array;
+};
+
+const snapshotSchemaVersion = 1;
+const snapshotGenerator = "go-llm-model-snapshot/v1";
+const modelsDevURL = "https://models.dev/api.json";
+const openRouterURL = "https://openrouter.ai/api/v1/models";
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   const [modelsDev, openRouter, overrides] = await Promise.all([
-    readJSON(options.modelsDevSource),
-    readJSON(options.openRouterSource),
-    readJSON(options.overridesSource),
+    loadJSON(options.modelsDevSource),
+    loadJSON(options.openRouterSource),
+    loadJSON(options.overridesSource),
   ]);
-  const document = buildSnapshot(modelsDev, openRouter, overrides, { minimums: options.minimums });
   const previous = await readSnapshot(options.outputPath);
+  const document = buildSnapshot(modelsDev.value, openRouter.value, overrides.value, {
+    generatedAt: options.generatedAt ?? (options.verify ? previous?.generated_at : undefined),
+    minimums: options.minimums,
+    sources: [
+      provenance("models.dev", options.modelsDevURL, modelsDev),
+      provenance("openrouter", options.openRouterURL, openRouter),
+      provenance("overrides", options.overridesURL, overrides),
+    ],
+  });
   assertNonDestructive(previous, document, options.allowDestructive);
+  if (options.captureDirectory) {
+    await Promise.all([
+      atomicWriteBytes(resolve(options.captureDirectory, "models-dev.json.gz"), gzipSync(modelsDev.bytes, { level: 9 })),
+      atomicWriteBytes(resolve(options.captureDirectory, "openrouter-models.json.gz"), gzipSync(openRouter.bytes, { level: 9 })),
+    ]);
+  }
+
+  if (options.verify) {
+    const expected = serializeSnapshot(document);
+    const actual = await readFile(options.outputPath);
+    if (!actual.equals(expected)) throw new Error(`${options.outputPath} is not reproducible from its captured sources`);
+    console.log(snapshotSummary(document, "verified"));
+    return;
+  }
 
   if (options.dryRun) {
     console.log(snapshotSummary(document, "validated"));
@@ -129,10 +179,40 @@ export function buildSnapshot(
 
   const models = [...rows.values()].map(finalizePricing).sort((a, b) => compareStrings(key(a), key(b)));
   validateOutputProviders(models);
-  return {
+  const document = {
+    schema_version: snapshotSchemaVersion,
+    generator: snapshotGenerator,
     generated_at: options.generatedAt ?? new Date().toISOString(),
+    sources: options.sources ?? inMemoryProvenance(modelsDev, openRouter, overrides),
     models,
   };
+  validateSnapshotDocument(document);
+  return document;
+}
+
+function provenance(id: string, url: string, loaded: LoadedJSON): SnapshotSource {
+  return { id, url, sha256: sha256(loaded.bytes) };
+}
+
+function inMemoryProvenance(modelsDev: unknown, openRouter: unknown, overrides: unknown): SnapshotSource[] {
+  return [
+    memoryProvenance("models.dev", modelsDev),
+    memoryProvenance("openrouter", openRouter),
+    memoryProvenance("overrides", overrides),
+  ];
+}
+
+function memoryProvenance(id: string, value: unknown): SnapshotSource {
+  const bytes = Buffer.from(JSON.stringify(value));
+  return { id, url: `memory:${id}`, sha256: sha256(bytes) };
+}
+
+function compactSource(source: SnapshotSource): SnapshotSource {
+  return Object.fromEntries(Object.entries(source).filter(([, value]) => value !== undefined)) as SnapshotSource;
+}
+
+function sha256(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
 }
 
 export function assertNonDestructive(
@@ -495,7 +575,9 @@ function pricingFromOpenRouter(record: JSONRecord | undefined): Pricing | undefi
   if (!record) return undefined;
   const perTokenToMTok = (names: string[]) => {
     const value = optionalAvailableNonNegativeNumber(record, names);
-    return value === undefined ? undefined : value * 1_000_000;
+    if (value === undefined) return undefined;
+    const perMillion = value * 1_000_000;
+    return Number.isFinite(perMillion) ? perMillion : undefined;
   };
   return compactPricing({
     input_per_mtok: perTokenToMTok(["prompt"]),
@@ -631,8 +713,8 @@ const effortScale = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 function optionalEffortList(record: JSONRecord, name: string, label: string): string[] | undefined {
   const value = record[name];
   if (value === undefined) return undefined;
-  if (!Array.isArray(value) || value.length === 0) {
-    throw new Error(`${label}.${name} must be a non-empty array`);
+  if (!Array.isArray(value)) {
+    throw new Error(`${label}.${name} must be an array`);
   }
   let previous = -1;
   for (const entry of value) {
@@ -682,8 +764,8 @@ function optionalAvailableNumber(
   for (const name of names) {
     const value = record[name];
     if (value === undefined || value === null || value === "") continue;
-    const number = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
-    if (!Number.isFinite(number) || (allowZero ? number < 0 : number <= 0)) continue;
+    const number = strictDecimalNumber(value);
+    if (number === undefined || (allowZero ? number < 0 : number <= 0)) continue;
     return number;
   }
   return undefined;
@@ -699,8 +781,8 @@ function optionalNumber(
   for (const name of names) {
     const value = record[name];
     if (value === undefined || value === null || value === "") continue;
-    const number = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
-    if (!Number.isFinite(number) || (allowZero ? number < 0 : number <= 0)) {
+    const number = strictDecimalNumber(value);
+    if (number === undefined || (allowZero ? number < 0 : number <= 0)) {
       throw new Error(`${label}.${name} must be a ${allowZero ? "non-negative" : "positive"} finite number`);
     }
     return number;
@@ -708,7 +790,22 @@ function optionalNumber(
   return undefined;
 }
 
+const decimalNumberPattern = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$/;
+
+function strictDecimalNumber(value: unknown): number | undefined {
+  if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
+  if (typeof value !== "string") return undefined;
+  const spelling = value.trim();
+  if (!decimalNumberPattern.test(spelling)) return undefined;
+  const number = Number(spelling);
+  return Number.isFinite(number) ? number : undefined;
+}
+
 export async function readJSON(source: string, options: ReadJSONOptions = {}): Promise<unknown> {
+  return (await loadJSON(source, options)).value;
+}
+
+async function loadJSON(source: string, options: ReadJSONOptions = {}): Promise<LoadedJSON> {
   if (/^https?:\/\//.test(source)) {
     const timeoutMs = options.timeoutMs ?? remoteSourceTimeoutMs;
     const maxBytes = options.maxBytes ?? remoteSourceMaxBytes;
@@ -752,7 +849,11 @@ export async function readJSON(source: string, options: ReadJSONOptions = {}): P
         }
         chunks.push(value);
       }
-      return JSON.parse(Buffer.concat(chunks, total).toString("utf8"));
+      const bytes = Buffer.concat(chunks, total);
+      return {
+        value: JSON.parse(bytes.toString("utf8")),
+        bytes,
+      };
     } catch (error) {
       if (controller.signal.aborted) throw new Error(`${source}: timed out after ${timeoutMs}ms`, { cause: error });
       throw error;
@@ -764,7 +865,9 @@ export async function readJSON(source: string, options: ReadJSONOptions = {}): P
       clearTimeout(timeout);
     }
   }
-  return JSON.parse(await readFile(resolve(source), "utf8"));
+  const stored = await readFile(resolve(source));
+  const bytes = source.endsWith(".gz") ? gunzipSync(stored) : stored;
+  return { value: JSON.parse(bytes.toString("utf8")), bytes };
 }
 
 function readStreamChunk(
@@ -806,18 +909,78 @@ async function readSnapshot(path: string): Promise<SnapshotDocument | undefined>
       supported_efforts: optionalEffortList(record, "supported_efforts", label),
     });
   });
-  return { generated_at: source.generated_at, models };
+  const sources = Array.isArray(source.sources)
+    ? source.sources.map((value, index) => parseSnapshotSource(value, `${path}.sources[${index}]`))
+    : legacySnapshotSources();
+  return {
+    schema_version: typeof source.schema_version === "number" ? source.schema_version : 0,
+    generator: typeof source.generator === "string" ? source.generator : "legacy",
+    generated_at: source.generated_at,
+    sources,
+    models,
+  };
+}
+
+function parseSnapshotSource(value: unknown, label: string): SnapshotSource {
+  const source = objectValue(value, label);
+  return compactSource({
+    id: requiredString(source, "id", label),
+    url: requiredString(source, "url", label),
+    sha256: requiredString(source, "sha256", label),
+    etag: optionalString(source, "etag", label),
+  });
+}
+
+function legacySnapshotSources(): SnapshotSource[] {
+  const digest = "0".repeat(64);
+  return [
+    { id: "models.dev", url: "legacy:unknown", sha256: digest },
+    { id: "openrouter", url: "legacy:unknown", sha256: digest },
+    { id: "overrides", url: "legacy:unknown", sha256: digest },
+  ];
+}
+
+function validateSnapshotDocument(document: SnapshotDocument): void {
+  if (document.schema_version !== snapshotSchemaVersion) {
+    throw new Error(`snapshot schema_version must be ${snapshotSchemaVersion}`);
+  }
+  if (document.generator !== snapshotGenerator) {
+    throw new Error(`snapshot generator must be ${snapshotGenerator}`);
+  }
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(document.generated_at) ||
+      !Number.isFinite(Date.parse(document.generated_at))) {
+    throw new Error("snapshot generated_at must be an RFC3339 timestamp");
+  }
+  const expectedIDs = ["models.dev", "openrouter", "overrides"];
+  if (document.sources.length !== expectedIDs.length) {
+    throw new Error(`snapshot sources must contain ${expectedIDs.join(", ")}`);
+  }
+  for (let index = 0; index < expectedIDs.length; index++) {
+    const source = document.sources[index];
+    if (source.id !== expectedIDs[index] || source.url.trim() === "" || !/^[0-9a-f]{64}$/.test(source.sha256)) {
+      throw new Error(`snapshot source ${index} must identify ${expectedIDs[index]} with a URL and SHA-256 digest`);
+    }
+  }
 }
 
 async function atomicWriteSnapshot(path: string, document: SnapshotDocument): Promise<void> {
+  await atomicWriteBytes(path, serializeSnapshot(document), 0o644);
+}
+
+function serializeSnapshot(document: SnapshotDocument): Buffer {
+  validateSnapshotDocument(document);
+  return Buffer.from(`${JSON.stringify(document, null, 2)}\n`);
+}
+
+async function atomicWriteBytes(path: string, bytes: Uint8Array, mode = 0o644): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
   const handle = await open(temporary, "wx", 0o600);
   try {
-    await handle.writeFile(`${JSON.stringify(document, null, 2)}\n`);
+    await handle.writeFile(bytes);
     await handle.sync();
     await handle.close();
-    await chmod(temporary, 0o644);
+    await chmod(temporary, mode);
     await rename(temporary, path);
   } catch (error) {
     await handle.close().catch(() => undefined);
@@ -828,25 +991,39 @@ async function atomicWriteSnapshot(path: string, document: SnapshotDocument): Pr
 
 function parseArgs(args: string[]): CLIOptions {
   const options: CLIOptions = {
-    modelsDevSource: "https://models.dev/api.json",
-    openRouterSource: "https://openrouter.ai/api/v1/models",
+    modelsDevSource: modelsDevURL,
+    openRouterSource: openRouterURL,
     overridesSource: resolve(root, "scripts/overrides.json"),
     outputPath: resolve(root, "models.json"),
     allowDestructive: false,
     dryRun: false,
+    verify: false,
+    modelsDevURL,
+    openRouterURL,
+    overridesURL: "file:scripts/overrides.json",
   };
   for (let index = 0; index < args.length; index++) {
     const arg = args[index];
     if (arg === "--allow-destructive") options.allowDestructive = true;
     else if (arg === "--dry-run") options.dryRun = true;
+    else if (arg === "--verify") options.verify = true;
     else if (arg === "--fixture-minimums") options.minimums = fixtureMinimums;
-    else if (arg === "--models-dev") options.modelsDevSource = requiredArg(args, ++index, arg);
-    else if (arg === "--openrouter") options.openRouterSource = requiredArg(args, ++index, arg);
-    else if (arg === "--overrides") options.overridesSource = requiredArg(args, ++index, arg);
-    else if (arg === "--output") options.outputPath = resolve(requiredArg(args, ++index, arg));
+    else if (arg === "--models-dev") options.modelsDevSource = sourcePath(requiredArg(args, ++index, arg));
+    else if (arg === "--openrouter") options.openRouterSource = sourcePath(requiredArg(args, ++index, arg));
+    else if (arg === "--overrides") options.overridesSource = sourcePath(requiredArg(args, ++index, arg));
+    else if (arg === "--models-dev-url") options.modelsDevURL = requiredArg(args, ++index, arg);
+    else if (arg === "--openrouter-url") options.openRouterURL = requiredArg(args, ++index, arg);
+    else if (arg === "--overrides-url") options.overridesURL = requiredArg(args, ++index, arg);
+    else if (arg === "--generated-at") options.generatedAt = requiredArg(args, ++index, arg);
+    else if (arg === "--capture-dir") options.captureDirectory = resolve(root, requiredArg(args, ++index, arg));
+    else if (arg === "--output") options.outputPath = resolve(root, requiredArg(args, ++index, arg));
     else throw new Error(`unknown argument ${arg}`);
   }
   return options;
+}
+
+function sourcePath(value: string): string {
+  return /^https?:\/\//.test(value) ? value : resolve(root, value);
 }
 
 function requiredArg(args: string[], index: number, flag: string): string {
