@@ -46,6 +46,9 @@ jobs:
   compatibility:
     name: Go ${{ matrix.go-version }} compatibility
     runs-on: ubuntu-latest
+    env:
+      # Prevent go.mod's preferred toolchain from masking minimum-version failures.
+      GOTOOLCHAIN: local
     strategy:
       fail-fast: false
       matrix:

@@ -72,9 +72,9 @@ where they exist and pulled in only by the provider package you import.
 go get github.com/pkieltyka/go-llm
 ```
 
-Go 1.26 is the minimum version for users of the module. Releases are verified with
-Go 1.26.6 or newer. Provider SDK dependencies are pulled only when importing provider
-packages.
+Go 1.26 is the minimum version for users of the module. Development and releases
+use Go 1.27.0 or newer, while CI retains a Go 1.26 compatibility lane. Provider SDK
+dependencies are pulled only when importing provider packages.
 
 ## Quick start
 

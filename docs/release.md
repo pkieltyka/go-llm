@@ -2,7 +2,7 @@
 
 This checklist is version-neutral. Replace `$VERSION` with the intended tag.
 The supported interval starts at Go 1.26.0. Release verification requires the
-pinned `.go-version` (currently 1.26.6) or newer. CI exercises the minimum,
+pinned `.go-version` (currently 1.27.0) or newer. CI exercises the minimum,
 the pin, and the current stable toolchain.
 
 ## Credential-Free, Network-Dependent Gates
@@ -112,7 +112,7 @@ must ship with matching redaction tests before its recordings are accepted.
 Refresh only when model sources or overrides change:
 
 ```sh
-make models MODEL_ARGS='--generated-at 2026-08-24T00:00:00Z --capture-dir scripts/model-sources/2026-08-24'
+make models MODEL_ARGS='--generated-at 2026-08-27T00:50:40.624Z --capture-dir scripts/model-sources/2026-08-26'
 pnpm --dir scripts test
 make check-models-reproducible
 ```
