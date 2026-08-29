@@ -339,9 +339,13 @@ func functionCallOutputInput(part llm.ToolResultPart, providerName string) (resp
 		return responses.ResponseInputItemUnionParam{}, err
 	}
 	if content != nil {
-		return responses.ResponseInputItemParamOfFunctionCallOutput(part.ToolCallID, content), nil
+		item := responses.ResponseInputItemParamOfFunctionCallOutput(content)
+		item.OfFunctionCallOutput.CallID = sdkparam.NewOpt(part.ToolCallID)
+		return item, nil
 	}
-	return responses.ResponseInputItemParamOfFunctionCallOutput(part.ToolCallID, text), nil
+	item := responses.ResponseInputItemParamOfFunctionCallOutput(text)
+	item.OfFunctionCallOutput.CallID = sdkparam.NewOpt(part.ToolCallID)
+	return item, nil
 }
 
 // toolResultOutput flattens tool-result content. It returns either a plain

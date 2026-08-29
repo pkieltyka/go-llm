@@ -5,8 +5,8 @@ go 1.26
 toolchain go1.27.0
 
 require (
-	github.com/anthropics/anthropic-sdk-go v1.66.0
-	github.com/openai/openai-go/v3 v3.52.0
+	github.com/anthropics/anthropic-sdk-go v1.68.0
+	github.com/openai/openai-go/v3 v3.54.0
 	golang.org/x/sys v0.47.0
 )
 
