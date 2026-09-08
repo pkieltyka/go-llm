@@ -206,11 +206,18 @@ func (s *StreamState) mapFunctionCallArgumentsDone(event responses.ResponseStrea
 	s.sawFunctionCall = true
 	index := int(event.OutputIndex)
 	call := s.toolCall(index)
-	if call.name != "" && event.Name != "" && call.name != event.Name {
+	// Name is no longer a declared SDK field, but some backends still send it.
+	var name string
+	if raw := event.AsResponseFunctionCallArgumentsDone().JSON.ExtraFields["name"].Raw(); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &name); err != nil {
+			return nil, s.malformedStreamError("tool arguments done event has invalid name")
+		}
+	}
+	if call.name != "" && name != "" && call.name != name {
 		return nil, s.malformedStreamError("tool arguments done event contradicts streamed name")
 	}
 	if call.name == "" {
-		call.name = event.Name
+		call.name = name
 	}
 	wantArgs := event.Arguments
 	if wantArgs == "" {

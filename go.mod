@@ -1,13 +1,13 @@
 module github.com/pkieltyka/go-llm
 
-go 1.26
+go 1.26.0
 
 toolchain go1.27.0
 
 require (
-	github.com/anthropics/anthropic-sdk-go v1.68.0
-	github.com/openai/openai-go/v3 v3.54.0
-	golang.org/x/sys v0.47.0
+	github.com/anthropics/anthropic-sdk-go v1.71.0
+	github.com/openai/openai-go/v3 v3.57.0
+	golang.org/x/sys v0.48.0
 )
 
 require (
@@ -21,5 +21,5 @@ require (
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.6 // indirect
-	golang.org/x/sync v0.22.0 // indirect
+	golang.org/x/sync v0.23.0 // indirect
 )

@@ -112,10 +112,14 @@ must ship with matching redaction tests before its recordings are accepted.
 Refresh only when model sources or overrides change:
 
 ```sh
-make models MODEL_ARGS='--generated-at 2026-08-27T00:50:40.624Z --capture-dir scripts/model-sources/2026-08-26'
+make models
 pnpm --dir scripts test
-make check-models-reproducible
+make check-models-json
 ```
+
+The default CI gate checks that `models.json` is valid JSON; it does not
+require matching captured source files or dates. `check-models-reproducible`
+is an optional audit for snapshots with matching captured sources.
 
 The script validates the models.dev object-map and OpenRouter `data[]`
 sources, provider presence and minimum counts, positive limits, nonnegative

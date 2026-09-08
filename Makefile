@@ -12,7 +12,7 @@ PATCH_BASE ?= HEAD
 .PHONY: build test e2e-test models check check-go-version \
 	check-release-go-version check-format check-mod-tidy check-patch \
 	check-build check-vet check-lint check-test check-snapshots \
-	check-models-reproducible check-live \
+	check-models-json check-models-reproducible check-live \
 	check-coverage check-vulnerabilities check-fuzz
 
 build:
@@ -33,7 +33,7 @@ models:
 # check is the complete credential-free, network-dependent CI gate.
 check: check-go-version check-format check-mod-tidy check-patch \
 	check-build check-vet check-lint check-test check-snapshots check-live \
-	check-models-reproducible check-coverage check-vulnerabilities check-fuzz
+	check-models-json check-coverage check-vulnerabilities check-fuzz
 
 check-go-version:
 	./scripts/check-go-version.sh "$(GO)" "$(GO_MIN_VERSION)"
@@ -67,6 +67,10 @@ check-snapshots:
 	$(PNPM) --dir scripts install --frozen-lockfile
 	$(PNPM) --dir scripts test
 
+check-models-json:
+	node -e 'JSON.parse(require("node:fs").readFileSync("models.json", "utf8"))'
+
+# Optional audit against captured sources; normal model refreshes need only valid JSON.
 check-models-reproducible:
 	$(PNPM) --dir scripts install --frozen-lockfile
 	$(PNPM) --dir scripts run snapshot-models-table \
