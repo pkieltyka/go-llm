@@ -450,13 +450,7 @@ func cloneModels(models []llm.ModelInfo) []llm.ModelInfo {
 		out[i] = model
 		out[i].Raw = cloneJSONLike(model.Raw)
 		if model.Pricing != nil {
-			pricing := *model.Pricing
-			if model.Pricing.Availability != nil {
-				availability := *model.Pricing.Availability
-				pricing.Availability = &availability
-			}
-			pricing.Tiers = append([]llm.ModelPricingTier(nil), model.Pricing.Tiers...)
-			out[i].Pricing = &pricing
+			out[i].Pricing = model.Pricing.Clone()
 		}
 		if model.SupportedEfforts != nil {
 			out[i].SupportedEfforts = append(make([]llm.Effort, 0, len(model.SupportedEfforts)), model.SupportedEfforts...)

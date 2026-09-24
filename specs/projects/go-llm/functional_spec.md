@@ -640,9 +640,11 @@ Cost sourcing:
    (per provider/model: USD per MTok input/output/cache-read/cache-write).
    Pricing may include ascending input-occupancy tiers. The highest threshold
    strictly exceeded by `InputTokens + CacheReadTokens + CacheWriteTokens`
-   supplies all rates for the entire request; exact equality stays on the
-   lower tier. Invalid caller-supplied tiers are ignored. Native cost always
-   wins.
+   supplies the rates for the entire request; exact equality stays on the
+   lower tier. The snapshot fills a rate missing from a tier with the base
+   rate; a rate absent from both stays unknown rather than reading as free.
+   At estimation time a selected tier never falls back to base rates.
+   Invalid caller-supplied tiers are ignored. Native cost always wins.
    The shipped table is a **trimmed JSON snapshot of the
    community-maintained models.dev database** plus a hand-maintained
    overrides file, refreshed by a dev-time script, embedded via `go:embed`,
@@ -687,8 +689,10 @@ unified effort values.
 distinguishes an explicit zero/free input, output, cache-read, or cache-write
 rate from an unavailable component. A nil availability value preserves the
 legacy `ModelPricing` interpretation for callers constructing values directly.
-Cost estimation remains unknown when usage consumes an unavailable component;
-a complete request-wide tier remains independently estimable.
+Cost estimation remains unknown when usage consumes an unavailable component.
+`ModelPricingTier.Availability` follows the same contract for a selected
+request-wide tier (nil means all four tier rates are known), so a tier is
+estimable whenever the usage avoids its unavailable components.
 `ReasoningRequired == false` means false or unknown. These per-model fields
 never reject or rewrite a request; provider-wide `Capabilities()` remains the
 sole request-preflight authority, and `Request.Effort` is forwarded unchanged.

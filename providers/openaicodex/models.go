@@ -382,7 +382,7 @@ func enrichCodexModel(model llm.ModelInfo, p *Provider) llm.ModelInfo {
 	if p != nil && p.priceTable != nil {
 		model.Pricing = priceForModel(p.priceTable, model.ID)
 	} else {
-		model.Pricing = cloneModelPricing(fallback.Pricing)
+		model.Pricing = fallback.Pricing.Clone()
 	}
 	return model
 }
@@ -394,7 +394,7 @@ func cloneCodexModels(models []llm.ModelInfo) []llm.ModelInfo {
 	cloned := make([]llm.ModelInfo, len(models))
 	for i, model := range models {
 		cloned[i] = model
-		cloned[i].Pricing = cloneModelPricing(model.Pricing)
+		cloned[i].Pricing = model.Pricing.Clone()
 		cloned[i].SupportedEfforts = cloneCodexEfforts(model.SupportedEfforts)
 		cloned[i].Capabilities = append([]llm.Capability(nil), model.Capabilities...)
 		switch raw := model.Raw.(type) {
@@ -405,19 +405,6 @@ func cloneCodexModels(models []llm.ModelInfo) []llm.ModelInfo {
 		}
 	}
 	return cloned
-}
-
-func cloneModelPricing(pricing *llm.ModelPricing) *llm.ModelPricing {
-	if pricing == nil {
-		return nil
-	}
-	cloned := *pricing
-	if pricing.Availability != nil {
-		availability := *pricing.Availability
-		cloned.Availability = &availability
-	}
-	cloned.Tiers = append([]llm.ModelPricingTier(nil), pricing.Tiers...)
-	return &cloned
 }
 
 func cloneCodexEfforts(efforts []llm.Effort) []llm.Effort {

@@ -182,18 +182,27 @@ test("effort overrides replace derivation and unknown effort values fail", async
   );
 });
 
-test("context tiers require complete inherited rates and override tiers replace as a unit", async () => {
+test("context tiers inherit base rates, leave unpublished rates absent, and override tiers replace as a unit", async () => {
   const modelsDev = structuredClone(await fixture("models-dev.json")) as any;
   const openRouter = await fixture("openrouter-models.json");
   const model = modelsDev.anthropic.models["claude-fixture"];
   model.cost.tiers = [{ input: 6, output: 30, tier: { type: "context", size: 100_000 } }];
   delete model.cost.cache_write;
 
-  assert.throws(
-    () =>
-      buildSnapshot(modelsDev, openRouter, { models: [] }, { generatedAt: "2026-08-05T00:00:00Z", minimums: fixtureMinimums }),
-    /anthropic\/claude-fixture pricing tier 100000 has no cache_write_per_mtok/,
-  );
+  const unpublished = buildSnapshot(modelsDev, openRouter, { models: [] }, {
+    generatedAt: "2026-08-05T00:00:00Z",
+    minimums: fixtureMinimums,
+  });
+  const row = unpublished.models.find((entry) => entry.provider === "anthropic" && entry.id === "claude-fixture");
+  assert.equal(row?.pricing?.cache_write_per_mtok, undefined);
+  assert.deepEqual(row?.pricing?.tiers, [
+    {
+      input_tokens_above: 100_000,
+      input_per_mtok: 6,
+      output_per_mtok: 30,
+      cache_read_per_mtok: model.cost.cache_read,
+    },
+  ]);
 
   const overrides = {
     models: [
@@ -421,6 +430,25 @@ test("file-backed destructive checks preserve pricing tiers", async (t) => {
   for (const row of stripped.models) delete row.pricing?.tiers;
   await assert.rejects(() => persistSnapshot(output, stripped), /lost pricing.tiers for 4\/4/);
   assert.deepEqual(JSON.parse(await readFile(output, "utf8")), previous);
+});
+
+test("file-backed snapshots reread tiers that omit unpublished rates", async (t) => {
+  const directory = await mkdtemp(resolve(tmpdir(), "go-llm-partial-tiers-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const output = resolve(directory, "models.json");
+  const partial = snapshotDocument("2026-07-10T00:00:00Z", [
+    {
+      provider: "openrouter",
+      id: "x-ai/grok-fixture",
+      pricing: {
+        input_per_mtok: 1,
+        tiers: [{ input_tokens_above: 200_000, input_per_mtok: 2, output_per_mtok: 3, cache_read_per_mtok: 0.5 }],
+      },
+    },
+  ]);
+  await persistSnapshot(output, partial);
+  await persistSnapshot(output, structuredClone(partial));
+  assert.deepEqual(JSON.parse(await readFile(output, "utf8")), partial);
 });
 
 test("remote JSON reads are bounded, timed out, and parsed after a complete read", async () => {

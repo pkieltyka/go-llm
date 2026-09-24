@@ -113,8 +113,7 @@ func priceForModel(table llm.PriceTable, model string) *llm.ModelPricing {
 	if !ok {
 		return nil
 	}
-	pricing.Tiers = append([]llm.ModelPricingTier(nil), pricing.Tiers...)
-	return &pricing
+	return pricing.Clone()
 }
 
 // Chat performs a blocking Codex Responses request.
