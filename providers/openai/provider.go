@@ -79,13 +79,7 @@ func (p *Provider) Models(ctx context.Context) ([]llm.ModelInfo, error) {
 			info.ContextWindow = embedded.ContextWindow
 			info.MaxOutputTokens = embedded.MaxOutputTokens
 			if embedded.Pricing != nil {
-				pricing := *embedded.Pricing
-				if embedded.Pricing.Availability != nil {
-					availability := *embedded.Pricing.Availability
-					pricing.Availability = &availability
-				}
-				pricing.Tiers = append([]llm.ModelPricingTier(nil), embedded.Pricing.Tiers...)
-				info.Pricing = &pricing
+				info.Pricing = embedded.Pricing.Clone()
 			}
 			info.SupportedEfforts = embedded.SupportedEfforts
 		}

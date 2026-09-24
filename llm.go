@@ -62,10 +62,14 @@ type ModelPricingTier struct {
 	OutputPerMTok     float64 `json:"output_per_mtok"`
 	CacheReadPerMTok  float64 `json:"cache_read_per_mtok"`
 	CacheWritePerMTok float64 `json:"cache_write_per_mtok"`
+	// Availability records which tier rates are known. Nil means all four
+	// rates are known; a non-nil value is authoritative, so an unavailable
+	// tier rate stays unknown rather than falling back to the base rate.
+	Availability *ModelPricingAvailability `json:"availability,omitempty"`
 }
 
 // ModelPricing stores per-million-token prices in USD. Tiers, when present,
-// apply one complete rate set to the entire request based on prompt occupancy.
+// apply one rate set to the entire request based on prompt occupancy.
 type ModelPricing struct {
 	InputPerMTok      float64            `json:"input_per_mtok"`
 	OutputPerMTok     float64            `json:"output_per_mtok"`
@@ -86,6 +90,31 @@ type ModelPricingAvailability struct {
 	OutputPerMTok     bool `json:"output_per_mtok,omitempty"`
 	CacheReadPerMTok  bool `json:"cache_read_per_mtok,omitempty"`
 	CacheWritePerMTok bool `json:"cache_write_per_mtok,omitempty"`
+}
+
+// Clone returns a deep copy of p, or nil when p is nil.
+func (p *ModelPricing) Clone() *ModelPricing {
+	if p == nil {
+		return nil
+	}
+	cloned := *p
+	cloned.Availability = cloneAvailability(p.Availability)
+	if p.Tiers != nil {
+		cloned.Tiers = make([]ModelPricingTier, len(p.Tiers))
+		for i, tier := range p.Tiers {
+			tier.Availability = cloneAvailability(tier.Availability)
+			cloned.Tiers[i] = tier
+		}
+	}
+	return &cloned
+}
+
+func cloneAvailability(availability *ModelPricingAvailability) *ModelPricingAvailability {
+	if availability == nil {
+		return nil
+	}
+	cloned := *availability
+	return &cloned
 }
 
 // HasInputPrice reports whether InputPerMTok is known, including when it is

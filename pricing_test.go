@@ -114,6 +114,34 @@ func TestEstimateCostHonorsComponentAvailability(t *testing.T) {
 	}
 }
 
+func TestEstimateCostHonorsTierAvailability(t *testing.T) {
+	pricing := llm.ModelPricing{
+		InputPerMTok: 1, OutputPerMTok: 2, CacheReadPerMTok: 0.5, CacheWritePerMTok: 1.25,
+		Tiers: []llm.ModelPricingTier{{
+			InputTokensAbove: 100, InputPerMTok: 2, OutputPerMTok: 4, CacheReadPerMTok: 1,
+			// The unavailable rate is neither used nor validated.
+			CacheWritePerMTok: math.NaN(),
+			Availability:      &llm.ModelPricingAvailability{InputPerMTok: true, OutputPerMTok: true, CacheReadPerMTok: true},
+		}},
+	}
+
+	covered := llm.EstimateCost(llm.Usage{InputTokens: 200, OutputTokens: 100}, pricing)
+	if covered.CostUSD == nil || *covered.CostUSD != 0.0008 {
+		t.Fatalf("tier cost = %v, want 0.0008", covered.CostUSD)
+	}
+
+	// An unavailable tier rate stays unknown instead of inheriting the base rate.
+	unknown := llm.EstimateCost(llm.Usage{InputTokens: 200, CacheWriteTokens: 10}, pricing)
+	if unknown.CostUSD != nil || unknown.CostSource != "" {
+		t.Fatalf("unavailable tier rate produced estimate: %+v", unknown)
+	}
+
+	base := llm.EstimateCost(llm.Usage{InputTokens: 50, CacheWriteTokens: 10}, pricing)
+	if base.CostUSD == nil || *base.CostUSD != 0.0000625 {
+		t.Fatalf("base cost = %v, want 0.0000625", base.CostUSD)
+	}
+}
+
 func TestEstimateCostIgnoresInvalidCallerPricingTiers(t *testing.T) {
 	pricing := llm.ModelPricing{
 		InputPerMTok: 1,

@@ -446,13 +446,19 @@ function rowsFromOverrides(input: unknown): ModelRow[] {
       display_name: optionalString(record, "display_name", label),
       context_window: optionalPositiveNumber(record, ["context_window"], label),
       max_output_tokens: optionalPositiveNumber(record, ["max_output_tokens"], label),
-      pricing: pricingFromRecord(pricing, label),
+      pricing: pricingFromRecord(pricing, label, true),
       supported_efforts: optionalEffortList(record, "supported_efforts", label),
     });
   });
 }
 
-function pricingFromRecord(record: JSONRecord | undefined, label: string): Pricing | undefined {
+// Curated override tiers must supply every rate; snapshot tiers may omit a
+// rate the source never published.
+function pricingFromRecord(
+  record: JSONRecord | undefined,
+  label: string,
+  requireCompleteTiers: boolean,
+): Pricing | undefined {
   if (!record) return undefined;
   const pricing = compactPricing({
     input_per_mtok: optionalNonNegativeNumber(record, ["input_per_mtok", "input", "prompt"], `${label}.cost`),
@@ -467,7 +473,7 @@ function pricingFromRecord(record: JSONRecord | undefined, label: string): Prici
       ["cache_write_per_mtok", "cache_write", "input_cache_write"],
       `${label}.cost`,
     ),
-    tiers: overridePricingTiers(record, `${label}.pricing`),
+    tiers: recordPricingTiers(record, `${label}.pricing`, requireCompleteTiers),
   });
   return pricing;
 }
@@ -524,7 +530,11 @@ function upstreamContextPricingTiers(record: JSONRecord, label: string): Pricing
   return tiers.length === 0 ? undefined : tiers;
 }
 
-function overridePricingTiers(record: JSONRecord, label: string): PricingTier[] | undefined {
+function recordPricingTiers(
+  record: JSONRecord,
+  label: string,
+  requireComplete: boolean,
+): PricingTier[] | undefined {
   const value = record.tiers;
   if (value === undefined) return undefined;
   if (!Array.isArray(value) || value.length === 0) {
@@ -540,7 +550,10 @@ function overridePricingTiers(record: JSONRecord, label: string): PricingTier[] 
     const tier: PricingTier = { input_tokens_above: threshold };
     for (const name of pricingRateNames) {
       const rate = optionalNonNegativeNumber(source, [name], tierLabel);
-      if (rate === undefined) throw new Error(`${tierLabel}.${name} is required`);
+      if (rate === undefined) {
+        if (requireComplete) throw new Error(`${tierLabel}.${name} is required`);
+        continue;
+      }
       tier[name] = rate;
     }
     return tier;
@@ -613,15 +626,14 @@ function finalizePricing(row: ModelRow): ModelRow {
   const base = row.pricing;
   const tiers = base.tiers
     .map((tier) => {
-      const complete: PricingTier = { input_tokens_above: tier.input_tokens_above };
+      const resolved: PricingTier = { input_tokens_above: tier.input_tokens_above };
+      // A rate absent from both the tier and the base stays absent, so the
+      // library treats it as unknown rather than free.
       for (const name of pricingRateNames) {
         const value = tier[name] ?? base[name];
-        if (value === undefined) {
-          throw new Error(`${key(row)} pricing tier ${tier.input_tokens_above} has no ${name} in the tier or base pricing`);
-        }
-        complete[name] = value;
+        if (value !== undefined) resolved[name] = value;
       }
-      return complete;
+      return resolved;
     })
     .sort((a, b) => a.input_tokens_above - b.input_tokens_above);
   for (let index = 0; index < tiers.length; index++) {
@@ -634,7 +646,7 @@ function finalizePricing(row: ModelRow): ModelRow {
     }
     for (const name of pricingRateNames) {
       const value = tier[name];
-      if (value === undefined || !Number.isFinite(value) || value < 0) {
+      if (value !== undefined && (!Number.isFinite(value) || value < 0)) {
         throw new Error(`${key(row)} pricing tier ${tier.input_tokens_above} ${name} must be finite and non-negative`);
       }
     }
@@ -905,7 +917,7 @@ async function readSnapshot(path: string): Promise<SnapshotDocument | undefined>
       display_name: optionalString(record, "display_name", label),
       context_window: optionalPositiveNumber(record, ["context_window"], label),
       max_output_tokens: optionalPositiveNumber(record, ["max_output_tokens"], label),
-      pricing: pricingFromRecord(pricing, label),
+      pricing: pricingFromRecord(pricing, label, false),
       supported_efforts: optionalEffortList(record, "supported_efforts", label),
     });
   });

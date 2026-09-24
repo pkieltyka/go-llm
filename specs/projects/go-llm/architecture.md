@@ -1030,17 +1030,22 @@ boundary) so the taxonomy can't drift between code paths.
   and provider-qualified `CanonicalID` indirection (an aggregator model with a
   known canonical ID such as `"anthropic/claude-sonnet-4-5"` falls back to the
   canonical entry's pricing).
-- `ModelPricing.Tiers` stores complete request-wide rates. Cost selection
+- `ModelPricing.Tiers` stores request-wide rates. Cost selection
   scans for the highest valid input-occupancy threshold strictly exceeded by
   input + cache-read + cache-write tokens; exact equality uses the lower
-  tier. Tier slices are deep-copied with catalog/model values.
+  tier. A tier's `Availability` (nil = all four known) replaces the base
+  availability when selected, so an unpublished tier rate stays unknown and
+  unavailable rates are neither validated nor summed. The snapshot script
+  fills tier gaps from the base rates and omits a rate absent from both.
+  `ModelPricing.Clone` deep-copies tiers and availability for catalog/model
+  values.
 - Live OpenRouter catalog pricing decodes input, output, cache-read, and
   cache-write independently. `ModelPricing.Availability` preserves explicit
   zero as known/free and marks missing, null, malformed, non-numeric,
   negative/dynamic, overflowing, or non-finite values unknown without losing
   valid sibling rates or the copied raw catalog row. Estimation returns no
-  cost when a nonzero usage component has no known rate; a selected complete
-  request-wide tier supplies all four rates.
+  cost when a nonzero usage component has no known rate, including a rate
+  the selected request-wide tier leaves unavailable.
 - **Model table = embedded JSON snapshot** (`models.json`), refreshed by
   `make models` through `scripts/snapshot-models-table.ts` (tsx; dev-time only):
   validates the models.dev provider object maps and OpenRouter `data[]`,
