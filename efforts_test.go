@@ -10,8 +10,6 @@ import (
 func TestSupportedEffortsForModel(t *testing.T) {
 	gpt5 := []llm.Effort{llm.EffortMinimal, llm.EffortLow, llm.EffortMedium, llm.EffortHigh}
 	trio := []llm.Effort{llm.EffortLow, llm.EffortMedium, llm.EffortHigh}
-	full := []llm.Effort{llm.EffortNone, llm.EffortMinimal, llm.EffortLow, llm.EffortMedium, llm.EffortHigh, llm.EffortXHigh, llm.EffortMax}
-	aggregator := []llm.Effort{llm.EffortNone, llm.EffortLow, llm.EffortMedium, llm.EffortHigh, llm.EffortXHigh, llm.EffortMax}
 
 	cases := []struct {
 		name     string
@@ -19,16 +17,11 @@ func TestSupportedEffortsForModel(t *testing.T) {
 		modelID  string
 		want     []llm.Effort
 	}{
-		{"curated gpt-5.6", "openai", "gpt-5.6", gpt5},
-		{"curated dated snapshot via prefix", "openai", "gpt-5.6-sol-2026-07-09", gpt5},
-		{"curated codex id", "openai", "gpt-5.1-codex-max", trio},
-		{"curated o-series", "openai", "o4-mini", trio},
-		{"curated anthropic full dial", "anthropic", "claude-sonnet-4-5", full},
-		{"aggregator source metadata", "openrouter", "openai/gpt-5.6-luna", aggregator},
+		{"inferred codex id absent from table", "openai", "gpt-5.1-codex-max", trio},
 		{"inferred o-series absent from table", "openai", "o3-ultra", trio},
 		{"inferred with vendor slash prefix", "somegateway", "openai/o4-mega", trio},
 		{"inferred with provider colon prefix", "somegateway", "openai:gpt-5.9", gpt5},
-		{"catalogued chat variant stays uncurated", "openai", "gpt-5-chat-latest", nil},
+		{"catalogued chat variant stays unknown", "openai", "gpt-5-chat-latest", nil},
 		{"chat variants never inferred", "openai", "gpt-6-chat-latest", nil},
 		{"unrecognized model", "somegateway", "mystery-model", nil},
 	}
@@ -37,6 +30,32 @@ func TestSupportedEffortsForModel(t *testing.T) {
 			got := llm.SupportedEffortsForModel(tc.provider, tc.modelID)
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("SupportedEffortsForModel(%q, %q) = %v, want %v", tc.provider, tc.modelID, got, tc.want)
+			}
+		})
+	}
+}
+
+// Table-backed cases compare against the embedded table rather than literal
+// ladders, so an upstream models.dev change does not break the test.
+func TestSupportedEffortsForModelPrefersEmbeddedTable(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		provider, modelID string
+		tableModelID      string
+	}{
+		{"openai row", "openai", "gpt-5.6", "gpt-5.6"},
+		{"dated snapshot via prefix", "openai", "gpt-5.6-sol-2026-07-09", "gpt-5.6-sol"},
+		{"anthropic row", "anthropic", "claude-sonnet-5", "claude-sonnet-5"},
+		{"aggregator row", "openrouter", "openai/gpt-5.6-luna", "openai/gpt-5.6-luna"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			info, ok := llm.LookupModelInfo(tc.provider, tc.tableModelID)
+			if !ok || len(info.SupportedEfforts) == 0 {
+				t.Fatalf("embedded table has no efforts for %s/%s", tc.provider, tc.tableModelID)
+			}
+			got := llm.SupportedEffortsForModel(tc.provider, tc.modelID)
+			if !reflect.DeepEqual(got, info.SupportedEfforts) {
+				t.Fatalf("SupportedEffortsForModel(%q, %q) = %v, want table value %v", tc.provider, tc.modelID, got, info.SupportedEfforts)
 			}
 		})
 	}

@@ -3,8 +3,8 @@ package llm
 import "strings"
 
 // SupportedEffortsForModel returns the reasoning Effort levels a model
-// supports, ordered weakest → strongest: curated embedded-table metadata
-// first (including canonical-ID fallback for aggregator aliases), then
+// supports, ordered weakest → strongest: embedded-table metadata from
+// models.dev first (including canonical-ID fallback for aggregator aliases), then
 // name-family inference for models absent from the table. Unrecognized
 // models return nil. The metadata is ADVISORY — request forwarding and
 // server-side validation are unchanged (some gateways ignore an unsupported
@@ -39,7 +39,7 @@ func modelFamilyName(modelID string) string {
 }
 
 // inferredEffortsForFamily maps model-name families to effort levels for
-// models absent from the embedded table. Curated table metadata always wins
+// models absent from the embedded table. Table metadata always wins
 // over inference; keep this list to well-known reasoning families.
 func inferredEffortsForFamily(family string) []Effort {
 	switch {
