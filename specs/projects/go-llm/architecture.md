@@ -1052,7 +1052,7 @@ boundary) so the taxonomy can't drift between code paths.
   trims them to Anthropic, OpenAI, and OpenRouter fields consumed by the
   library, omits invalid limit/pricing sentinels, applies
   `scripts/overrides.json` (kept empty; upstream gaps stay unknown and
-  corrections go to models.dev), and deterministically writes a versioned snapshot
+  corrections go upstream to models.dev or OpenRouter), and deterministically writes a versioned snapshot
   with a controllable `generated_at` plus ordered source IDs, URLs, and SHA-256
   content digests. Exact remote response bytes are retained as deterministic
   gzip files; the reproducibility gate replays them, verifies their digests,

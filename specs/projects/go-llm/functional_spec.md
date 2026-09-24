@@ -650,7 +650,7 @@ Cost sourcing:
    refreshed by a dev-time script, embedded via `go:embed`,
    parsed lazily on first use, and stamped with a generation date. Upstream
    data is not hand-curated: a gap stays unknown and a wrong value is fixed
-   in models.dev. The overrides file is kept empty as an emergency escape
+   upstream (models.dev or OpenRouter). The overrides file is kept empty as an emergency escape
    hatch. The
    embedded-table API never fetches model data at runtime. Explicit provider
    `Models(ctx)` calls may use that provider's remote model endpoint.
