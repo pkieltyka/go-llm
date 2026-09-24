@@ -82,8 +82,8 @@ type ModelPricing struct {
 	Availability *ModelPricingAvailability `json:"availability,omitempty"`
 }
 
-// ModelPricingAvailability records which independently optional base rates a
-// provider reported as valid. A non-nil value is authoritative for all four
+// ModelPricingAvailability records which independently optional base or tier
+// rates a provider reported as valid. A non-nil value is authoritative for all four
 // components, including explicit zero/free rates.
 type ModelPricingAvailability struct {
 	InputPerMTok      bool `json:"input_per_mtok,omitempty"`

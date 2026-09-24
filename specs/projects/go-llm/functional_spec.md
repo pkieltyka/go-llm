@@ -640,10 +640,11 @@ Cost sourcing:
    (per provider/model: USD per MTok input/output/cache-read/cache-write).
    Pricing may include ascending input-occupancy tiers. The highest threshold
    strictly exceeded by `InputTokens + CacheReadTokens + CacheWriteTokens`
-   supplies all rates for the entire request; exact equality stays on the
-   lower tier. A tier rate the source does not publish stays unknown rather
-   than inheriting the base rate or reading as free. Invalid caller-supplied
-   tiers are ignored. Native cost always wins.
+   supplies the rates for the entire request; exact equality stays on the
+   lower tier. The snapshot fills a rate missing from a tier with the base
+   rate; a rate absent from both stays unknown rather than reading as free.
+   At estimation time a selected tier never falls back to base rates.
+   Invalid caller-supplied tiers are ignored. Native cost always wins.
    The shipped table is a **trimmed JSON snapshot of the
    community-maintained models.dev database** plus a hand-maintained
    overrides file, refreshed by a dev-time script, embedded via `go:embed`,
