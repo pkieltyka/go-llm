@@ -687,7 +687,12 @@ pricing/capability lookup and same-model handoff across providers),
 and per-model `Capabilities` where the provider reports them.
 For `SupportedEfforts`, nil means the ladder was omitted or is unknown; a
 non-nil empty slice means the provider supplied a ladder containing no known
-unified effort values.
+unified effort values. The ladder lists the unified values the upstream source
+advertises for the model; it is not the set go-llm can map, since §9
+nearest-level mapping accepts every `Effort` (e.g. Anthropic rows list native
+levels such as `low..max` while `EffortNone` still disables thinking).
+`llm.SupportedEffortsForModel` reads the embedded table only; a model without
+upstream effort metadata returns nil, and no ladder is inferred from its name.
 `ModelPricing.Availability`, when non-nil, is authoritative per component and
 distinguishes an explicit zero/free input, output, cache-read, or cache-write
 rate from an unavailable component. A nil availability value preserves the

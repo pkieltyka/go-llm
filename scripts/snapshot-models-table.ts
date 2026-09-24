@@ -718,8 +718,9 @@ function requiredString(record: JSONRecord, name: string, label: string): string
   return value;
 }
 
-// Ordered weakest → strongest; mirrors go-llm's Effort constants. Curated
-// supported_efforts lists must use these values in ascending order.
+// Ordered weakest → strongest; mirrors go-llm's Effort constants. Upstream
+// effort values must be on this scale, and supported_efforts lists read from
+// overrides or a snapshot must use it in ascending order.
 const effortScale = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
 function optionalEffortList(record: JSONRecord, name: string, label: string): string[] | undefined {
