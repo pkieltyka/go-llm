@@ -646,9 +646,12 @@ Cost sourcing:
    At estimation time a selected tier never falls back to base rates.
    Invalid caller-supplied tiers are ignored. Native cost always wins.
    The shipped table is a **trimmed JSON snapshot of the
-   community-maintained models.dev database** plus a hand-maintained
-   overrides file, refreshed by a dev-time script, embedded via `go:embed`,
-   parsed lazily on first use, and stamped with a generation date. The
+   community-maintained models.dev database** and OpenRouter's catalog,
+   refreshed by a dev-time script, embedded via `go:embed`,
+   parsed lazily on first use, and stamped with a generation date. Upstream
+   data is not hand-curated: a gap stays unknown and a wrong value is fixed
+   upstream (models.dev or OpenRouter). The overrides file is kept empty as an emergency escape
+   hatch. The
    embedded-table API never fetches model data at runtime. Explicit provider
    `Models(ctx)` calls may use that provider's remote model endpoint.
    Estimates are marked as estimates via `Usage.CostSource`. No table entry →
@@ -684,7 +687,12 @@ pricing/capability lookup and same-model handoff across providers),
 and per-model `Capabilities` where the provider reports them.
 For `SupportedEfforts`, nil means the ladder was omitted or is unknown; a
 non-nil empty slice means the provider supplied a ladder containing no known
-unified effort values.
+unified effort values. The ladder lists the unified values the upstream source
+advertises for the model; it is not the set go-llm can map, since §9
+nearest-level mapping accepts every `Effort` (e.g. Anthropic rows list native
+levels such as `low..max` while `EffortNone` still disables thinking).
+`llm.SupportedEffortsForModel` reads the embedded table only; a model without
+upstream effort metadata returns nil, and no ladder is inferred from its name.
 `ModelPricing.Availability`, when non-nil, is authoritative per component and
 distinguishes an explicit zero/free input, output, cache-read, or cache-write
 rate from an unavailable component. A nil availability value preserves the

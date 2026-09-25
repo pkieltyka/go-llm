@@ -1,22 +1,22 @@
 {
   "schema_version": 1,
   "generator": "go-llm-model-snapshot/v1",
-  "generated_at": "2026-09-24T16:34:55.778Z",
+  "generated_at": "2026-09-24T19:38:50.205Z",
   "sources": [
     {
       "id": "models.dev",
       "url": "https://models.dev/api.json",
-      "sha256": "d17b3ba56a63c5bbc1930d741714de59df6bf1962f3d2f2e2a956df9221bcda6"
+      "sha256": "b7c9abe51ca90629c6cdb9804ca536e86a1bedf2dcf1cd8c362d24ffe609a10f"
     },
     {
       "id": "openrouter",
       "url": "https://openrouter.ai/api/v1/models",
-      "sha256": "485a19e91940901b8af18b0af338fc8899d3cd7fae2d87723005e044e671b6b1"
+      "sha256": "7fce79f31cca82da689a69dfa9a1ce3e02376d633e88607af8a7adc9f0f60c89"
     },
     {
       "id": "overrides",
       "url": "file:scripts/overrides.json",
-      "sha256": "a53dc7890d1008dfd067ec3809f0d3c81fcc10bd66334b8c410fc614513a359c"
+      "sha256": "c8cdda2058dfad73596cb9baef30bb2a825485859ad54c8d9cf5a10a457b0c8c"
     }
   ],
   "models": [
@@ -33,8 +33,6 @@
         "cache_write_per_mtok": 12.5
       },
       "supported_efforts": [
-        "none",
-        "minimal",
         "low",
         "medium",
         "high",
@@ -73,16 +71,7 @@
         "output_per_mtok": 5,
         "cache_read_per_mtok": 0.1,
         "cache_write_per_mtok": 1.25
-      },
-      "supported_efforts": [
-        "none",
-        "minimal",
-        "low",
-        "medium",
-        "high",
-        "xhigh",
-        "max"
-      ]
+      }
     },
     {
       "provider": "anthropic",
@@ -95,42 +84,7 @@
         "output_per_mtok": 5,
         "cache_read_per_mtok": 0.1,
         "cache_write_per_mtok": 1.25
-      },
-      "supported_efforts": [
-        "none",
-        "minimal",
-        "low",
-        "medium",
-        "high",
-        "xhigh",
-        "max"
-      ]
-    },
-    {
-      "provider": "anthropic",
-      "id": "claude-opus-4-1",
-      "supported_efforts": [
-        "none",
-        "minimal",
-        "low",
-        "medium",
-        "high",
-        "xhigh",
-        "max"
-      ]
-    },
-    {
-      "provider": "anthropic",
-      "id": "claude-opus-4-1-20250805",
-      "supported_efforts": [
-        "none",
-        "minimal",
-        "low",
-        "medium",
-        "high",
-        "xhigh",
-        "max"
-      ]
+      }
     },
     {
       "provider": "anthropic",
@@ -145,13 +99,9 @@
         "cache_write_per_mtok": 6.25
       },
       "supported_efforts": [
-        "none",
-        "minimal",
         "low",
         "medium",
-        "high",
-        "xhigh",
-        "max"
+        "high"
       ]
     },
     {
@@ -167,13 +117,9 @@
         "cache_write_per_mtok": 6.25
       },
       "supported_efforts": [
-        "none",
-        "minimal",
         "low",
         "medium",
-        "high",
-        "xhigh",
-        "max"
+        "high"
       ]
     },
     {
@@ -189,12 +135,9 @@
         "cache_write_per_mtok": 6.25
       },
       "supported_efforts": [
-        "none",
-        "minimal",
         "low",
         "medium",
         "high",
-        "xhigh",
         "max"
       ]
     },
@@ -211,8 +154,6 @@
         "cache_write_per_mtok": 6.25
       },
       "supported_efforts": [
-        "none",
-        "minimal",
         "low",
         "medium",
         "high",
@@ -233,8 +174,6 @@
         "cache_write_per_mtok": 6.25
       },
       "supported_efforts": [
-        "none",
-        "minimal",
         "low",
         "medium",
         "high",
@@ -293,16 +232,7 @@
         "output_per_mtok": 15,
         "cache_read_per_mtok": 0.3,
         "cache_write_per_mtok": 3.75
-      },
-      "supported_efforts": [
-        "none",
-        "minimal",
-        "low",
-        "medium",
-        "high",
-        "xhigh",
-        "max"
-      ]
+      }
     },
     {
       "provider": "anthropic",
@@ -315,16 +245,7 @@
         "output_per_mtok": 15,
         "cache_read_per_mtok": 0.3,
         "cache_write_per_mtok": 3.75
-      },
-      "supported_efforts": [
-        "none",
-        "minimal",
-        "low",
-        "medium",
-        "high",
-        "xhigh",
-        "max"
-      ]
+      }
     },
     {
       "provider": "anthropic",
@@ -339,12 +260,9 @@
         "cache_write_per_mtok": 3.75
       },
       "supported_efforts": [
-        "none",
-        "minimal",
         "low",
         "medium",
         "high",
-        "xhigh",
         "max"
       ]
     },
@@ -361,8 +279,6 @@
         "cache_write_per_mtok": 2.5
       },
       "supported_efforts": [
-        "none",
-        "minimal",
         "low",
         "medium",
         "high",
@@ -524,15 +440,6 @@
     },
     {
       "provider": "openai",
-      "id": "gpt-5-codex",
-      "supported_efforts": [
-        "low",
-        "medium",
-        "high"
-      ]
-    },
-    {
-      "provider": "openai",
       "id": "gpt-5-mini",
       "display_name": "GPT-5 Mini",
       "context_window": 400000,
@@ -578,9 +485,6 @@
         "output_per_mtok": 120
       },
       "supported_efforts": [
-        "minimal",
-        "low",
-        "medium",
         "high"
       ]
     },
@@ -596,34 +500,7 @@
         "cache_read_per_mtok": 0.125
       },
       "supported_efforts": [
-        "minimal",
-        "low",
-        "medium",
-        "high"
-      ]
-    },
-    {
-      "provider": "openai",
-      "id": "gpt-5.1-codex",
-      "supported_efforts": [
-        "low",
-        "medium",
-        "high"
-      ]
-    },
-    {
-      "provider": "openai",
-      "id": "gpt-5.1-codex-max",
-      "supported_efforts": [
-        "low",
-        "medium",
-        "high"
-      ]
-    },
-    {
-      "provider": "openai",
-      "id": "gpt-5.1-codex-mini",
-      "supported_efforts": [
+        "none",
         "low",
         "medium",
         "high"
@@ -641,10 +518,11 @@
         "cache_read_per_mtok": 0.175
       },
       "supported_efforts": [
-        "minimal",
+        "none",
         "low",
         "medium",
-        "high"
+        "high",
+        "xhigh"
       ]
     },
     {
@@ -664,15 +542,6 @@
     },
     {
       "provider": "openai",
-      "id": "gpt-5.2-codex",
-      "supported_efforts": [
-        "low",
-        "medium",
-        "high"
-      ]
-    },
-    {
-      "provider": "openai",
       "id": "gpt-5.2-pro",
       "display_name": "GPT-5.2 Pro",
       "context_window": 400000,
@@ -682,10 +551,9 @@
         "output_per_mtok": 168
       },
       "supported_efforts": [
-        "minimal",
-        "low",
         "medium",
-        "high"
+        "high",
+        "xhigh"
       ]
     },
     {
@@ -712,9 +580,11 @@
         "cache_read_per_mtok": 0.175
       },
       "supported_efforts": [
+        "none",
         "low",
         "medium",
-        "high"
+        "high",
+        "xhigh"
       ]
     },
     {
@@ -729,9 +599,11 @@
         "cache_read_per_mtok": 0.175
       },
       "supported_efforts": [
+        "none",
         "low",
         "medium",
-        "high"
+        "high",
+        "xhigh"
       ]
     },
     {
@@ -754,10 +626,11 @@
         ]
       },
       "supported_efforts": [
-        "minimal",
+        "none",
         "low",
         "medium",
-        "high"
+        "high",
+        "xhigh"
       ]
     },
     {
@@ -772,10 +645,11 @@
         "cache_read_per_mtok": 0.075
       },
       "supported_efforts": [
-        "minimal",
+        "none",
         "low",
         "medium",
-        "high"
+        "high",
+        "xhigh"
       ]
     },
     {
@@ -790,10 +664,11 @@
         "cache_read_per_mtok": 0.02
       },
       "supported_efforts": [
-        "minimal",
+        "none",
         "low",
         "medium",
-        "high"
+        "high",
+        "xhigh"
       ]
     },
     {
@@ -814,10 +689,9 @@
         ]
       },
       "supported_efforts": [
-        "minimal",
-        "low",
         "medium",
-        "high"
+        "high",
+        "xhigh"
       ]
     },
     {
@@ -840,10 +714,11 @@
         ]
       },
       "supported_efforts": [
-        "minimal",
+        "none",
         "low",
         "medium",
-        "high"
+        "high",
+        "xhigh"
       ]
     },
     {
@@ -864,10 +739,9 @@
         ]
       },
       "supported_efforts": [
-        "minimal",
-        "low",
         "medium",
-        "high"
+        "high",
+        "xhigh"
       ]
     },
     {
@@ -892,10 +766,12 @@
         ]
       },
       "supported_efforts": [
-        "minimal",
+        "none",
         "low",
         "medium",
-        "high"
+        "high",
+        "xhigh",
+        "max"
       ]
     },
     {
@@ -920,10 +796,12 @@
         ]
       },
       "supported_efforts": [
-        "minimal",
+        "none",
         "low",
         "medium",
-        "high"
+        "high",
+        "xhigh",
+        "max"
       ]
     },
     {
@@ -948,10 +826,12 @@
         ]
       },
       "supported_efforts": [
-        "minimal",
+        "none",
         "low",
         "medium",
-        "high"
+        "high",
+        "xhigh",
+        "max"
       ]
     },
     {
@@ -976,10 +856,12 @@
         ]
       },
       "supported_efforts": [
-        "minimal",
+        "none",
         "low",
         "medium",
-        "high"
+        "high",
+        "xhigh",
+        "max"
       ]
     },
     {
@@ -2272,9 +2154,9 @@
       "context_window": 1048576,
       "max_output_tokens": 384000,
       "pricing": {
-        "input_per_mtok": 0.08092,
-        "output_per_mtok": 0.16184,
-        "cache_read_per_mtok": 0.016184
+        "input_per_mtok": 0.07168000000000001,
+        "output_per_mtok": 0.14336000000000002,
+        "cache_read_per_mtok": 0.014336
       },
       "supported_efforts": [
         "high",
@@ -2325,9 +2207,9 @@
       "context_window": 1048576,
       "max_output_tokens": 384000,
       "pricing": {
-        "input_per_mtok": 0.90741,
-        "output_per_mtok": 1.81482,
-        "cache_read_per_mtok": 0.07561749999999999
+        "input_per_mtok": 0.88044,
+        "output_per_mtok": 1.76088,
+        "cache_read_per_mtok": 0.07337
       },
       "supported_efforts": [
         "high",
@@ -7948,11 +7830,11 @@
       "id": "z-ai/glm-5.3-flash",
       "display_name": "Z.ai: GLM 5.3 Flash",
       "context_window": 1310720,
-      "max_output_tokens": 943718,
+      "max_output_tokens": 131072,
       "pricing": {
-        "input_per_mtok": 0.15,
-        "output_per_mtok": 0.5,
-        "cache_read_per_mtok": 0.049999999999999996
+        "input_per_mtok": 0.045,
+        "output_per_mtok": 0.6,
+        "cache_read_per_mtok": 0.0285
       },
       "supported_efforts": [
         "low",
@@ -8221,8 +8103,8 @@
       "context_window": 1048576,
       "max_output_tokens": 943718,
       "pricing": {
-        "input_per_mtok": 1.4,
-        "output_per_mtok": 10.75,
+        "input_per_mtok": 1.35,
+        "output_per_mtok": 11.5,
         "cache_read_per_mtok": 0.3
       },
       "supported_efforts": [

@@ -307,6 +307,15 @@ tool_stream fixtures, `tool-choice` capability gating (FS §7),
 error-code tables, extension-part round-trip, and ZAI live e2e when a key
 is available.
 
+**Codex static fallback catalog.** `providers/openaicodex/provider.go`
+still hand-maintains a fallback model list (IDs, context windows, and
+`codexEfforts()`/`codex56Efforts()` ladders), the last curated model data
+after model metadata moved to upstream-only sources (2026-09-24, PRs
+#33/#37). Its ladders already diverge from the table's `openai/*` rows
+(e.g. low..high vs none..xhigh), though the Codex backend may legitimately
+differ from the OpenAI API. Decide whether to derive it from the embedded
+table or to exempt it explicitly in the spec.
+
 Response-cache middleware (exact-match; key = hash of provider name +
 canonically-serialized `Request` per FS §10A; replay streams via collected
 response): valuable for dev loops and resumable pipelines, near-zero hits

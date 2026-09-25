@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -137,6 +138,38 @@ func TestCloneModelInfoCopiesMutableMetadata(t *testing.T) {
 	}
 	if !original.Pricing.Tiers[0].Availability.InputPerMTok {
 		t.Fatal("cloned tier availability aliases the original")
+	}
+}
+
+func TestSupportedEffortsFromTableFixture(t *testing.T) {
+	raw := catalogJSON(
+		`{"provider":"openai","id":"synthetic-empty","supported_efforts":[]},` +
+			`{"provider":"openai","id":"synthetic-reasoner","supported_efforts":["low","high"]},` +
+			`{"provider":"openrouter","id":"openai/synthetic-reasoner","canonical_id":"openai/synthetic-reasoner"}`,
+	)
+	table, err := parseModelTable([]byte(raw))
+	if err != nil {
+		t.Fatalf("parseModelTable: %v", err)
+	}
+
+	if got := table.supportedEfforts("openai", "synthetic-empty"); got == nil || len(got) != 0 {
+		t.Fatalf("explicit empty ladder = %#v, want non-nil empty", got)
+	}
+
+	inherited := table.supportedEfforts("openrouter", "openai/synthetic-reasoner")
+	if want := []Effort{EffortLow, EffortHigh}; !slices.Equal(inherited, want) {
+		t.Fatalf("canonical-inherited ladder = %v, want %v", inherited, want)
+	}
+	inherited[0] = EffortMax
+	if again := table.supportedEfforts("openrouter", "openai/synthetic-reasoner"); again[0] != EffortLow {
+		t.Fatal("mutating an inherited ladder leaked into the table")
+	}
+	if canonical := table.supportedEfforts("openai", "synthetic-reasoner"); canonical[0] != EffortLow {
+		t.Fatal("mutating an inherited ladder leaked into the canonical row")
+	}
+
+	if got := table.supportedEfforts("openai", "synthetic-missing"); got != nil {
+		t.Fatalf("unknown model ladder = %v, want nil", got)
 	}
 }
 
