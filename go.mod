@@ -5,14 +5,15 @@ go 1.26.0
 toolchain go1.27.0
 
 require (
-	github.com/anthropics/anthropic-sdk-go v1.71.0
-	github.com/openai/openai-go/v3 v3.59.0
+	github.com/anthropics/anthropic-sdk-go v1.75.0
+	github.com/openai/openai-go/v3 v3.66.0
 	golang.org/x/sys v0.48.0
 )
 
 require (
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.6.1 // indirect
+	github.com/coder/websocket v1.8.15 // indirect
 	github.com/invopop/jsonschema v0.14.0 // indirect
 	github.com/pb33f/ordered-map/v2 v2.3.1 // indirect
 	github.com/standard-webhooks/standard-webhooks/libraries v0.0.1 // indirect
