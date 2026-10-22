@@ -1,17 +1,17 @@
 {
   "schema_version": 1,
   "generator": "go-llm-model-snapshot/v1",
-  "generated_at": "2026-10-22T12:31:15.641Z",
+  "generated_at": "2026-10-22T20:56:49.508Z",
   "sources": [
     {
       "id": "models.dev",
       "url": "https://models.dev/api.json",
-      "sha256": "fc8b216abdff5f04b96e04492da3bcdd1994681f4d140325dde293f4e94d0217"
+      "sha256": "fb43d87ae4f5d28f2467baedce982615c7ed30cd492e05ca27c0cc4cbbc6fa0b"
     },
     {
       "id": "openrouter",
       "url": "https://openrouter.ai/api/v1/models",
-      "sha256": "956196a7f876cfbd582696c5295e0f44ee1ad077c061479d0239a3bd1b9a37b1"
+      "sha256": "108fd0607d2196ee3bee21b5928de33114b7c1714874508526b5af7d478dcab3"
     },
     {
       "id": "overrides",
@@ -38,7 +38,11 @@
         "high",
         "xhigh",
         "max"
-      ]
+      ],
+      "behavior": {
+        "positional_instructions": true,
+        "positional_tools": true
+      }
     },
     {
       "provider": "anthropic",
@@ -58,7 +62,11 @@
         "high",
         "xhigh",
         "max"
-      ]
+      ],
+      "behavior": {
+        "positional_instructions": true,
+        "positional_tools": true
+      }
     },
     {
       "provider": "anthropic",
@@ -113,7 +121,11 @@
         "high",
         "xhigh",
         "max"
-      ]
+      ],
+      "behavior": {
+        "positional_instructions": true,
+        "positional_tools": true
+      }
     },
     {
       "provider": "anthropic",
@@ -208,7 +220,11 @@
         "high",
         "xhigh",
         "max"
-      ]
+      ],
+      "behavior": {
+        "positional_instructions": true,
+        "positional_tools": true
+      }
     },
     {
       "provider": "anthropic",
@@ -228,7 +244,11 @@
         "high",
         "xhigh",
         "max"
-      ]
+      ],
+      "behavior": {
+        "positional_instructions": true,
+        "positional_tools": true
+      }
     },
     {
       "provider": "anthropic",
@@ -248,7 +268,11 @@
         "high",
         "xhigh",
         "max"
-      ]
+      ],
+      "behavior": {
+        "positional_instructions": true,
+        "positional_tools": true
+      }
     },
     {
       "provider": "anthropic",
@@ -313,7 +337,10 @@
         "high",
         "xhigh",
         "max"
-      ]
+      ],
+      "behavior": {
+        "positional_instructions": true
+      }
     },
     {
       "provider": "anthropic",
@@ -333,7 +360,11 @@
         "high",
         "xhigh",
         "max"
-      ]
+      ],
+      "behavior": {
+        "positional_instructions": true,
+        "positional_tools": true
+      }
     },
     {
       "provider": "openai",
@@ -653,7 +684,11 @@
         "medium",
         "high",
         "xhigh"
-      ]
+      ],
+      "behavior": {
+        "positional_instructions": true,
+        "positional_tools": true
+      }
     },
     {
       "provider": "openai",
@@ -672,7 +707,11 @@
         "medium",
         "high",
         "xhigh"
-      ]
+      ],
+      "behavior": {
+        "positional_instructions": true,
+        "positional_tools": true
+      }
     },
     {
       "provider": "openai",
@@ -714,7 +753,11 @@
         "medium",
         "high",
         "xhigh"
-      ]
+      ],
+      "behavior": {
+        "positional_instructions": true,
+        "positional_tools": true
+      }
     },
     {
       "provider": "openai",
@@ -741,7 +784,11 @@
         "medium",
         "high",
         "xhigh"
-      ]
+      ],
+      "behavior": {
+        "positional_instructions": true,
+        "positional_tools": true
+      }
     },
     {
       "provider": "openai",
@@ -824,7 +871,11 @@
         "high",
         "xhigh",
         "max"
-      ]
+      ],
+      "behavior": {
+        "positional_instructions": true,
+        "positional_tools": true
+      }
     },
     {
       "provider": "openai",
@@ -854,7 +905,11 @@
         "high",
         "xhigh",
         "max"
-      ]
+      ],
+      "behavior": {
+        "positional_instructions": true,
+        "positional_tools": true
+      }
     },
     {
       "provider": "openai",
@@ -884,7 +939,11 @@
         "high",
         "xhigh",
         "max"
-      ]
+      ],
+      "behavior": {
+        "positional_instructions": true,
+        "positional_tools": true
+      }
     },
     {
       "provider": "openai",
@@ -913,7 +972,11 @@
         "high",
         "xhigh",
         "max"
-      ]
+      ],
+      "behavior": {
+        "positional_instructions": true,
+        "positional_tools": true
+      }
     },
     {
       "provider": "openai",
@@ -943,7 +1006,11 @@
         "high",
         "xhigh",
         "max"
-      ]
+      ],
+      "behavior": {
+        "positional_instructions": true,
+        "positional_tools": true
+      }
     },
     {
       "provider": "openai",
@@ -973,7 +1040,11 @@
         "high",
         "xhigh",
         "max"
-      ]
+      ],
+      "behavior": {
+        "positional_instructions": true,
+        "positional_tools": true
+      }
     },
     {
       "provider": "openai",
@@ -1002,7 +1073,11 @@
         "high",
         "xhigh",
         "max"
-      ]
+      ],
+      "behavior": {
+        "positional_instructions": true,
+        "positional_tools": true
+      }
     },
     {
       "provider": "openai",
@@ -2290,9 +2365,9 @@
       "context_window": 1048576,
       "max_output_tokens": 131072,
       "pricing": {
-        "input_per_mtok": 0.44,
-        "output_per_mtok": 1.32,
-        "cache_read_per_mtok": 0.014
+        "input_per_mtok": 0.04444,
+        "output_per_mtok": 0.13332,
+        "cache_read_per_mtok": 0.0014140000000000001
       },
       "supported_efforts": [
         "none",
@@ -2328,9 +2403,9 @@
       "context_window": 1048576,
       "max_output_tokens": 384000,
       "pricing": {
-        "input_per_mtok": 0.9552599999999999,
-        "output_per_mtok": 1.9105199999999998,
-        "cache_read_per_mtok": 0.07960500000000001
+        "input_per_mtok": 0.442656,
+        "output_per_mtok": 0.885312,
+        "cache_read_per_mtok": 0.036888
       },
       "supported_efforts": [
         "none",
@@ -3049,9 +3124,9 @@
       "context_window": 262144,
       "max_output_tokens": 235929,
       "pricing": {
-        "input_per_mtok": 0.09,
-        "output_per_mtok": 0.3,
-        "cache_read_per_mtok": 0.049999999999999996
+        "input_per_mtok": 0.0765,
+        "output_per_mtok": 0.255,
+        "cache_read_per_mtok": 0.042499999999999996
       },
       "canonical_id": "google/gemma-4-26b-a4b-it"
     },
@@ -3703,13 +3778,14 @@
     },
     {
       "provider": "openrouter",
-      "id": "minimax/minimax-m3.1-flash:free",
-      "display_name": "MiniMax: MiniMax M3.1 Flash (free)",
+      "id": "minimax/minimax-m3.1-flash",
+      "display_name": "MiniMax: MiniMax M3.1 Flash",
       "context_window": 1000000,
       "max_output_tokens": 524288,
       "pricing": {
-        "input_per_mtok": 0,
-        "output_per_mtok": 0
+        "input_per_mtok": 0.15,
+        "output_per_mtok": 0.6,
+        "cache_read_per_mtok": 0.015
       },
       "supported_efforts": [
         "low",
@@ -3718,7 +3794,7 @@
         "xhigh",
         "max"
       ],
-      "canonical_id": "minimax/minimax-m3.1-flash:free"
+      "canonical_id": "minimax/minimax-m3.1-flash"
     },
     {
       "provider": "openrouter",
@@ -6721,8 +6797,8 @@
       "context_window": 262144,
       "max_output_tokens": 65536,
       "pricing": {
-        "input_per_mtok": 0.39999999999999997,
-        "output_per_mtok": 3.1999999999999997
+        "input_per_mtok": 0.26,
+        "output_per_mtok": 2.08
       },
       "canonical_id": "qwen/qwen3.5-122b-a10b"
     },
@@ -7398,9 +7474,9 @@
       "context_window": 262144,
       "max_output_tokens": 128000,
       "pricing": {
-        "input_per_mtok": 0.13199999999999998,
-        "output_per_mtok": 0.5279999999999999,
-        "cache_read_per_mtok": 0.032999999999999995
+        "input_per_mtok": 0.0825,
+        "output_per_mtok": 0.33,
+        "cache_read_per_mtok": 0.020625
       },
       "supported_efforts": [
         "none",
@@ -7434,9 +7510,9 @@
       "context_window": 1048576,
       "max_output_tokens": 64000,
       "pricing": {
-        "input_per_mtok": 0.834,
-        "output_per_mtok": 2.501,
-        "cache_read_per_mtok": 0.041999999999999996
+        "input_per_mtok": 0.7505999999999999,
+        "output_per_mtok": 2.2509,
+        "cache_read_per_mtok": 0.0378
       },
       "supported_efforts": [
         "none",
@@ -7570,7 +7646,8 @@
       "id": "typesafe/jev-router",
       "canonical_id": "typesafe/jev-router",
       "display_name": "TypeSafe: Jev Router",
-      "context_window": 1000000
+      "context_window": 1000000,
+      "max_output_tokens": 65536
     },
     {
       "provider": "openrouter",
@@ -8104,11 +8181,11 @@
       "id": "z-ai/glm-5.3",
       "display_name": "Z.ai: GLM 5.3",
       "context_window": 1048576,
-      "max_output_tokens": 943718,
+      "max_output_tokens": 262144,
       "pricing": {
-        "input_per_mtok": 0.079,
-        "output_per_mtok": 1.4,
-        "cache_read_per_mtok": 0.078
+        "input_per_mtok": 0.7,
+        "output_per_mtok": 2.2,
+        "cache_read_per_mtok": 0.13
       },
       "supported_efforts": [
         "low",
@@ -8330,9 +8407,9 @@
       "context_window": 1048576,
       "max_output_tokens": 393216,
       "pricing": {
-        "input_per_mtok": 0.22499999999999998,
+        "input_per_mtok": 0.1307,
         "output_per_mtok": 8,
-        "cache_read_per_mtok": 0.22999999999999998
+        "cache_read_per_mtok": 0.13
       },
       "supported_efforts": [
         "none",
@@ -8349,9 +8426,9 @@
       "context_window": 1048576,
       "max_output_tokens": 943718,
       "pricing": {
-        "input_per_mtok": 0.0475,
-        "output_per_mtok": 0.1568,
-        "cache_read_per_mtok": 0.028
+        "input_per_mtok": 0.0422,
+        "output_per_mtok": 0.1729,
+        "cache_read_per_mtok": 0.0275
       },
       "supported_efforts": [
         "none",

@@ -105,6 +105,84 @@ Probe live:
 Measure cache-read deltas with the existing prompt-cache live scenario
 harness.
 
+### Probe evidence (2026-10-22)
+
+Probed live with a throwaway program that sent raw bodies through the
+go-llm providers' SDK clients (Anthropic API key; OpenAI under Sign in with
+ChatGPT, the only OpenAI credential available). Each cache experiment used a
+fresh ~25k-token system prefix. **Verdict: nothing contradicts ratified
+option (a); the gate is passed**, with the design inputs below.
+
+**Anthropic, mid-conversation `role: "system"` text** (no beta needed):
+
+- Accepted by claude-haiku-5-5, sonnet-5-5, opus-5-5, fable-5-1, opus-5,
+  sonnet-5, fable-5, and opus-4-8. Rejected by opus-4-7, sonnet-4-6, and
+  haiku-4-5 with 400 "role 'system' is not supported on this model".
+  pi's model regex omits sonnet-5, which does accept system text.
+- Placement: a system message must follow a `user` message (or an assistant
+  message ending in a server tool result); directly after an assistant turn
+  it is a 400. pi's placement (held back until just before the next
+  assistant turn, so after the user message) works.
+- The model follows it, and the whole cached prefix survives: turn 2 read
+  all 25,122 tokens turn 1 wrote.
+
+**Anthropic, `inline-tools-2026-09-15`** (`tool_addition` with
+`{"type":"tool_definition","definition":{...}}`, `tool_removal` with
+`{"type":"tool_reference","name":...}`, inside `role: "system"` messages):
+
+- Requires the beta header (400 otherwise) and a model with
+  mid-conversation system content. Supported on the same models as system
+  text except sonnet-5 (400 "tool_addition/tool_removal is not supported on
+  this model"). So tool changes need their own capability, separate from
+  system text.
+- An added tool is called immediately; after `tool_removal` the model
+  refuses it while remaining tools still work; a `tool_use` of the removed
+  tool stays valid in history.
+- Same-name `tool_addition` redefines a tool (the new schema is used), alone
+  or together with a removal in the same message.
+- `tool_removal` of a tool never declared is a 400 ("references unknown
+  tool"), so local validation against the effective tool set is required.
+- `tool_addition` works with no top-level `tools` at all; a top-level list
+  of only deferred tools is a 400 ("At least one tool must have
+  defer_loading=false").
+- Cache: every turn read the full previous prefix (haiku-5-5 and
+  sonnet-5-5), **with or without pi's deferred placeholder tool, and also
+  when the beta header first appears at the first tool change**. This
+  contradicts pi's code comment ("full miss without it"); go-llm should not
+  need the placeholder. `cache_control` on a `tool_addition` block is
+  accepted.
+- Tool changes add roughly 460 tokens of hidden scaffolding to the input.
+
+**OpenAI Responses under Sign in with ChatGPT** (gpt-5.6-luna and
+gpt-6-luna):
+
+- Mid-conversation `developer` (and `system`) messages are accepted and
+  followed.
+- `additional_tools` items (`{"type":"additional_tools","role":"developer",
+  "tools":[...]}`) add callable tools at the head of the input, after the
+  user message, or mid-conversation, with no top-level `tools`. There is no
+  removal item; pi announces removals as developer text.
+- A same-name redefinition in a later `additional_tools` item took effect.
+  With a top-level tool of the same name the model used the redefinition in
+  one sample; pi reports it cannot replace a top-level tool. Following pi
+  (all tools via `additional_tools` once positional changes are in use)
+  avoids the question.
+- `configuration_update` items are rejected on this endpoint ("User
+  subscription sharing currently supports only ... additional tools ...").
+- Cache deltas cannot be measured here: `cached_tokens` is always 0 on
+  this endpoint (see FS §17C). The API-key Responses path was not probed
+  (no key configured).
+
+**Follow-up probes during implementation (2026-10-22):**
+
+- OpenAI under Sign in with ChatGPT, tools only in `additional_tools`:
+  `tool_choice` named, `required`, and `none` and `parallel_tool_calls:
+  false` all behave. A top-level hosted `web_search` next to in-place
+  function tools is accepted, and the model uses each when appropriate.
+- Anthropic: a named `tool_choice` for a tool that exists only through
+  `tool_addition` is honored, as is `tool_choice: any` with no top-level
+  `tools`.
+
 ## Part B: cache retention modes
 
 pi's `cacheRetention: none | short | long` maps to:
@@ -224,7 +302,43 @@ FS §10B and ARCH §10 keep integrations out of core.
   is documented for gpt-5.6 and later only, and server acceptance varies.
 - Wire tests cover Anthropic, OpenRouter, and Responses.
 
-**Part A: STOPPED at its gate.** The required live probes need a direct
+**Part A: shipped 2026-10-22** after the gate passed (see "Probe
+evidence" in Part A). FS §7A and §13B are normative; the shape follows the
+ratified decisions with these refinements:
+
+- **Parts.** `SystemDeltaPart{Section, Text, Cache}` and
+  `ToolsDeltaPart{Added, Removed, Cache}` in `RoleSystem` messages, which
+  also take `TextPart`. `llm.FoldPositional(req, support)` is the shared,
+  deterministic fold; `ValidateRequest` replays the same transcript.
+- **Per-model support** lives in `models.json` as a `behavior` object,
+  written by pi-style rules in `scripts/model-behavior.ts` (maintainer
+  decision: track model behavior the way pi does) and exposed as
+  `ModelInfo.Behavior`. Two flags, not one capability, because
+  claude-sonnet-5 takes system text but not tool changes.
+  `positional-instructions` and `positional-tools` are advisory
+  provider capabilities.
+- **Anthropic:** `role: "system"` messages, held until before the next
+  assistant turn, with `tool_addition`/`tool_removal` under the inline-tools
+  beta header (added automatically). No placeholder tool.
+- **OpenAI Responses:** `developer` messages; on supported models every
+  tool travels in `additional_tools` items from the first turn, so the
+  prefix never switches layout (the `AppendDelta` prefix conformance case
+  caught the one-time rewrite a lazy switch would cause). `tool_choice`
+  works with them (probed).
+- **Chat Completions** always folds.
+- **Serialization:** `system_delta`/`tools_delta`; envelope version 2 only
+  when a message carries them.
+- **Tests:** root fold/validation/serialization tests, adapter wire tests,
+  `llmtest` `AppendDelta` prefix cases for Anthropic and OpenAI, and the
+  live `positional_changes` scenario (cache read across a tool addition on
+  Anthropic; in-place behavior on OpenAI under Sign in with ChatGPT).
+- Also fixed on the way: Anthropic streams are now read to EOF after
+  `message_stop` (shared `providerutil.DrainStream`), so its fixture
+  records completely again.
+
+The paragraph below is the earlier stop record.
+
+**Part A (earlier): STOPPED at its gate.** The required live probes need a direct
 Anthropic API key (inline-tools beta) and an OpenAI key (`additional_tools`
 on gpt-5.6), and neither is configured: the `anthropic` entry is OAuth,
 and there is no `openai` entry.

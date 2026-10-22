@@ -21,8 +21,11 @@ const (
 	openAICheapModel = "gpt-4.1-mini"
 	// openAISignInModel is the cheap default under Sign in with ChatGPT,
 	// which serves only the subscription catalog's models.
-	openAISignInModel     = "gpt-5.6-luna"
-	openAIReasoningModel  = "gpt-5.1-mini"
+	openAISignInModel    = "gpt-5.6-luna"
+	openAIReasoningModel = "gpt-5.1-mini"
+	// openAIPositionalModel takes system messages and tool changes in place
+	// with an API key; the Sign in with ChatGPT default already does.
+	openAIPositionalModel = "gpt-5.4-mini"
 	openAIReasoningPrompt = "A store has three boxes. One is labeled apples, one oranges, and one mixed, " +
 		"but every label is wrong. You may inspect one fruit from one box. Determine the correct labels, then answer with only: solved."
 )
@@ -68,13 +71,14 @@ func TestLiveOpenAI(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
 	ctx = RecordingContext(ctx, captures, secrets)
-	runners := openAILiveScenarioRunners(providerCfg.BaseURL)
+	runners := openAILiveScenarioRunners(providerCfg.BaseURL, providerCfg.Auth.Type == "oauth")
 	if providerCfg.Auth.Type == "oauth" {
 		runners["prompt_cache"] = func(_ context.Context, t *testing.T, _ llm.Provider, _ string) {
 			t.Skip("Sign in with ChatGPT reports no prompt-cache reads: probed 2026-10-22 with gpt-5.6-luna and gpt-6-luna, " +
 				"3k-10k token prefixes in instructions or input, with and without prompt_cache_key; rerun with an API key for cache evidence")
 		}
 	}
+
 	scenarioReport = RunCapabilityScenarios(ctx, t, "openai", p, model, runners)
 }
 
@@ -89,8 +93,17 @@ func openAILiveAuth(root string, providerCfg ProviderConfig) openaiProvider.Opti
 	return openaiProvider.WithAPIKey(providerCfg.Auth.Key)
 }
 
-func openAILiveScenarioRunners(baseURL string) map[string]ScenarioRun {
+func openAILiveScenarioRunners(baseURL string, signIn bool) map[string]ScenarioRun {
 	runners := commonLiveScenarioRunners()
+	runners["positional_changes"] = func(ctx context.Context, t *testing.T, p llm.Provider, _ string) {
+		// Sign in with ChatGPT reports no cache reads (see prompt_cache), so
+		// only the in-place behavior is checked there.
+		model := openAIPositionalModel
+		if signIn {
+			model = openAISignInModel
+		}
+		livePositionalChangesScenario(ctx, t, p, model, !signIn)
+	}
 	runners["parse"] = liveOpenAIParseScenario
 	runners["reasoning"] = liveOpenAIReasoningScenario
 	runners["reasoning_replay"] = liveOpenAIReasoningReplayScenario

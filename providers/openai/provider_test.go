@@ -1394,3 +1394,21 @@ func TestOpenAICacheWriteUsageFixture(t *testing.T) {
 		t.Fatalf("reconstructed total = %d, want 24", mapped.Usage.TotalTokens)
 	}
 }
+
+// Hosted tools stay top-level while function tools travel in place on a
+// positional model; the mix is accepted (probed 2026-10-22).
+func TestHostedToolsWithInPlaceFunctionTools(t *testing.T) {
+	params, err := (&Provider{}).adapter().BuildParams(&llm.Request{
+		Model:           "gpt-5.6-luna",
+		Messages:        []llm.Message{llm.UserText("hi")},
+		Tools:           []llm.Tool{{Name: "lookup", InputSchema: map[string]any{"type": "object"}}},
+		ProviderOptions: Options{HostedTools: []json.RawMessage{json.RawMessage(`{"type":"web_search"}`)}},
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := testutil.MustCompactJSON(t, params)
+	if !strings.Contains(body, `"tools":[{"type":"web_search"}]`) || !strings.Contains(body, `"type":"additional_tools"`) || !strings.Contains(body, `"name":"lookup"`) {
+		t.Fatalf("want web_search top-level and lookup in additional_tools:\n%s", body)
+	}
+}

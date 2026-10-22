@@ -15,12 +15,14 @@ func TestApplyCacheRetention(t *testing.T) {
 		Messages: []llm.Message{
 			llm.UserParts(llm.TextPart{Text: "a", Cache: hint}, &llm.ImagePart{URL: "u", Cache: hint}),
 			{Role: llm.RoleTool, Parts: []llm.Part{llm.ToolResultParts("c", llm.TextPart{Text: "r", Cache: hint})}},
+			{Role: llm.RoleSystem, Parts: []llm.Part{llm.SystemDeltaPart{Section: "s", Text: "t", Cache: hint}, &llm.ToolsDeltaPart{Removed: []string{"x"}, Cache: hint}}},
 		},
 	}
 	hints := func(r *llm.Request) []*llm.CacheHint {
 		out := []*llm.CacheHint{r.SystemCache}
 		out = append(out, r.Messages[0].Parts[0].(llm.TextPart).Cache, r.Messages[0].Parts[1].(llm.ImagePart).Cache)
 		out = append(out, r.Messages[1].Parts[0].(llm.ToolResultPart).Content[0].(llm.TextPart).Cache)
+		out = append(out, DerefPart(r.Messages[2].Parts[0]).(llm.SystemDeltaPart).Cache, DerefPart(r.Messages[2].Parts[1]).(llm.ToolsDeltaPart).Cache)
 		return out
 	}
 	before := hints(req)

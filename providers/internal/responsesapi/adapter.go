@@ -41,7 +41,7 @@ func (a Adapter) BuildParams(req *llm.Request, stream bool) (responses.ResponseN
 
 // BuildInput converts messages into Responses input items.
 func (a Adapter) BuildInput(messages []llm.Message) (responses.ResponseInputParam, error) {
-	return a.buildInput(messages)
+	return a.buildInput(messages, nil)
 }
 
 func (a Adapter) validateRequest(req *llm.Request, stream bool) error {
@@ -58,8 +58,18 @@ func (a Adapter) validateRequest(req *llm.Request, stream bool) error {
 }
 
 func (a Adapter) buildParamsAfterValidation(req *llm.Request) (responses.ResponseNewParams, error) {
+	support := providerutil.PositionalSupport(a.ProviderName, req.Model)
+	req = llm.FoldPositional(req, support)
 	req = providerutil.ApplyCacheRetention(req)
-	input, err := a.buildInput(providerutil.ReplayableHistory(req.Messages, req.Model))
+	// A model that takes tool changes in place gets every tool, including
+	// the initial ones, in additional_tools items from the first turn (pi's
+	// layout), so a later change extends the prompt instead of replacing the
+	// top-level tool list. tool_choice works with them (probed 2026-10-22).
+	var inPlace *inPlaceTools
+	if support.Tools && (len(req.Tools) > 0 || llm.HasToolsDelta(req.Messages)) {
+		inPlace = &inPlaceTools{base: req.Tools}
+	}
+	input, err := a.buildInput(providerutil.ReplayableHistory(req.Messages, req.Model), inPlace)
 	if err != nil {
 		return responses.ResponseNewParams{}, err
 	}
@@ -90,13 +100,13 @@ func (a Adapter) buildParamsAfterValidation(req *llm.Request) (responses.Respons
 	if req.SessionID != "" && req.CacheRetention != llm.CacheRetentionNone {
 		params.PromptCacheKey = sdk.String(normalizePromptCacheKey(req.SessionID))
 	}
-	if len(req.Tools) > 0 {
+	if len(req.Tools) > 0 && inPlace == nil {
 		params.Tools, err = buildTools(req.Tools, a.ProviderName)
 		if err != nil {
 			return responses.ResponseNewParams{}, err
 		}
 	}
-	if len(req.Tools) > 0 || req.ToolChoice.Mode != "" {
+	if len(req.Tools) > 0 || inPlace != nil || req.ToolChoice.Mode != "" {
 		params.ToolChoice = buildToolChoice(req.ToolChoice)
 	}
 	if req.ResponseFormat != nil {
@@ -163,9 +173,24 @@ func normalizeIncludes(includes []responses.ResponseIncludable, stateless bool) 
 	return out
 }
 
-func (a Adapter) buildInput(messages []llm.Message) (responses.ResponseInputParam, error) {
-	items := make(responses.ResponseInputParam, 0, len(messages))
+func (a Adapter) buildInput(messages []llm.Message, inPlace *inPlaceTools) (responses.ResponseInputParam, error) {
+	items := make(responses.ResponseInputParam, 0, len(messages)+1)
+	if inPlace != nil && len(inPlace.base) > 0 {
+		head, err := inPlace.declare(inPlace.base, a.ProviderName)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, head...)
+	}
 	for _, msg := range messages {
+		if msg.Role == llm.RoleSystem {
+			system, err := a.systemItems(msg, inPlace)
+			if err != nil {
+				return nil, err
+			}
+			items = append(items, system...)
+			continue
+		}
 		role, err := easyRole(msg.Role)
 		if err != nil {
 			return nil, err
@@ -246,6 +271,100 @@ func (a Adapter) buildInput(messages []llm.Message) (responses.ResponseInputPara
 	return items, nil
 }
 
+// inPlaceTools follows pi's "changes" layout for additional_tools: items
+// accumulate, a later item adds tools and replaces same-name definitions,
+// and nothing can be removed, so removals are announced as developer text
+// and restated until the tool is declared again.
+type inPlaceTools struct {
+	base        []llm.Tool
+	declared    bool
+	unavailable []string
+}
+
+// declare returns an additional_tools item for tools, preceded by the
+// incremental-update notice once an earlier item exists.
+func (t *inPlaceTools) declare(tools []llm.Tool, providerName string) ([]responses.ResponseInputItemUnionParam, error) {
+	for _, tool := range tools {
+		t.unavailable = slices.DeleteFunc(t.unavailable, func(name string) bool { return name == tool.Name })
+	}
+	params, err := buildTools(tools, providerName)
+	if err != nil {
+		return nil, err
+	}
+	var items []responses.ResponseInputItemUnionParam
+	if t.declared {
+		items = append(items, developerMessage(t.incrementalNotice()))
+	}
+	t.declared = true
+	item := map[string]any{"type": "additional_tools", "role": "developer", "tools": params}
+	return append(items, sdkparam.Override[responses.ResponseInputItemUnionParam](item)), nil
+}
+
+func (t *inPlaceTools) incrementalNotice() string {
+	notice := "This is an incremental tools update. Previously declared tools remain available unless explicitly marked unavailable. A tool declared again here is available again, and its latest definition replaces the earlier one."
+	if len(t.unavailable) == 0 {
+		return notice
+	}
+	return notice + "\nStill unavailable: " + strings.Join(t.unavailable, ", ") + "."
+}
+
+// systemItems converts a system message sent in place: tool additions as
+// additional_tools items, then one developer message with its text, section
+// updates, and the removal notice (pi's order).
+func (a Adapter) systemItems(msg llm.Message, inPlace *inPlaceTools) ([]responses.ResponseInputItemUnionParam, error) {
+	var items []responses.ResponseInputItemUnionParam
+	var text, removed []string
+	for _, part := range msg.Parts {
+		switch p := providerutil.DerefPart(part).(type) {
+		case llm.TextPart:
+			if p.Text != "" {
+				text = append(text, p.Text)
+			}
+		case llm.SystemDeltaPart:
+			text = append(text, providerutil.RenderSystemDelta(p))
+		case llm.ToolsDeltaPart:
+			if inPlace == nil {
+				return nil, fmt.Errorf("%w: %s tool changes were not folded", llm.ErrBadRequest, a.ProviderName)
+			}
+			for _, name := range p.Removed {
+				if !slices.ContainsFunc(p.Added, func(tool llm.Tool) bool { return tool.Name == name }) {
+					removed = append(removed, name)
+				}
+			}
+			if len(p.Added) > 0 {
+				declared, err := inPlace.declare(p.Added, a.ProviderName)
+				if err != nil {
+					return nil, err
+				}
+				items = append(items, declared...)
+			}
+		case llm.UnknownPart:
+		default:
+			return nil, fmt.Errorf("%w: %s system messages cannot carry %T", llm.ErrBadRequest, a.ProviderName, part)
+		}
+	}
+	if len(removed) > 0 {
+		lines := make([]string, len(removed))
+		for i, name := range removed {
+			lines[i] = "- " + name
+		}
+		text = append(text, "The following tools are no longer available. Do not call them:\n"+strings.Join(lines, "\n"))
+		for _, name := range removed {
+			if !slices.Contains(inPlace.unavailable, name) {
+				inPlace.unavailable = append(inPlace.unavailable, name)
+			}
+		}
+	}
+	if len(text) > 0 {
+		items = append(items, developerMessage(strings.Join(text, "\n\n")))
+	}
+	return items, nil
+}
+
+func developerMessage(text string) responses.ResponseInputItemUnionParam {
+	return responses.ResponseInputItemParamOfMessage(text, responses.EasyInputMessageRoleDeveloper)
+}
+
 func outputTextContent(text string) responses.ResponseOutputMessageContentUnionParam {
 	output := responses.ResponseOutputTextParam{Text: text}
 	return responses.ResponseOutputMessageContentUnionParam{OfOutputText: &output}
@@ -257,8 +376,6 @@ func easyRole(role llm.Role) (responses.EasyInputMessageRole, error) {
 		return responses.EasyInputMessageRoleUser, nil
 	case llm.RoleAssistant:
 		return responses.EasyInputMessageRoleAssistant, nil
-	case llm.RoleSystem:
-		return responses.EasyInputMessageRoleSystem, nil
 	case llm.RoleTool:
 		return responses.EasyInputMessageRoleUser, nil
 	default:

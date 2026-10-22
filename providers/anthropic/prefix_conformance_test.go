@@ -14,6 +14,16 @@ import (
 // TestAnthropicAppendOnlyPrefix machine-checks the append-only wire-prefix
 // property prompt caches rely on across a two-turn tool session.
 func TestAnthropicAppendOnlyPrefix(t *testing.T) {
+	runAnthropicAppendOnlyPrefix(t, "claude-test", false)
+}
+
+// claude-haiku-5-5 takes positional changes in place, so a system message
+// with a tool addition must extend the prefix (FS §7A).
+func TestAnthropicAppendOnlyPrefixWithPositionalChanges(t *testing.T) {
+	runAnthropicAppendOnlyPrefix(t, "claude-haiku-5-5", true)
+}
+
+func runAnthropicAppendOnlyPrefix(t *testing.T, model string, appendDelta bool) {
 	var mu sync.Mutex
 	var bodies [][]byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -49,8 +59,9 @@ func TestAnthropicAppendOnlyPrefix(t *testing.T) {
 			defer mu.Unlock()
 			return append([][]byte(nil), bodies...)
 		},
-		Model:         "claude-test",
+		Model:         model,
 		MessagesField: "messages",
 		StableFields:  []string{"model", "tools", "system"},
+		AppendDelta:   appendDelta,
 	})
 }

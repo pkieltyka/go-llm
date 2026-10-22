@@ -63,6 +63,12 @@ func rewriteCacheParts(parts []llm.Part, rewrite func(*llm.CacheHint) *llm.Cache
 		case llm.ToolResultPart:
 			p.Content = rewriteCacheParts(p.Content, rewrite)
 			out[i] = p
+		case llm.SystemDeltaPart:
+			p.Cache = rewrite(p.Cache)
+			out[i] = p
+		case llm.ToolsDeltaPart:
+			p.Cache = rewrite(p.Cache)
+			out[i] = p
 		default:
 			out[i] = part
 		}

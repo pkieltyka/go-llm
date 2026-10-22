@@ -105,9 +105,26 @@ type ReasoningPart struct {
                          // w/ signature, reasoning_details, etc.)
     Provider string      // which provider produced Raw
 }
+// Positional changes, RoleSystem messages only (FS §7A; positional.go).
+type SystemDeltaPart struct { Section, Text string; Cache *CacheHint } // empty Text deletes
+type ToolsDeltaPart  struct { Added []Tool; Removed []string; Cache *CacheHint }
 
 type CacheHint struct { TTL time.Duration } // zero = provider default
+
+type PositionalSupport struct { Instructions, Tools bool }
+func FoldPositional(req *Request, support PositionalSupport) *Request
+func HasToolsDelta(msgs []Message) bool
 ```
+
+`positional.go` owns the transcript replay (`transcriptState`, mirroring
+pi's `getCurrentSystemMessage`/`getCurrentTools`), shared by
+`FoldPositional` and `ValidateRequest`. Each adapter calls
+`FoldPositional(req, providerutil.PositionalSupport(name, model))` before
+conversion, so what remains is exactly what it sends in place: Anthropic
+`role: "system"` messages with `tool_addition`/`tool_removal` blocks (held
+until before the next assistant turn), Responses `developer` messages and
+`additional_tools` items (pi's "changes" layout from the first turn), and
+nothing for Chat Completions, which passes an empty support.
 
 Ergonomic constructors: `llm.UserText(s)`, `llm.AssistantText(s)`,
 `llm.UserParts(parts...)`, `llm.Text(s)`, `llm.ImageURL(u)`,
@@ -1009,8 +1026,11 @@ provider use.
 ```
 Chat/ChatStream(ctx, req)
   1. validate(req, provider)     — required fields; capability pre-flight (§6);
-                                   ProviderOptions type/name check
-  2. build                       — llm.Request → SDK params (+ dialect extras)
+                                   ProviderOptions type/name check; transcript
+                                   (system-message parts, tool deltas)
+  2. build                       — FoldPositional per model behavior, cache
+                                   retention, then llm.Request → SDK params
+                                   (+ dialect extras)
   3. call                        — shared retry transport; SDK retries disabled
   4. map                         — SDK response/stream → llm.Response / events
                                    (errors normalized at this boundary only)
@@ -1134,6 +1154,10 @@ session runtime on these primitives, not inside them.
 
 ```go
 func LookupModelInfo(provider, modelID string) (ModelInfo, bool) // embedded snapshot; lazy sync.Once
+
+type ModelBehavior struct { PositionalInstructions, PositionalTools bool } // ModelInfo.Behavior, FS §13B
+// models.json rows carry "behavior" written by scripts/model-behavior.ts
+// (pi-style rules with cited evidence); aggregator rows never inherit it.
 
 type ContextUsage struct { UsedTokens, Window, Remaining int64; UsedPercent float64 }
 func (u Usage) ContextUsage(window int64) ContextUsage

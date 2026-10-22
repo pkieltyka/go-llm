@@ -30,6 +30,8 @@ var capabilities = []llm.Capability{
 	llm.CapabilityPromptCaching,
 	llm.CapabilitySessionAffinity,
 	llm.CapabilityModelsListing,
+	llm.CapabilityPositionalInstructions,
+	llm.CapabilityPositionalTools,
 }
 
 // Name returns the provider identifier.
@@ -96,6 +98,7 @@ func (p *Provider) Models(ctx context.Context) ([]llm.ModelInfo, error) {
 				info.Pricing = embedded.Pricing.Clone()
 			}
 			info.SupportedEfforts = embedded.SupportedEfforts
+			info.Behavior = embedded.Behavior
 		}
 		models = append(models, info)
 	}
@@ -130,6 +133,9 @@ func chatGPTModelInfo(raw json.RawMessage) (llm.ModelInfo, bool) {
 		DisplayName:   row.DisplayName,
 		ContextWindow: row.ContextWindow,
 		Raw:           raw,
+	}
+	if embedded, ok := llm.LookupModelInfo(providerName, row.Slug); ok {
+		info.Behavior = embedded.Behavior
 	}
 	if row.SupportedReasoningLevels != nil {
 		info.SupportedEfforts = []llm.Effort{}
@@ -267,22 +273,13 @@ func (p *Provider) stream(ctx context.Context, req *llm.Request, signIn bool, yi
 		}
 		more := yield(event, nil)
 		if ended {
-			// Read past response.completed to EOF so the connection can be
-			// reused (and wire captures are complete); a server that holds
-			// the stream open is cut off after a short grace.
-			timer := time.AfterFunc(streamDrainGrace, cancelStream)
-			for stream.Next() {
-			}
-			timer.Stop()
+			providerutil.DrainStream(stream.Next, cancelStream)
 		}
 		if !more {
 			return
 		}
 	}
 }
-
-// streamDrainGrace bounds the post-terminal read; a variable for tests.
-var streamDrainGrace = time.Second
 
 // signInWithChatGPT reads the stored credential once per call and reports
 // whether it is a Sign in with ChatGPT token. The returned context carries

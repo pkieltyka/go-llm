@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"time"
 
 	sdk "github.com/anthropics/anthropic-sdk-go"
@@ -42,6 +43,7 @@ func validateRequest(req *llm.Request, stream bool) error {
 }
 
 func (p *Provider) buildParamsAfterValidation(req *llm.Request) (sdk.MessageNewParams, []sdkoption.RequestOption, error) {
+	req = llm.FoldPositional(req, providerutil.PositionalSupport(providerName, req.Model))
 	req = providerutil.ApplyCacheRetention(req)
 	options, err := requestOptions(req)
 	if err != nil {
@@ -93,8 +95,20 @@ func (p *Provider) buildParamsAfterValidation(req *llm.Request) (sdk.MessageNewP
 	}
 
 	opts := requestSDKOptions(options)
+	if llm.HasToolsDelta(req.Messages) && !hasBeta(options, inlineToolsBeta) {
+		opts = append(opts, sdkoption.WithHeaderAdd("anthropic-beta", inlineToolsBeta))
+	}
 	applyOptions(options, &params)
 	return params, opts, nil
+}
+
+// inlineToolsBeta enables tool_addition and tool_removal blocks in system
+// messages. The header may first appear mid-conversation: the cached prefix
+// survives it (probed 2026-10-22, plan 11 Part A).
+const inlineToolsBeta = "inline-tools-2026-09-15"
+
+func hasBeta(options *Options, beta string) bool {
+	return options != nil && slices.Contains(options.BetaHeaders, beta)
 }
 
 func systemBlocks(req *llm.Request) []sdk.TextBlockParam {
@@ -169,9 +183,41 @@ func applyOptions(options *Options, params *sdk.MessageNewParams) {
 	}
 }
 
+// buildMessages converts history. FoldPositional has already folded every
+// RoleSystem message this model cannot take in place, so the rest are sent
+// as role "system". Anthropic accepts one only after a user message (or an
+// assistant turn ending in a server tool result), and a tool_use must be
+// followed directly by its tool_result, so system messages are held back
+// until just before the next assistant turn, as pi does, and adjacent ones
+// are merged.
 func buildMessages(messages []llm.Message) ([]sdk.MessageParam, error) {
 	out := make([]sdk.MessageParam, 0, len(messages))
+	var pending []sdk.ContentBlockParamUnion
+	flush := func() error {
+		if len(pending) == 0 {
+			return nil
+		}
+		if len(out) > 0 && out[len(out)-1].Role == sdk.MessageParamRoleAssistant {
+			return fmt.Errorf("%w: anthropic accepts a system message only after a user message, not directly after an assistant turn", llm.ErrBadRequest)
+		}
+		out = append(out, sdk.MessageParam{Role: sdk.MessageParamRoleSystem, Content: pending})
+		pending = nil
+		return nil
+	}
 	for _, msg := range messages {
+		if msg.Role == llm.RoleSystem {
+			blocks, err := systemMessageBlocks(msg.Parts)
+			if err != nil {
+				return nil, err
+			}
+			pending = append(pending, blocks...)
+			continue
+		}
+		if msg.Role == llm.RoleAssistant {
+			if err := flush(); err != nil {
+				return nil, err
+			}
+		}
 		blocks, filtered, err := buildContentBlocksDetailed(msg.Parts)
 		if err != nil {
 			return nil, err
@@ -185,7 +231,69 @@ func buildMessages(messages []llm.Message) ([]sdk.MessageParam, error) {
 		}
 		out = append(out, sdk.MessageParam{Role: role, Content: blocks})
 	}
+	if err := flush(); err != nil {
+		return nil, err
+	}
 	return out, nil
+}
+
+// systemMessageBlocks converts a system message sent in place: text as is,
+// section updates framed by name, and tool changes as inline-tools blocks
+// (removals first, skipping a name the same delta redefines).
+func systemMessageBlocks(parts []llm.Part) ([]sdk.ContentBlockParamUnion, error) {
+	var blocks []sdk.ContentBlockParamUnion
+	for _, part := range parts {
+		switch p := providerutil.DerefPart(part).(type) {
+		case llm.TextPart:
+			if p.Text != "" {
+				blocks = append(blocks, textBlock(p.Text, p.Cache))
+			}
+		case llm.SystemDeltaPart:
+			blocks = append(blocks, textBlock(providerutil.RenderSystemDelta(p), p.Cache))
+		case llm.ToolsDeltaPart:
+			changes, err := toolChangeBlocks(p)
+			if err != nil {
+				return nil, err
+			}
+			blocks = append(blocks, changes...)
+		case llm.UnknownPart:
+		default:
+			return nil, fmt.Errorf("%w: anthropic system messages cannot carry %T", llm.ErrBadRequest, part)
+		}
+	}
+	return blocks, nil
+}
+
+func toolChangeBlocks(delta llm.ToolsDeltaPart) ([]sdk.ContentBlockParamUnion, error) {
+	redefined := make(map[string]bool, len(delta.Added))
+	for _, tool := range delta.Added {
+		redefined[tool.Name] = true
+	}
+	var changes []map[string]any
+	for _, name := range delta.Removed {
+		if !redefined[name] {
+			changes = append(changes, map[string]any{"type": "tool_removal", "tool": map[string]any{"type": "tool_reference", "name": name}})
+		}
+	}
+	definitions, err := buildTools(delta.Added)
+	if err != nil {
+		return nil, err
+	}
+	for _, definition := range definitions {
+		changes = append(changes, map[string]any{"type": "tool_addition", "tool": map[string]any{"type": "tool_definition", "definition": definition}})
+	}
+	if delta.Cache != nil && len(changes) > 0 {
+		changes[len(changes)-1]["cache_control"] = cacheControl(delta.Cache)
+	}
+	blocks := make([]sdk.ContentBlockParamUnion, len(changes))
+	for i, change := range changes {
+		raw, err := json.Marshal(change)
+		if err != nil {
+			return nil, fmt.Errorf("%w: anthropic tool change: %v", llm.ErrBadRequest, err)
+		}
+		blocks[i] = sdkparam.Override[sdk.ContentBlockParamUnion](json.RawMessage(raw))
+	}
+	return blocks, nil
 }
 
 func messageRole(role llm.Role) (sdk.MessageParamRole, error) {
@@ -194,8 +302,6 @@ func messageRole(role llm.Role) (sdk.MessageParamRole, error) {
 		return sdk.MessageParamRoleUser, nil
 	case llm.RoleAssistant:
 		return sdk.MessageParamRoleAssistant, nil
-	case llm.RoleSystem:
-		return "", fmt.Errorf("%w: anthropic system messages must use Request.System", llm.ErrUnsupported)
 	default:
 		return "", fmt.Errorf("%w: unknown message role %q", llm.ErrBadRequest, role)
 	}

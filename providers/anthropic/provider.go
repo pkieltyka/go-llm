@@ -24,6 +24,8 @@ var capabilities = []llm.Capability{
 	llm.CapabilityStopSequences,
 	llm.CapabilityPromptCaching,
 	llm.CapabilityModelsListing,
+	llm.CapabilityPositionalInstructions,
+	llm.CapabilityPositionalTools,
 }
 
 // Name returns the provider identifier.
@@ -55,6 +57,7 @@ func (p *Provider) Models(ctx context.Context) ([]llm.ModelInfo, error) {
 				models[len(models)-1].Pricing = info.Pricing.Clone()
 			}
 			models[len(models)-1].SupportedEfforts = info.SupportedEfforts
+			models[len(models)-1].Behavior = info.Behavior
 		}
 	}
 	if err := pager.Err(); err != nil {
@@ -104,7 +107,9 @@ func (p *Provider) ChatStream(ctx context.Context, req *llm.Request) iter.Seq2[l
 			return
 		}
 
-		stream := p.client.Messages.NewStreaming(ctx, params, requestOptions...)
+		streamCtx, cancelStream := context.WithCancel(ctx)
+		defer cancelStream()
+		stream := p.client.Messages.NewStreaming(streamCtx, params, requestOptions...)
 		defer stream.Close()
 
 		state := newStreamState(p)
@@ -154,10 +159,15 @@ func (p *Provider) ChatStream(ctx context.Context, req *llm.Request) iter.Seq2[l
 				yield(nil, err)
 				return
 			}
-			if end, ok := providerutil.DerefEvent(event).(llm.MessageEnd); ok {
+			end, ended := providerutil.DerefEvent(event).(llm.MessageEnd)
+			if ended {
 				p.logStreamEnd(ctx, req, end, state.model, start)
 			}
-			if !yield(event, nil) {
+			more := yield(event, nil)
+			if ended {
+				providerutil.DrainStream(stream.Next, cancelStream)
+			}
+			if !more {
 				return
 			}
 		}

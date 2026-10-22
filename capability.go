@@ -24,6 +24,13 @@ const (
 	CapabilitySessionAffinity    Capability = "session-affinity"
 	CapabilityCostReporting      Capability = "cost-reporting"
 	CapabilityModelsListing      Capability = "models-listing"
+	// CapabilityPositionalInstructions and CapabilityPositionalTools mean
+	// the provider sends RoleSystem messages and ToolsDeltaPart changes in
+	// place for models whose ModelBehavior allows it. Both are advisory:
+	// every provider accepts positional messages and folds what a model
+	// cannot take in place (FS §7A).
+	CapabilityPositionalInstructions Capability = "positional-instructions"
+	CapabilityPositionalTools        Capability = "positional-tools"
 )
 
 var standardCapabilities = map[Capability]struct{}{
@@ -43,6 +50,9 @@ var standardCapabilities = map[Capability]struct{}{
 	CapabilitySessionAffinity:    {},
 	CapabilityCostReporting:      {},
 	CapabilityModelsListing:      {},
+
+	CapabilityPositionalInstructions: {},
+	CapabilityPositionalTools:        {},
 }
 
 // CustomCapabilities returns provider-specific capabilities in declaration order.

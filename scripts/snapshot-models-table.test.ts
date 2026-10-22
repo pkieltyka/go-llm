@@ -14,6 +14,7 @@ import {
   type SnapshotDocument,
   type SourceMinimums,
 } from "./snapshot-models-table.ts";
+import { modelBehavior } from "./model-behavior.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtureMinimums: SourceMinimums = {
@@ -545,4 +546,25 @@ test("local JSON reads remain file-backed", async (t) => {
   assert.deepEqual(await readJSON(path), { local: true });
   await writeFile(path, "{broken");
   await assert.rejects(() => readJSON(path), /JSON/);
+});
+
+test("behavior rules mark positional models and leave others unset", async () => {
+  assert.deepEqual(modelBehavior("anthropic", "claude-haiku-5-5"), { positional_instructions: true, positional_tools: true });
+  assert.deepEqual(modelBehavior("anthropic", "claude-opus-4-8-20260801"), { positional_instructions: true, positional_tools: true });
+  assert.deepEqual(modelBehavior("anthropic", "claude-sonnet-5"), { positional_instructions: true });
+  assert.equal(modelBehavior("anthropic", "claude-sonnet-4-6"), undefined);
+  assert.equal(modelBehavior("anthropic", "claude-opus-4-7"), undefined);
+  assert.deepEqual(modelBehavior("openai", "gpt-5.6-luna"), { positional_instructions: true, positional_tools: true });
+  assert.equal(modelBehavior("openai", "gpt-4.1"), undefined);
+  assert.equal(modelBehavior("openrouter", "anthropic/claude-haiku-5-5"), undefined);
+
+  const modelsDev = structuredClone(await fixture("models-dev.json")) as any;
+  modelsDev.anthropic.models["claude-haiku-5-5"] = { ...modelsDev.anthropic.models["claude-fixture"], id: "claude-haiku-5-5" };
+  const snapshot = buildSnapshot(modelsDev, await fixture("openrouter-models.json"), await fixture("overrides.json"), {
+    generatedAt: "2026-10-22T00:00:00Z",
+    minimums: fixtureMinimums,
+  });
+  const row = (id: string) => snapshot.models.find((entry) => entry.provider === "anthropic" && entry.id === id)!;
+  assert.deepEqual(row("claude-haiku-5-5").behavior, { positional_instructions: true, positional_tools: true });
+  assert.equal("behavior" in row("claude-fixture"), false);
 });

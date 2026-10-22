@@ -8,8 +8,11 @@ import (
 // Role identifies the speaker for a message.
 type Role string
 
-// Message roles. RoleTool messages carry ToolResultPart contents; RoleSystem
-// messages are provider-dependent (most callers use Request.System instead).
+// Message roles. RoleTool messages carry ToolResultPart contents. RoleSystem
+// messages change the instructions or tools from their position on (FS §7A):
+// they carry TextPart, SystemDeltaPart, and ToolsDeltaPart, and providers
+// send them in place where the model accepts it, folding them into the
+// system prompt and tool list otherwise.
 const (
 	RoleUser      Role = "user"
 	RoleAssistant Role = "assistant"
@@ -259,6 +262,14 @@ func clonePart(part Part) Part {
 	case UnknownPart:
 		p.Data = append(json.RawMessage(nil), p.Data...)
 		return p
+	case SystemDeltaPart:
+		p.Cache = cloneCacheHint(p.Cache)
+		return p
+	case ToolsDeltaPart:
+		p.Added = append([]Tool(nil), p.Added...)
+		p.Removed = append([]string(nil), p.Removed...)
+		p.Cache = cloneCacheHint(p.Cache)
+		return p
 	default:
 		// Extension parts (and any other unknown Part implementations) are
 		// shared by reference: their concrete types live outside this
@@ -304,6 +315,16 @@ func derefPart(part Part) Part {
 		}
 		return *p
 	case *UnknownPart:
+		if p == nil {
+			return nil
+		}
+		return *p
+	case *SystemDeltaPart:
+		if p == nil {
+			return nil
+		}
+		return *p
+	case *ToolsDeltaPart:
 		if p == nil {
 			return nil
 		}

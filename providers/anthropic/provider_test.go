@@ -10,8 +10,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -174,17 +176,66 @@ func TestAnthropicToolResultPreservesTextCacheHints(t *testing.T) {
 	}
 }
 
-func TestAnthropicRejectsSystemMessageRole(t *testing.T) {
-	p := &Provider{defaultMaxTokens: 99}
-	_, _, err := p.buildParams(&llm.Request{
-		Model: "claude-test",
+func positionalRequest(model string) *llm.Request {
+	weather := llm.Tool{Name: "get_weather", Description: "Weather in a city.", InputSchema: map[string]any{"type": "object"}}
+	return &llm.Request{
+		Model:  model,
+		System: "base",
+		Tools:  []llm.Tool{{Name: "get_time", InputSchema: map[string]any{"type": "object"}}},
 		Messages: []llm.Message{
-			{Role: llm.RoleSystem, Parts: []llm.Part{llm.Text("Use the request System field instead.")}},
 			llm.UserText("hello"),
+			llm.AssistantText("hi"),
+			{Role: llm.RoleSystem, Parts: []llm.Part{
+				llm.Text("Be brief."),
+				llm.SystemDeltaPart{Section: "style", Text: "Use French."},
+				llm.ToolsDeltaPart{Added: []llm.Tool{weather}, Removed: []string{"get_time"}, Cache: &llm.CacheHint{}},
+			}},
+			llm.UserText("weather in Paris?"),
 		},
-	})
-	if !errors.Is(err, llm.ErrUnsupported) {
-		t.Fatalf("buildParams error = %v, want ErrUnsupported", err)
+	}
+}
+
+func TestAnthropicSendsPositionalChangesInPlace(t *testing.T) {
+	p := &Provider{defaultMaxTokens: 99}
+	params, opts, err := p.buildParams(positionalRequest("claude-haiku-5-5"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := testutil.MustCompactJSON(t, params)
+	for _, want := range []string{
+		`{"content":[{"text":"weather in Paris?","type":"text"}],"role":"user"},{"content":[{"text":"Be brief.","type":"text"},{"text":"Updated system prompt section \"style\":\n\nUse French.","type":"text"},{"tool":{"name":"get_time","type":"tool_reference"},"type":"tool_removal"},{"cache_control":{"ttl":"5m","type":"ephemeral"},"tool":{"definition":{"input_schema":{"properties":{},"type":"object"},"name":"get_weather","description":"Weather in a city.","strict":false,"type":"custom"},"type":"tool_definition"},"type":"tool_addition"}],"role":"system"}`,
+		`"system":[{"text":"base","type":"text"}]`,
+		`"tools":[{"input_schema":{"properties":{},"type":"object"},"name":"get_time","strict":false,"type":"custom"}]`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("params missing %s:\n%s", want, body)
+		}
+	}
+	if len(opts) != 1 {
+		t.Fatalf("request options = %d, want the inline-tools beta header", len(opts))
+	}
+}
+
+// claude-sonnet-5 takes system text in place but not tool changes; an
+// unknown model folds everything.
+func TestAnthropicFoldsWhatTheModelCannotTakeInPlace(t *testing.T) {
+	p := &Provider{defaultMaxTokens: 99}
+	params, opts, err := p.buildParams(positionalRequest("claude-sonnet-5"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := testutil.MustCompactJSON(t, params)
+	if strings.Contains(body, "tool_addition") || len(opts) != 0 || !strings.Contains(body, `"role":"system"`) ||
+		!strings.Contains(body, `"tools":[{"input_schema":{"properties":{},"type":"object"},"name":"get_weather"`) {
+		t.Fatalf("claude-sonnet-5 must keep system text in place and fold tools:\n%s", body)
+	}
+	params, _, err = p.buildParams(positionalRequest("claude-test"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body = testutil.MustCompactJSON(t, params)
+	if strings.Contains(body, `"role":"system"`) || !strings.Contains(body, `"system":[{"text":"base\n\nBe brief.\n\nUse French.","type":"text"}]`) {
+		t.Fatalf("unknown model must fold into the system prompt:\n%s", body)
 	}
 }
 
@@ -1716,7 +1767,7 @@ func TestAnthropicCountTokensMapsErrorsAndValidates(t *testing.T) {
 	if _, err := p.CountTokens(context.Background(), &llm.Request{Model: "claude-test", Messages: []llm.Message{llm.UserText("hi")}}); !errors.Is(err, llm.ErrRateLimited) {
 		t.Fatalf("CountTokens err = %v, want ErrRateLimited", err)
 	}
-	if _, err := p.CountTokens(context.Background(), &llm.Request{Model: "claude-test", Messages: []llm.Message{{Role: llm.RoleSystem, Parts: []llm.Part{llm.Text("x")}}}}); !errors.Is(err, llm.ErrUnsupported) {
+	if _, err := p.CountTokens(context.Background(), &llm.Request{Model: "claude-test", Messages: []llm.Message{{Role: llm.RoleSystem, Parts: []llm.Part{llm.ImageURL("https://example.test/x.png")}}}}); !errors.Is(err, llm.ErrBadRequest) {
 		t.Fatalf("CountTokens must validate like Chat, got %v", err)
 	}
 }
@@ -1779,5 +1830,125 @@ func TestAnthropicStoredSubscriptionOAuthExplainsRejection(t *testing.T) {
 	key, err := storedAPIKey(authstore.NewMemory(llm.AuthFile{providerName: {Type: "api_key", Key: "k"}}), "")(context.Background())
 	if err != nil || key != "k" {
 		t.Fatalf("stored api_key = %q, %v", key, err)
+	}
+}
+
+// After message_stop the body is read to EOF, so the connection can be
+// reused and wire captures are complete.
+func TestAnthropicStreamReadsToEOFAfterMessageStop(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, anthropicSSE(
+			`{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"usage":{"input_tokens":1,"output_tokens":0}}}`,
+			`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"hi"}}`,
+			`{"type":"content_block_stop","index":0}`,
+			`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`,
+			`{"type":"message_stop"}`,
+		))
+		w.(http.Flusher).Flush()
+		time.Sleep(20 * time.Millisecond)
+		_, _ = io.WriteString(w, ": trailing keep-alive\n\n")
+	}))
+	t.Cleanup(server.Close)
+	var mu sync.Mutex
+	var captures []llm.WireCapture
+	p, err := New(WithAPIKey("k"), WithBaseURL(server.URL), WithHTTPClient(server.Client()), WithMaxRetries(0), WithWireCapture(func(c llm.WireCapture) {
+		mu.Lock()
+		captures = append(captures, c)
+		mu.Unlock()
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := llm.Collect(p.ChatStream(context.Background(), anthropicStreamFixtureRequest())); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(captures) != 1 || captures[0].ResponseIncomplete {
+		t.Fatalf("captures = %d, incomplete = %v; the body must be read to EOF", len(captures), len(captures) == 1 && captures[0].ResponseIncomplete)
+	}
+}
+
+// A system message between a tool_use and its tool_result is held until
+// just before the next assistant turn, and adjacent ones merge; one that
+// would directly follow the final assistant turn is rejected locally.
+func TestAnthropicSystemMessagePlacement(t *testing.T) {
+	sys := func(text string) llm.Message {
+		return llm.Message{Role: llm.RoleSystem, Parts: []llm.Part{llm.Text(text)}}
+	}
+	messages, err := buildMessages([]llm.Message{
+		llm.UserText("u"),
+		llm.AssistantParts(llm.ToolCall("toolu_1", "get_time", json.RawMessage(`{}`))),
+		sys("first"),
+		{Role: llm.RoleTool, Parts: []llm.Part{llm.ToolResult("toolu_1", "09:00")}},
+		sys("second"),
+		llm.AssistantText("done"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var roles []string
+	for _, msg := range messages {
+		roles = append(roles, string(msg.Role))
+	}
+	if want := []string{"user", "assistant", "user", "system", "assistant"}; !slices.Equal(roles, want) {
+		t.Fatalf("roles = %v, want %v", roles, want)
+	}
+	if got := testutil.MustCompactJSON(t, messages[3]); got != `{"content":[{"text":"first","type":"text"},{"text":"second","type":"text"}],"role":"system"}` {
+		t.Fatalf("merged system message = %s", got)
+	}
+	for name, history := range map[string][]llm.Message{
+		"after the final assistant turn":      {llm.UserText("u"), llm.AssistantText("prefill"), sys("late")},
+		"between consecutive assistant turns": {llm.UserText("u"), llm.AssistantText("a"), sys("mid"), llm.AssistantText("b")},
+	} {
+		if _, err := buildMessages(history); !errors.Is(err, llm.ErrBadRequest) {
+			t.Fatalf("system message %s = %v, want ErrBadRequest", name, err)
+		}
+	}
+}
+
+func TestAnthropicSendsPointerPositionalParts(t *testing.T) {
+	req := positionalRequest("claude-haiku-5-5")
+	parts := req.Messages[2].Parts
+	section, delta := parts[1].(llm.SystemDeltaPart), parts[2].(llm.ToolsDeltaPart)
+	req.Messages[2].Parts = []llm.Part{parts[0], &section, &delta}
+	params, _, err := (&Provider{defaultMaxTokens: 99}).buildParams(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body := testutil.MustCompactJSON(t, params); !strings.Contains(body, "tool_addition") || !strings.Contains(body, `Updated system prompt section`) {
+		t.Fatalf("pointer parts were not sent in place:\n%s", body)
+	}
+}
+
+func TestAnthropicStreamDrainIsBoundedWhenServerHoldsOpen(t *testing.T) {
+	old := providerutil.StreamDrainGrace
+	providerutil.StreamDrainGrace = 30 * time.Millisecond
+	t.Cleanup(func() { providerutil.StreamDrainGrace = old })
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, anthropicSSE(
+			`{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"usage":{"input_tokens":1,"output_tokens":0}}}`,
+			`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"hi"}}`,
+			`{"type":"content_block_stop","index":0}`,
+			`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`,
+			`{"type":"message_stop"}`,
+		))
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	t.Cleanup(server.Close)
+	p, err := New(WithAPIKey("k"), WithBaseURL(server.URL), WithHTTPClient(server.Client()), WithMaxRetries(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	resp, err := llm.Collect(p.ChatStream(context.Background(), anthropicStreamFixtureRequest()))
+	if err != nil || resp.Text() != "hi" {
+		t.Fatalf("held-open stream = %+v, %v; the completed response must still be returned", resp, err)
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("drain took %v, want it bounded by the grace", elapsed)
 	}
 }

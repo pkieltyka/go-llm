@@ -177,8 +177,10 @@ Unified request fields (all optional unless noted):
 
 `Message` = role + ordered content parts + optional provenance.
 
-Roles: `user`, `assistant`, `tool` (tool results), `system` (only where a
-provider models it as a message; normally use the request-level `System`).
+Roles: `user`, `assistant`, `tool` (tool results), and `system`. A
+`system` message changes the instructions or the offered tools from its
+position on (§7A); the request-level `System` and `Tools` are the
+conversation's starting point.
 
 **Provenance** (pi-validated): assistant messages carry optional
 `Provider`/`Model` metadata — stamped by `History.AddResponse`, preserved
@@ -197,6 +199,10 @@ Content part types:
   opaque raw payload** (e.g. Anthropic thinking-block signatures, OpenRouter
   `reasoning_details`) so multi-turn round-tripping works when messages are
   replayed
+- `SystemDelta` — sets a named section of the system prompt; empty text
+  deletes it (system messages only, §7A)
+- `ToolsDelta` — tools added and tool names removed (system messages only,
+  §7A)
 - Provider-specific parts may be registered through the extension mechanism
 
 ### 4.4 Response
@@ -406,6 +412,97 @@ adapter and its OpenRouter, vLLM, and Ollama presets.
   all four have hosted web search in incompatible shapes (v2 unification
   candidate, see provider_capabilities.md). Anthropic's `pause_turn` from
   server tools is normalized to `StopReason: paused`.
+
+## 7A. Positional Instructions and Tool Changes
+
+A prompt cache is a prefix, so changing `System` or `Tools` mid-conversation
+invalidates it from the top. Instead, a `system` message records the change
+where it happens, and providers send it in place where the model accepts
+that (pi's transcript model, `SystemMessage` with `sections`, `toolsAdded`,
+`toolsRemoved`).
+
+- **Parts.** A `system` message carries `TextPart` (more instructions),
+  `SystemDeltaPart{Section, Text, Cache}` (set a named section; empty
+  `Text` deletes it), and `ToolsDeltaPart{Added, Removed, Cache}` (withdraw
+  names, then offer tools, an added tool replacing one of the same name).
+  These two parts are rejected outside `system` messages, and a `system`
+  message rejects any other part, except that an `UnknownPart` (from a
+  newer go-llm's history) is ignored, as it is everywhere.
+- **Effective state** replays like pi's `getCurrentSystemMessage`. The
+  prompt is `System`, then each later text in order, then the sections in
+  the order they were first set, joined by blank lines. The tools are
+  `Tools`, then each delta in order (removals, then additions). As with pi's
+  `Map.set`, updating a section or redefining a tool keeps its position;
+  only a deleted section or removed tool that is added again moves to the
+  end.
+- **Folding.** `llm.FoldPositional(req, support)` folds what the target
+  model cannot take in place into `System` and `Tools`, which then hold the
+  state after the last change. Folding is deterministic and keeps the
+  meaning; only the cache benefit is lost. The leading run of `system`
+  messages always folds, because it describes the conversation's start.
+  Tools in place require instructions in place.
+- **Per-model support** comes from `ModelInfo.Behavior` in the embedded
+  table (§13B). Unknown models fold. The capabilities
+  `positional-instructions` and `positional-tools` say a provider has an
+  in-place mapping; they are advisory, and no request is rejected for
+  lacking them.
+- **Anthropic** (probed 2026-10-22, plan 11):
+  - Remaining `system` messages are sent as `role: "system"`, text as is
+    and section updates framed as pi frames them (`Updated system prompt
+    section "<name>":` / `Removed system prompt section "<name>".`).
+  - Tool changes become `tool_removal` and `tool_addition` blocks
+    (removals first, skipping a name the same delta redefines) under the
+    `inline-tools-2026-09-15` beta, added automatically. The top-level
+    `tools` list stays the initial one.
+  - Anthropic accepts a system message only after a user message (or an
+    assistant turn ending in a server tool result), and a `tool_use` must be
+    followed by its `tool_result`. So system messages are held until just
+    before the next assistant turn and adjacent ones merge, as pi does. A
+    system message that would directly follow an assistant turn (a
+    prefill, or consecutive assistant turns) fails locally with
+    `ErrBadRequest`.
+  - `tool_choice` may name a tool added in place, and works with no
+    top-level tools at all.
+  - The cached prefix survives every change, and the beta header may first
+    appear at the first change. pi's deferred placeholder tool is not
+    needed.
+- **OpenAI Responses:**
+  - Remaining `system` messages are sent as `developer` messages.
+  - On a model that takes tool changes in place, every tool, including the
+    initial ones, is declared in `additional_tools` input items from the
+    first turn (pi's "changes" layout), so a later change extends the
+    prompt. A later item is preceded by pi's incremental-update notice.
+    This applies to every request with tools on those models, positional
+    messages or not, so sessions that predate it re-cache once. It was
+    probed under Sign in with ChatGPT; the API-key path follows pi's own
+    verification.
+  - `Options.HostedTools` stay in the top-level `tools` list next to the
+    in-place function tools; the mix is accepted and both are used.
+  - Removals cannot be expressed on the wire, so they are announced as
+    developer text and restated as "Still unavailable" until the tool is
+    declared again.
+  - `tool_choice` (named, required, none) and `parallel_tool_calls` work
+    with these tools.
+- **Chat Completions** engines (OpenRouter, vLLM, Ollama, custom) always
+  fold, as pi does by default: many chat templates reject system messages
+  after the conversation starts.
+- **Validation.** Removing a tool that is not offered at that point fails
+  with `ErrBadRequest`, as does a duplicate added name. When a request
+  carries any `ToolsDeltaPart`, an assistant tool call naming a tool not
+  offered at its position also fails (pi validates against the replayed
+  offered set). Without tool deltas, history may still name tools that are
+  no longer offered. `ToolChoice` must name a tool offered after the last
+  message. Tools added in place need `tools`, and strict ones
+  `strict-tools`.
+- **Serialization.** The parts encode as `system_delta` and `tools_delta`
+  (tools with `name`, `description`, `input_schema`, `strict`,
+  `annotations`; the schema reloads as `json.RawMessage`). An envelope whose
+  messages carry them is written as version 2, so readers that predate
+  them reject it instead of dropping the changes; other envelopes stay
+  version 1.
+- **Caching and estimation.** `CacheHint`s on the new parts are honored
+  where they are sent in place (Anthropic) and rewritten by
+  `CacheRetention`. Estimators count the new parts.
 
 ## 8. Structured Output
 
@@ -683,7 +780,8 @@ Cost sourcing:
    parsed lazily on first use, and stamped with a generation date. Upstream
    data is not hand-curated: a gap stays unknown and a wrong value is fixed
    upstream (models.dev or OpenRouter). The overrides file is kept empty as an emergency escape
-   hatch. The
+   hatch. The one exception is per-model wire behavior, which no upstream
+   publishes: generator rules add it, as pi's do (§13B). The
    embedded-table API never fetches model data at runtime. Explicit provider
    `Models(ctx)` calls may use that provider's remote model endpoint.
    Estimates are marked as estimates via `Usage.CostSource`. No table entry →
@@ -695,7 +793,8 @@ Cost sourcing:
 - Standard constants in core: `streaming`, `tools`, `tool-choice-required`,
   `tool-streaming`, `parallel-tools`, `strict-tools`, `json-schema`,
   `json-mode`, `reasoning`, `image-input`, `pdf-input`, `stop-sequences`,
-  `prompt-caching`, `session-affinity`, `cost-reporting`, `models-listing`.
+  `prompt-caching`, `session-affinity`, `cost-reporting`, `models-listing`,
+  `positional-instructions`, `positional-tools` (advisory, §7A).
 - `cost-reporting` means the provider NATIVELY reports the request's cost in
   its responses (e.g. OpenRouter's `usage.cost`); price-table cost
   *estimation* is universal, works for every provider, and is not
@@ -858,6 +957,22 @@ asks (ARCH §10: no silent clamping).
     one sent. `CountTokens` reaches the provider directly.
   - The counting call is a visible extra wire request; it is never folded
     into `Chat`/`ChatStream`.
+
+## 13B. Model Behavior
+
+`ModelInfo.Behavior` records how go-llm talks to a model, the counterpart
+of pi's per-model `compat` flags. Upstream catalogs do not publish these
+facts, so the `models.json` generator applies rules
+(`scripts/model-behavior.ts`), each citing its evidence (pi's rules or a
+live probe), and writes a `behavior` object on matching rows. Adapters read
+it through `LookupModelInfo` at request time; `Models` listings carry it for
+listed models. A zero field means unsupported or unknown and selects the
+conservative behavior. Aggregator rows (OpenRouter) do not inherit their
+canonical model's behavior, because the wire differs.
+
+- `PositionalInstructions`: `system` messages are accepted after the
+  conversation starts (§7A).
+- `PositionalTools`: tool changes are accepted in place (§7A).
 
 ## 14. Provider-Specific Extensions
 

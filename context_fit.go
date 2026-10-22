@@ -51,17 +51,10 @@ func EstimateRequestTokens(req *Request) int64 {
 	}
 	total := addTokens(estimateRequestOverhead, estimateTextTokens(req.System))
 	total = addTokens(total, estimateMessagesTokens(req.Messages))
-	if len(req.Tools) > 0 {
+	if len(req.Tools) > 0 || HasToolsDelta(req.Messages) {
 		total = addTokens(total, estimateToolsPreamble)
 	}
-	for _, tool := range req.Tools {
-		definition, _ := json.Marshal(struct {
-			Name        string `json:"name"`
-			Description string `json:"description,omitempty"`
-			Schema      any    `json:"schema,omitempty"`
-		}{tool.Name, tool.Description, tool.InputSchema})
-		total = addTokens(total, estimateToolOverhead+estimateTextTokens(string(definition)))
-	}
+	total = addTokens(total, estimateToolsTokens(req.Tools))
 	if req.ResponseFormat != nil && req.ResponseFormat.Schema != nil {
 		schema, _ := json.Marshal(req.ResponseFormat.Schema)
 		total = addTokens(total, estimateToolOverhead+estimateTextTokens(string(schema)))
@@ -81,6 +74,19 @@ func EstimateRequestTokens(req *Request) int64 {
 // direction.
 func EstimateContinuationTokens(last Usage, trailing []Message) int64 {
 	return addTokens(last.ContextUsage(0).UsedTokens, estimateMessagesTokens(trailing))
+}
+
+func estimateToolsTokens(tools []Tool) int64 {
+	var total int64
+	for _, tool := range tools {
+		definition, _ := json.Marshal(struct {
+			Name        string `json:"name"`
+			Description string `json:"description,omitempty"`
+			Schema      any    `json:"schema,omitempty"`
+		}{tool.Name, tool.Description, tool.InputSchema})
+		total = addTokens(total, estimateToolOverhead+estimateTextTokens(string(definition)))
+	}
+	return total
 }
 
 func estimateMessagesTokens(messages []Message) int64 {
@@ -120,6 +126,14 @@ func estimatePartTokens(part Part) int64 {
 		return estimateTextTokens(p.Text)
 	case UnknownPart:
 		return estimateTextTokens(string(p.Data))
+	case SystemDeltaPart:
+		return addTokens(estimateTextTokens(p.Section), estimateTextTokens(p.Text))
+	case ToolsDeltaPart:
+		total := estimateToolsTokens(p.Added)
+		for _, name := range p.Removed {
+			total = addTokens(total, estimateTextTokens(name))
+		}
+		return total
 	default:
 		return 0
 	}

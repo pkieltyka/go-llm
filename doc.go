@@ -37,6 +37,13 @@
 // optional pointers), Tools, ToolChoice, ResponseFormat, the Effort
 // reasoning dial, and SessionID routing affinity.
 //
+// A RoleSystem message changes the instructions or tools from its position on
+// (TextPart, SystemDeltaPart, ToolsDeltaPart), so a long conversation keeps
+// its cached prefix. Providers send these changes in place for models whose
+// ModelInfo.Behavior allows it (Anthropic inline tool changes, OpenAI
+// additional_tools) and fold the rest into System and Tools with
+// FoldPositional.
+//
 // ChatStream returns an iter.Seq2[Event, error] of unified events. Collect
 // drains any stream into a *Response — and on an in-stream error it returns
 // the partial Response accumulated so far alongside the error, so aborted

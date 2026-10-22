@@ -273,13 +273,13 @@ func TestMarshalUnknownPartRejectsBuiltInDiscriminators(t *testing.T) {
 }
 
 func TestUnmarshalMessagesChecksVersionBeforeMessages(t *testing.T) {
-	input := []byte(`{"version":2,"messages":[{"role":"user","parts":[{"text":"missing type"}]}]}`)
+	input := []byte(`{"version":3,"messages":[{"role":"user","parts":[{"text":"missing type"}]}]}`)
 
 	_, err := UnmarshalMessages(input)
 	if !errors.Is(err, ErrBadRequest) {
 		t.Fatalf("error = %v, want ErrBadRequest", err)
 	}
-	if err == nil || !bytes.Contains([]byte(err.Error()), []byte("unsupported message envelope version 2")) {
+	if err == nil || !bytes.Contains([]byte(err.Error()), []byte("unsupported message envelope version 3")) {
 		t.Fatalf("error = %v, want unsupported version before part decode", err)
 	}
 }

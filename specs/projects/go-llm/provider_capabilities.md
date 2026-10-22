@@ -15,6 +15,13 @@ status: complete
 empty means unknown. Provider-wide `Provider.Capabilities()` remains the sole
 request-validation authority.
 
+`ModelInfo.Behavior` (FS §13B) is separate: per-model wire behavior written
+into `models.json` by generator rules, consulted by adapters at request
+time. Today it marks positional instructions and tool changes (FS §7A):
+Anthropic claude-opus-4-8, -opus-5, -opus-5-5, -sonnet-5-5, -haiku-5-5,
+-fable-5, -fable-5-1 (both), claude-sonnet-5 (instructions only); OpenAI
+gpt-5.4 family, gpt-5.5, gpt-5.6-*, gpt-6-*, gpt-6.1-sol (both).
+
 ## Capability evidence layers
 
 An advertised provider-wide capability is a request-validation claim: it says

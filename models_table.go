@@ -48,14 +48,22 @@ const (
 )
 
 type modelTableRow struct {
-	Provider         string             `json:"provider"`
-	ID               string             `json:"id"`
-	CanonicalID      string             `json:"canonical_id,omitempty"`
-	DisplayName      string             `json:"display_name,omitempty"`
-	ContextWindow    *int               `json:"context_window,omitempty"`
-	MaxOutputTokens  *int               `json:"max_output_tokens,omitempty"`
-	Pricing          *modelTablePricing `json:"pricing,omitempty"`
-	SupportedEfforts []string           `json:"supported_efforts,omitempty"`
+	Provider         string              `json:"provider"`
+	ID               string              `json:"id"`
+	CanonicalID      string              `json:"canonical_id,omitempty"`
+	DisplayName      string              `json:"display_name,omitempty"`
+	ContextWindow    *int                `json:"context_window,omitempty"`
+	MaxOutputTokens  *int                `json:"max_output_tokens,omitempty"`
+	Pricing          *modelTablePricing  `json:"pricing,omitempty"`
+	SupportedEfforts []string            `json:"supported_efforts,omitempty"`
+	Behavior         *modelTableBehavior `json:"behavior,omitempty"`
+}
+
+// modelTableBehavior is a row's per-model behavior, written by the
+// generator's rules (scripts/model-behavior.ts).
+type modelTableBehavior struct {
+	PositionalInstructions bool `json:"positional_instructions,omitempty"`
+	PositionalTools        bool `json:"positional_tools,omitempty"`
 }
 
 type modelTablePricing struct {
@@ -381,6 +389,9 @@ func (row modelTableRow) modelInfo() ModelInfo {
 	}
 	if row.Pricing != nil {
 		info.Pricing = row.Pricing.modelPricing()
+	}
+	if b := row.Behavior; b != nil {
+		info.Behavior = ModelBehavior{PositionalInstructions: b.PositionalInstructions, PositionalTools: b.PositionalTools}
 	}
 	if row.SupportedEfforts != nil {
 		info.SupportedEfforts = make([]Effort, len(row.SupportedEfforts))

@@ -43,7 +43,7 @@ func TestLiveRunnerManifests(t *testing.T) {
 		runners    map[string]ScenarioRun
 	}{
 		{"anthropic", anthropicProvider, anthropicLiveScenarioRunners("reasoning-model", "")},
-		{"openai", openAIProvider, openAILiveScenarioRunners("")},
+		{"openai", openAIProvider, openAILiveScenarioRunners("", false)},
 		{"openrouter", openRouterProvider, openRouterLiveScenarioRunners("reasoning-model", "cache-model", "parallel-model", "tools-model", "")},
 		{"vllm", vllmProvider, vllmLiveScenarioRunners(vllmProvider, "http://localhost:8000/v1")},
 	}

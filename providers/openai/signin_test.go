@@ -14,6 +14,7 @@ import (
 
 	llm "github.com/pkieltyka/go-llm"
 	"github.com/pkieltyka/go-llm/authstore"
+	"github.com/pkieltyka/go-llm/providers/internal/providerutil"
 )
 
 const signInCompletedSSE = "event: response.output_text.delta\n" +
@@ -154,9 +155,9 @@ func TestStreamReadsToEOFAfterCompletion(t *testing.T) {
 }
 
 func TestStreamDrainIsBoundedWhenServerHoldsOpen(t *testing.T) {
-	old := streamDrainGrace
-	streamDrainGrace = 30 * time.Millisecond
-	t.Cleanup(func() { streamDrainGrace = old })
+	old := providerutil.StreamDrainGrace
+	providerutil.StreamDrainGrace = 30 * time.Millisecond
+	t.Cleanup(func() { providerutil.StreamDrainGrace = old })
 	s := newSignInServer(t)
 	s.after = func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() }
 	start := time.Now()

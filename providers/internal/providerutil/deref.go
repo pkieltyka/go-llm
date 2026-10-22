@@ -44,6 +44,16 @@ func DerefPart(part llm.Part) llm.Part {
 			return nil
 		}
 		return *p
+	case *llm.SystemDeltaPart:
+		if p == nil {
+			return nil
+		}
+		return *p
+	case *llm.ToolsDeltaPart:
+		if p == nil {
+			return nil
+		}
+		return *p
 	default:
 		return part
 	}

@@ -4,6 +4,7 @@ import { chmod, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync, gzipSync } from "node:zlib";
+import { type ModelBehavior, modelBehavior } from "./model-behavior.ts";
 
 export type Pricing = {
   input_per_mtok?: number;
@@ -30,6 +31,7 @@ export type ModelRow = {
   max_output_tokens?: number;
   pricing?: Pricing;
   supported_efforts?: string[];
+  behavior?: ModelBehavior;
 };
 
 export type SnapshotDocument = {
@@ -177,7 +179,10 @@ export function buildSnapshot(
     rows.set(key(row), mergeRow(rows.get(key(row)), row));
   }
 
-  const models = [...rows.values()].map(finalizePricing).sort((a, b) => compareStrings(key(a), key(b)));
+  const models = [...rows.values()]
+    .map(finalizePricing)
+    .map(applyBehavior)
+    .sort((a, b) => compareStrings(key(a), key(b)));
   validateOutputProviders(models);
   const document = {
     schema_version: snapshotSchemaVersion,
@@ -652,6 +657,14 @@ function finalizePricing(row: ModelRow): ModelRow {
     }
   }
   return { ...row, pricing: { ...base, tiers } };
+}
+
+// applyBehavior sets a row's behavior from the rules in model-behavior.ts,
+// which own the field.
+function applyBehavior(row: ModelRow): ModelRow {
+  const { behavior: _, ...rest } = row;
+  const behavior = modelBehavior(row.provider, row.id);
+  return behavior ? { ...rest, behavior } : rest;
 }
 
 function compareStrings(left: string, right: string): number {

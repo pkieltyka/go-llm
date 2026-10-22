@@ -14,6 +14,17 @@ import (
 // TestOpenAIAppendOnlyPrefix machine-checks the append-only wire-prefix
 // property prompt caches rely on across a two-turn tool session.
 func TestOpenAIAppendOnlyPrefix(t *testing.T) {
+	runOpenAIAppendOnlyPrefix(t, "gpt-test", false)
+}
+
+// gpt-5.6-luna takes positional changes in place: tools live in
+// additional_tools items from turn 1, so a later addition extends the
+// prefix (FS §7A).
+func TestOpenAIAppendOnlyPrefixWithPositionalChanges(t *testing.T) {
+	runOpenAIAppendOnlyPrefix(t, "gpt-5.6-luna", true)
+}
+
+func runOpenAIAppendOnlyPrefix(t *testing.T, model string, appendDelta bool) {
 	var mu sync.Mutex
 	var bodies [][]byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -49,8 +60,9 @@ func TestOpenAIAppendOnlyPrefix(t *testing.T) {
 			defer mu.Unlock()
 			return append([][]byte(nil), bodies...)
 		},
-		Model:         "gpt-test",
+		Model:         model,
 		MessagesField: "input",
 		StableFields:  []string{"model", "tools", "prompt_cache_key", "instructions"},
+		AppendDelta:   appendDelta,
 	})
 }

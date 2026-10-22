@@ -222,109 +222,11 @@ func cloneResponse(resp *llm.Response) *llm.Response {
 	return &copied
 }
 
-func cloneMessages(msgs []llm.Message) []llm.Message {
-	if len(msgs) == 0 {
-		return nil
-	}
-	out := make([]llm.Message, len(msgs))
-	for i, msg := range msgs {
-		out[i] = msg
-		out[i].Parts = cloneParts(msg.Parts)
-	}
-	return out
-}
+// cloneMessages and cloneParts use the root package's deep copy, which
+// knows every core part type.
+func cloneMessages(msgs []llm.Message) []llm.Message { return llm.CloneMessages(msgs) }
 
-func cloneParts(parts []llm.Part) []llm.Part {
-	if len(parts) == 0 {
-		return nil
-	}
-	out := make([]llm.Part, len(parts))
-	for i, part := range parts {
-		out[i] = clonePart(part)
-	}
-	return out
-}
-
-func clonePart(part llm.Part) llm.Part {
-	switch p := part.(type) {
-	case llm.TextPart:
-		p.Cache = cloneCache(p.Cache)
-		return p
-	case llm.ImagePart:
-		p.Data = append([]byte(nil), p.Data...)
-		p.Cache = cloneCache(p.Cache)
-		return p
-	case llm.FilePart:
-		p.Data = append([]byte(nil), p.Data...)
-		p.Cache = cloneCache(p.Cache)
-		return p
-	case llm.ToolCallPart:
-		p.Args = append(json.RawMessage(nil), p.Args...)
-		return p
-	case llm.ToolResultPart:
-		p.Content = cloneParts(p.Content)
-		return p
-	case llm.ReasoningPart:
-		p.Raw = append(json.RawMessage(nil), p.Raw...)
-		return p
-	case llm.UnknownPart:
-		p.Data = append(json.RawMessage(nil), p.Data...)
-		return p
-	case *llm.TextPart:
-		if p == nil {
-			return nil
-		}
-		copied := *p
-		copied.Cache = cloneCache(p.Cache)
-		return copied
-	case *llm.ImagePart:
-		if p == nil {
-			return nil
-		}
-		copied := *p
-		copied.Data = append([]byte(nil), p.Data...)
-		copied.Cache = cloneCache(p.Cache)
-		return copied
-	case *llm.FilePart:
-		if p == nil {
-			return nil
-		}
-		copied := *p
-		copied.Data = append([]byte(nil), p.Data...)
-		copied.Cache = cloneCache(p.Cache)
-		return copied
-	case *llm.ToolCallPart:
-		if p == nil {
-			return nil
-		}
-		copied := *p
-		copied.Args = append(json.RawMessage(nil), p.Args...)
-		return copied
-	case *llm.ToolResultPart:
-		if p == nil {
-			return nil
-		}
-		copied := *p
-		copied.Content = cloneParts(p.Content)
-		return copied
-	case *llm.ReasoningPart:
-		if p == nil {
-			return nil
-		}
-		copied := *p
-		copied.Raw = append(json.RawMessage(nil), p.Raw...)
-		return copied
-	case *llm.UnknownPart:
-		if p == nil {
-			return nil
-		}
-		copied := *p
-		copied.Data = append(json.RawMessage(nil), p.Data...)
-		return copied
-	default:
-		return part
-	}
-}
+func cloneParts(parts []llm.Part) []llm.Part { return llm.CloneParts(parts) }
 
 func cloneEvent(event llm.Event) llm.Event {
 	switch e := event.(type) {

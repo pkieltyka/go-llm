@@ -51,7 +51,31 @@ type ModelInfo struct {
 	// The metadata is advisory: empty means unknown, and request validation
 	// continues to use Provider.Capabilities().
 	Capabilities []Capability
-	Raw          any
+	// Behavior records how go-llm talks to the model (FS §13B). It comes
+	// from the embedded models.json table, whose generator applies per-model
+	// rules as pi does; live listings leave it zero, which means unknown and
+	// selects the conservative behavior.
+	Behavior ModelBehavior
+	Raw      any
+}
+
+// ModelBehavior holds per-model wire behavior from the embedded models.json
+// table. Providers consult it through LookupModelInfo; a zero field means
+// unsupported or unknown.
+type ModelBehavior struct {
+	// PositionalInstructions: RoleSystem messages are accepted after the
+	// conversation has started, so they are sent in place instead of being
+	// folded into the system prompt.
+	PositionalInstructions bool
+	// PositionalTools: tool additions and removals are accepted in place
+	// (Anthropic tool_addition/tool_removal, OpenAI additional_tools).
+	PositionalTools bool
+}
+
+// PositionalSupport returns the positional changes the model accepts in
+// place, for FoldPositional.
+func (b ModelBehavior) PositionalSupport() PositionalSupport {
+	return PositionalSupport{Instructions: b.PositionalInstructions, Tools: b.PositionalInstructions && b.PositionalTools}
 }
 
 // ModelPricingTier replaces the base rates for an entire request when its

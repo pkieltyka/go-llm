@@ -247,3 +247,70 @@ func reasoningRawMarker(resp *llm.Response) string {
 	}
 	return best
 }
+
+// livePositionalChangesScenario adds a tool and a prompt section with a
+// mid-conversation system message, then removes the tool (FS §7A). model
+// must take positional changes in place. With expectCacheRead, turn 2 must
+// read the prefix turn 1 cached: folding would have rewritten the system
+// prompt and missed.
+func livePositionalChangesScenario(ctx context.Context, t *testing.T, p llm.Provider, model string, expectCacheRead bool) {
+	t.Helper()
+	info, ok := llm.LookupModelInfo(p.Name(), model)
+	if !ok || !info.Behavior.PositionalSupport().Tools {
+		t.Fatalf("%s/%s does not take positional tool changes in place; pin a model whose behavior does", p.Name(), model)
+	}
+	cityTool := func(name, description string) llm.Tool {
+		return llm.Tool{Name: name, Description: description, InputSchema: json.RawMessage(`{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}`)}
+	}
+	history := []llm.Message{llm.UserParts(llm.TextPart{Text: "Say OK.", Cache: &llm.CacheHint{}})}
+	req := func() *llm.Request {
+		return &llm.Request{
+			Model:       model,
+			System:      strings.Repeat("Positional changes live fixture sentence with stable content. ", 600),
+			SystemCache: &llm.CacheHint{},
+			Tools:       []llm.Tool{cityTool("get_time", "Get the current time in a city.")},
+			MaxTokens:   512,
+			Messages:    llm.CloneMessages(history),
+		}
+	}
+	first, err := p.Chat(ctx, req())
+	if err != nil {
+		t.Fatalf("turn 1 returned error: %v", err)
+	}
+
+	history = append(history, assistantMessage(first),
+		llm.UserParts(llm.TextPart{Text: "Use the get_weather tool for Paris.", Cache: &llm.CacheHint{}}),
+		llm.Message{Role: llm.RoleSystem, Parts: []llm.Part{
+			llm.SystemDeltaPart{Section: "weather", Text: "Weather questions must be answered with the get_weather tool."},
+			llm.ToolsDeltaPart{Added: []llm.Tool{cityTool("get_weather", "Get the current weather in a city.")}},
+		}})
+	second, err := p.Chat(ctx, req())
+	if err != nil {
+		t.Fatalf("turn 2 (tool added in place) returned error: %v", err)
+	}
+	calls := second.ToolCalls()
+	if len(calls) == 0 || calls[0].Name != "get_weather" {
+		t.Fatalf("turn 2 tool calls = %+v, want get_weather (added in place)", calls)
+	}
+	if expectCacheRead && second.Usage.CacheReadTokens == 0 {
+		t.Fatalf("turn 2 read no cached prefix (turn 1 usage %+v, turn 2 usage %+v): the tool addition rewrote the prefix", first.Usage, second.Usage)
+	}
+
+	history = append(history, assistantMessage(second),
+		llm.Message{Role: llm.RoleTool, Parts: []llm.Part{llm.ToolResult(calls[0].ID, "18C and sunny")}},
+		llm.UserText("Thanks. Now the weather in Rome, if a weather tool is still available; otherwise reply with exactly UNAVAILABLE."),
+		llm.Message{Role: llm.RoleSystem, Parts: []llm.Part{llm.ToolsDeltaPart{Removed: []string{"get_weather"}}}})
+	third, err := p.Chat(ctx, req())
+	if err != nil {
+		t.Fatalf("turn 3 (tool removed in place) returned error: %v", err)
+	}
+	for _, call := range third.ToolCalls() {
+		if call.Name == "get_weather" {
+			t.Fatalf("turn 3 called get_weather after it was removed: %+v", third.ToolCalls())
+		}
+	}
+}
+
+func assistantMessage(resp *llm.Response) llm.Message {
+	return llm.Message{Role: llm.RoleAssistant, Parts: llm.CloneParts(resp.Parts), Provider: resp.Provider, Model: resp.Model}
+}

@@ -37,6 +37,8 @@ var liveCapabilityCoverage = []capabilityCoverage{
 	{llm.CapabilityPromptCaching, []string{"prompt_cache"}},
 	{llm.CapabilitySessionAffinity, []string{"session_affinity"}},
 	{llm.CapabilityCostReporting, []string{"cost_reporting"}},
+	{llm.CapabilityPositionalInstructions, []string{"positional_changes"}},
+	{llm.CapabilityPositionalTools, []string{"positional_changes"}},
 	{llm.Capability("openrouter/routing"), nil},
 	{llm.Capability("openrouter/plugins"), nil},
 }
@@ -89,6 +91,7 @@ var liveScenarioOrder = []string{
 	"multimodal",
 	"stop_sequences",
 	"prompt_cache",
+	"positional_changes",
 	"session_affinity",
 	"usage",
 	"cost_reporting",
