@@ -260,12 +260,16 @@ func liveVLLMReasoningReplayScenario(ctx context.Context, t *testing.T, p llm.Pr
 	}
 }
 
+// liveVLLMReasoningResponse uses EffortMedium because the accepted
+// reasoning_effort ladder is chat-template specific: Qwen3.8-Flash-Next
+// rejects "high" (400: supported types are xhigh, medium, and low), while
+// medium is the portable middle of every ladder seen live.
 func liveVLLMReasoningResponse(ctx context.Context, t *testing.T, p llm.Provider, model string) *llm.Response {
 	t.Helper()
 	resp, err := CollectLiveStream(p.Name(), p.ChatStream(ctx, &llm.Request{
 		Model:     model,
 		MaxTokens: 2048,
-		Effort:    llm.EffortHigh,
+		Effort:    llm.EffortMedium,
 		Messages:  []llm.Message{llm.UserText(anthropicReasoningPrompt)},
 	}))
 	if err != nil {
