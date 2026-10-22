@@ -354,6 +354,29 @@ For error handling across providers, `llm.ErrorClass`, `llm.Transient`, and
 the log-safe `llm.SafeErrorInfo` classify through the typed sentinel chain.
 Retry budgets and backoff stay your policy.
 
+## Context fitting
+
+Measure a request before sending it, and guard against overflowing the
+window:
+
+```go
+count, err := llm.CountTokens(ctx, p, req) // exact on vLLM/Anthropic, else an estimate
+info, err := llm.ResolveModelInfo(ctx, p, req.Model)
+
+guarded := llm.Wrap(p, llm.ContextGuard(llm.GuardConfig{
+	MaxOccupancy:   0.85,
+	ClampMaxTokens: true,
+	OnNearFull: func(ctx context.Context, req *llm.Request, r llm.GuardReport) error {
+		return compactHistory(ctx) // your policy; return an error to abort the call
+	},
+}))
+```
+
+`llm.EstimateRequestTokens` and `llm.EstimateContinuationTokens` are
+deterministic, calibrated estimates (within roughly 0.95–1.17× of exact
+counts, leaning high). `llm.FitMaxTokens` and `llm.EstimateCostBound` are
+pure helpers. Nothing here runs implicitly.
+
 ## CLI
 
 ```sh

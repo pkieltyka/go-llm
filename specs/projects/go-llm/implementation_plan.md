@@ -335,8 +335,9 @@ top of `llm.Wrap`, never as core default behavior.
   templates drop prior thinking on replay by design). **Flip-the-default
   criteria**: vLLM closes multimodal (#32685), truncation (#38132), and
   statefulness (#24603) gaps / "Open Responses" spec alignment stabilizes.
-- **`vllm.ContextGuard` middleware** — see the dedicated Future Work
-  entry below. Decision recorded 2026-07-05: the opt-in `llm.Wrap`
+- **`vllm.ContextGuard` middleware** — SHIPPED as the generic
+  `llm.ContextGuard` (plan 10, 2026-10-22; FS §13A) over any
+  `llm.TokenCounter`. Decision recorded 2026-07-05: the opt-in `llm.Wrap`
   middleware over the `Tokenize` extension is the PREFERRED integration
   for exact context accounting between calls; tokenize is never wired
   implicitly into `Chat`/`ChatStream` (would double every request, buys
@@ -353,8 +354,10 @@ middleware candidate for v1.x — per-provider key pools sit naturally on
 the `llm.Wrap` seam; typed `ErrRateLimited.RetryAfter` gives it clean
 signals.
 
-**`vllm.ContextGuard` middleware** (designed 2026-07-05, deliberately NOT
-implemented yet): an opt-in `llm.Wrap` middleware over the concrete vllm
+**`vllm.ContextGuard` middleware** — SHIPPED 2026-10-22 as the generic
+`llm.ContextGuard` (specs/plans/10-context-fitting.md, FS §13A), counting
+through any `llm.TokenCounter` (vLLM, Anthropic) with an estimate fallback.
+Original design note (2026-07-05): an opt-in `llm.Wrap` middleware over the concrete vllm
 provider's `Tokenize` giving ground-truth pre-flight context management —
 `GuardConfig{MaxOccupancy, ClampMaxTokens, OnNearFull func(...)}` (fail or
 notify before the server 400s; deterministically clamp MaxTokens to fit

@@ -25,7 +25,8 @@ type Middleware struct {
 }
 
 // Wrap returns p decorated by middleware. The first middleware argument is
-// outermost. Name, Capabilities, and Models delegate to p unchanged. Wrap also
+// outermost. Name, Capabilities, and Models delegate to p unchanged, and the
+// returned provider has an Unwrap() Provider method returning p. Wrap also
 // binds provider-aware middleware (Middleware.Bind) to p once before
 // composing handlers.
 func Wrap(p Provider, mw ...Middleware) Provider {
@@ -56,6 +57,12 @@ type wrappedProvider struct {
 	provider Provider
 	chat     ChatFunc
 	stream   StreamFunc
+}
+
+// Unwrap returns the provider this one decorates, so optional extensions
+// such as TokenCounter remain discoverable through Wrap (see CountTokens).
+func (p *wrappedProvider) Unwrap() Provider {
+	return p.provider
 }
 
 func (p *wrappedProvider) Name() string {

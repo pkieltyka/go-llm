@@ -1652,3 +1652,70 @@ func TestAnthropicOneHourCacheWritesTrackedAndLeaveCostUnknown(t *testing.T) {
 		t.Fatalf("streamed usage = %+v, want 200 1h writes and unknown cost", resp.Usage)
 	}
 }
+
+func TestAnthropicCountTokens(t *testing.T) {
+	var gotPath string
+	var gotBody map[string]json.RawMessage
+	var gotBeta string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotBeta = r.Header.Get("Anthropic-Beta")
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"input_tokens":1234}`)
+	}))
+	defer server.Close()
+	p, err := New(WithAPIKey("test-key"), WithBaseURL(server.URL), WithHTTPClient(server.Client()), WithMaxRetries(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := llm.CountTokens(context.Background(), llm.Wrap(p, llm.Middleware{}), &llm.Request{
+		Model:           "claude-test",
+		System:          "be brief",
+		MaxTokens:       999,
+		Temperature:     llm.Ptr(0.3),
+		Effort:          llm.EffortLow,
+		Tools:           []llm.Tool{{Name: "lookup", InputSchema: json.RawMessage(`{"type":"object","properties":{}}`)}},
+		Messages:        []llm.Message{llm.UserText("hello")},
+		ProviderOptions: Options{BetaHeaders: []string{"test-beta-2026"}},
+	})
+	if err != nil || got != (llm.TokenCount{Tokens: 1234, Exact: true}) {
+		t.Fatalf("CountTokens = %+v, %v", got, err)
+	}
+	if gotPath != "/v1/messages/count_tokens" {
+		t.Fatalf("path = %q", gotPath)
+	}
+	for _, field := range []string{"model", "messages", "system", "tools", "tool_choice", "thinking", "output_config"} {
+		if _, ok := gotBody[field]; !ok {
+			t.Errorf("count body missing %q: %v", field, gotBody)
+		}
+	}
+	for _, field := range []string{"max_tokens", "temperature", "stop_sequences", "metadata"} {
+		if _, ok := gotBody[field]; ok {
+			t.Errorf("count body carries generation-only field %q", field)
+		}
+	}
+	if !strings.Contains(gotBeta, "test-beta-2026") {
+		t.Fatalf("beta headers not forwarded: %q", gotBeta)
+	}
+}
+
+func TestAnthropicCountTokensMapsErrorsAndValidates(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`)
+	}))
+	defer server.Close()
+	p, err := New(WithAPIKey("test-key"), WithBaseURL(server.URL), WithHTTPClient(server.Client()), WithMaxRetries(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.CountTokens(context.Background(), &llm.Request{Model: "claude-test", Messages: []llm.Message{llm.UserText("hi")}}); !errors.Is(err, llm.ErrRateLimited) {
+		t.Fatalf("CountTokens err = %v, want ErrRateLimited", err)
+	}
+	if _, err := p.CountTokens(context.Background(), &llm.Request{Model: "claude-test", Messages: []llm.Message{{Role: llm.RoleSystem, Parts: []llm.Part{llm.Text("x")}}}}); !errors.Is(err, llm.ErrUnsupported) {
+		t.Fatalf("CountTokens must validate like Chat, got %v", err)
+	}
+}

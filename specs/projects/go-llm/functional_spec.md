@@ -568,9 +568,12 @@ A single, minimal interceptor seam:
   `llm.Wrap(provider, mw...)` returns a decorated `Provider`. Adapters know
   nothing about middleware.
 - Use cases: tracing, redaction, request mutation, custom policies. Shipped
-  built-ins on this seam: the observability trio (§17B) and
-  `RetryDroppedToolCalls` (§7); third-party integrations (OpenTelemetry,
-  metrics backends) build on the same seam.
+  built-ins on this seam: the observability trio (§17B),
+  `RetryDroppedToolCalls` (§7), and `ContextGuard` (§13A); third-party
+  integrations (OpenTelemetry, metrics backends) build on the same seam.
+- A wrapped provider exposes `Unwrap() Provider`, so optional extensions
+  such as `TokenCounter` stay discoverable through `Wrap` (`llm.CountTokens`
+  follows the chain).
 
 ## 10C. Prompt Templates (minimal)
 
@@ -774,6 +777,92 @@ models snapshot §11):
 - `Session.ContextUsage()` composes the two (last-turn usage + embedded
   window for the session's model; `ok=false` when the model is unknown
   to the table).
+
+## 13A. Context Fitting
+
+Explicit, opt-in helpers that answer "how big is this request, and does it
+fit?". None runs implicitly, and none changes a request unless the caller
+asks (ARCH §10: no silent clamping).
+
+- **`llm.EstimateRequestTokens(req)`** is a deterministic,
+  provider-neutral estimate covering system text, message parts, tool
+  definitions, and response format. It is calibrated (2026-10-22) against
+  vLLM's exact `/tokenize` on Qwen3.8: prose, Go code, indented JSON, tool
+  loops, and a 20-message conversation land at 0.95–1.17× of the exact
+  count. Two known cases run higher; both are described below. The rules:
+  - Text by character class: ASCII letters and digits at 4 per token,
+    punctuation at 0.6 tokens each, each newline and each whitespace
+    character after the first in a run at 0.5, and each non-ASCII rune at
+    1 token. CJK is about 1.5× high on CJK-efficient tokenizers such as
+    Qwen's, and lower on others.
+  - Fixed overheads: 8 per request, 4 per message, a one-time 300-token
+    tool-use preamble when tools are offered, plus 8 per tool and its
+    definition JSON. The preamble dominates tiny prompts, which therefore
+    estimate higher (1.36× for a one-tool, two-message request).
+  - Tool-call IDs (in calls and results) count as text.
+  - Images count 1600 tokens each. That is Anthropic's per-image cap, so on
+    providers that tile large images (for example vLLM-served vision models)
+    it is a floor, not a bound.
+  - Inline PDFs count 2500 per page object found (minimum 2000). Other
+    non-text files count 2000. Text-typed file data counts as text.
+  - Reasoning counts its visible text only, and extension parts count
+    nothing.
+  - It never claims exactness. Constants change only with recorded
+    calibration evidence.
+- **`llm.EstimateContinuationTokens(last, trailing)`** is the last
+  response's full occupancy (input, cache reads and writes, and output) plus
+  the estimate of the messages added since. `trailing` excludes the
+  assistant message built from that response. Hidden reasoning counted in
+  `OutputTokens` but not replayed makes the result run high, the safe
+  direction.
+- **`llm.TokenCounter`** is an optional exact-count extension,
+  `CountTokens(ctx, req) (TokenCount, error)`, found by type assertion.
+  vLLM implements it over `/tokenize`. Anthropic implements it over
+  `/v1/messages/count_tokens`, with the Chat conversion reduced to the
+  fields that endpoint accepts.
+- **`llm.CountTokens(ctx, p, req)`** uses the first counter on `p` or the
+  providers it wraps, and otherwise returns the estimate with
+  `Exact: false`. A counter error is returned unchanged.
+- **`llm.ResolveModelInfo(ctx, p, model)`** merges the live `Models()` row
+  (exact ID, then `SameModel`; among several inexact matches the lexically
+  greatest ID, normally the latest dated snapshot, wins) with the embedded
+  table, filling only zero or nil fields and never inventing one. A `Models()` failure degrades to
+  the table, and the error surfaces only when neither source knows the
+  model.
+- **`llm.FitMaxTokens(prompt, window, requested, margin)`** is a pure
+  function: `min(requested, window-prompt-margin)`, with requested ≤ 0
+  meaning "as much as fits". It returns `ErrContextTooLong` when no output
+  fits.
+- **`llm.EstimateCostBound(prompt, maxOutput, pricing)`** prices the prompt
+  as uncached input, as cache reads, and as cache writes, and returns the
+  largest; it reports unknown when a rate is missing.
+- **`llm.ContextGuard(GuardConfig{MaxOccupancy, Margin, ClampMaxTokens,
+  OnNearFull, Window})`** is `Wrap` middleware. Per request:
+  - It measures with `CountTokens`, falling back to the estimate if the
+    counter fails.
+  - It resolves the window per model, caching successful lookups and
+    unknown models, and passes the request through when the window is
+    unknown. A transient lookup failure is retried on the next request
+    rather than disabling the guard.
+  - It fails before the network call with `ErrContextTooLong` only for an
+    exact count with prompt + Margin ≥ window. An estimate never fails a
+    request.
+  - It runs `OnNearFull` at or above `MaxOccupancy` (a fraction; default
+    0.9, and values above 1 count as 1). The hook's error aborts the call.
+    The hook must not mutate the request, because the guard does not
+    re-measure. This is the go-agent compaction trigger: the primitive
+    lives here and the policy in go-agent.
+  - With `ClampMaxTokens`, it lowers an explicit `MaxTokens` on a copy of
+    the request, to fit the window and to a known `MaxOutputTokens`. It
+    never sets an unset `MaxTokens`: raising a provider's default can change
+    behavior (Anthropic's SDK requires streaming for large non-streaming
+    budgets).
+  - For `ChatStream`, the check runs when the stream is iterated.
+  - Place the guard last among the `Wrap` arguments (innermost), so that
+    request-rewriting middleware runs first and the measured request is the
+    one sent. `CountTokens` reaches the provider directly.
+  - The counting call is a visible extra wire request; it is never folded
+    into `Chat`/`ChatStream`.
 
 ## 14. Provider-Specific Extensions
 

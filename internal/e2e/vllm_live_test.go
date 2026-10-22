@@ -334,6 +334,14 @@ func liveVLLMTokenizeScenario(ctx context.Context, t *testing.T, p *vllmProvider
 	if result.Count <= 0 {
 		t.Fatalf("tokenize count = %d, want > 0", result.Count)
 	}
+	// llm.CountTokens must reach the TokenCounter through llm.Wrap and agree
+	// exactly with Tokenize.
+	counted, err := llm.CountTokens(ctx, llm.Wrap(p, llm.Middleware{}), req)
+	if err != nil || !counted.Exact || counted.Tokens != int64(result.Count) {
+		t.Fatalf("CountTokens through Wrap = %+v, %v; want exact %d", counted, err, result.Count)
+	}
+	estimate := llm.EstimateRequestTokens(req)
+	t.Logf("estimate=%d exact=%d ratio=%.2f", estimate, result.Count, float64(estimate)/float64(result.Count))
 	if result.MaxModelLen <= 0 {
 		t.Fatalf("tokenize max_model_len = %d, want > 0", result.MaxModelLen)
 	}
