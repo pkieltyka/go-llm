@@ -266,6 +266,20 @@ adapter and its OpenRouter, vLLM, and Ollama presets.
   collision, or old-id mismatch as a canonical malformed-stream error.
   Identity corrections never create `Response.DroppedToolCalls` metadata.
   `ToolCallDropped` remains reserved for calls the adapter actually abandons.
+- **Incremental collection**: `llm.Collector` (zero value ready) is the
+  event-at-a-time form of `Collect`, which is defined as a loop over
+  `Collector.Add` followed by `Collector.Finish`, so the two share one
+  precedence. `Add` normalizes and folds one event and returns the canonical
+  malformed-stream error, which is sticky (later `Add` calls return it, and
+  it wins over a terminal stream error in `Finish`). `Snapshot` returns an
+  owned deep copy of what `Collect` would return if the stream failed now
+  (nil before `MessageStart` and any content), so a consumer can forward
+  deltas while periodically persisting the partial response. As with
+  `Response.Clone`, the in-memory SDK payloads (`Response.Raw`,
+  `Usage.Raw`) are shared by reference. `Finish(err)`
+  is idempotent, and `Add` after it is `ErrBadRequest`. `Session` streaming
+  collects through the same type. `llm.NormalizeEvent` exports the
+  pointer-to-value event normalization these paths share.
 - A helper (`llm.Collect`) accumulates any stream into a complete
   `*Response`. A text-only consumer adapter, `llm.StreamText`, filters a
   stream to plain text deltas (`iter.Seq2[string, error]`); its
@@ -879,6 +893,32 @@ to pre-stream errors. An empty-but-2xx SSE stream (zero events before EOF)
 normalizes to an in-stream `ErrServer` ("provider returned an empty
 stream") — never a silent empty success.
 
+**Classification helpers** (consumer-facing, typed-chain only — never
+message matching):
+
+- `llm.ErrorClass(err)` returns the normalized class in err's chain: one of
+  the package sentinels (including the `ErrLogin*` login sentinels) or
+  `context.Canceled` / `context.DeadlineExceeded`; nil when unclassified.
+  Precedence when a chain matches several: cancellation, then deadline, then
+  specific conditions (`ErrContextTooLong`, `ErrContentFiltered`,
+  `ErrUnsupported`, `ErrInsufficientCredits`, `ErrRateLimited`,
+  `ErrOverloaded`, `ErrTimeout`, `ErrAuth`, `ErrPermission`, `ErrNotFound`,
+  login sentinels), then the generic `ErrBadRequest` and `ErrServer`.
+- `llm.SafeErrorInfo(err)` returns a serializable `llm.ErrorInfo{Class,
+  Provider, HTTPStatus, RetryAfter}` following the `SafeSummary` policy: it
+  never contains `Code`, `Message`, `Metadata`, or `RawBody`. `Class` uses
+  the stable vocabulary `canceled`, `deadline_exceeded`,
+  `context_too_long`, `content_filtered`, `unsupported`,
+  `insufficient_credits`, `rate_limited`, `overloaded`, `timeout`, `auth`,
+  `permission`, `not_found`, `login_expired`, `login_state_mismatch`,
+  `login_closed`, `bad_request`, `server`.
+- `llm.Transient(err)` is true exactly for `ErrRateLimited`,
+  `ErrOverloaded`, `ErrServer`, and `ErrTimeout` (and false when the chain
+  also carries cancellation). It is classification only: attempt budgets,
+  backoff, and jitter are caller policy, applied after go-llm's own
+  transport retries. An expired provider `WithTimeout` surfaces as
+  `context.DeadlineExceeded` and is not transient.
+
 ## 17. Configuration & Operations
 
 - Per-provider constructors with functional options: `WithAPIKey` (env-var
@@ -915,6 +955,16 @@ stream") — never a silent empty success.
 - All calls take `context.Context`; no global mutable request state. The
   write-once part registry, lazily parsed model table, and shared private
   default transport are the only process-wide infrastructure.
+- **`llm.CredentialEnvNames()`** lists every credential-bearing environment
+  variable read in-process, so hosts that spawn subprocesses can scrub them.
+  go-llm code reads `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+  `OPENROUTER_API_KEY`, `OPENAI_CUSTOM_HEADERS`, and (`llm-cli` only)
+  `OPENAI_CODEX_ACCESS_TOKEN`. openai-go's environment defaults also read
+  `OPENAI_ADMIN_KEY` and `OPENAI_WEBHOOK_SECRET`, which the adapters override
+  rather than use; the Anthropic SDK's environment defaults are disabled.
+  Self-hosted presets read no environment variables. A repository test scans
+  provider and CLI sources, resolving constant arguments, to keep the
+  go-llm-read names exact.
 - go-llm **never reads configuration files implicitly** — credentials
   come from explicit options or environment variables. For applications
   that keep provider credentials in a file, one explicit opt-in loader is

@@ -1,6 +1,8 @@
 package llm
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -120,5 +122,99 @@ func TestSafeErrorFindsWrappedProviderErrorAndPreservesLocalErrors(t *testing.T)
 	local := errors.New("local validation detail")
 	if got := SafeError(local); got != local.Error() {
 		t.Fatalf("SafeError(local) = %q, want %q", got, local.Error())
+	}
+}
+
+func TestErrorClassCoversEveryExportedSentinel(t *testing.T) {
+	for _, sentinel := range []error{
+		ErrAuth, ErrPermission, ErrNotFound, ErrBadRequest, ErrRateLimited,
+		ErrInsufficientCredits, ErrOverloaded, ErrServer, ErrTimeout,
+		ErrContentFiltered, ErrContextTooLong, ErrUnsupported,
+		ErrLoginExpired, ErrLoginStateMismatch, ErrLoginClosed,
+		context.Canceled, context.DeadlineExceeded,
+	} {
+		wrapped := fmt.Errorf("outer: %w", &ProviderError{Provider: "p", Kind: sentinel})
+		if got := ErrorClass(wrapped); got != sentinel {
+			t.Errorf("ErrorClass(%v) = %v, want %v", wrapped, got, sentinel)
+		}
+		if info := SafeErrorInfo(wrapped); info.Class == "" {
+			t.Errorf("SafeErrorInfo(%v).Class is empty", sentinel)
+		}
+	}
+	if ErrorClass(nil) != nil || ErrorClass(errors.New("plain")) != nil {
+		t.Fatal("nil and unclassified errors must have a nil class")
+	}
+}
+
+func TestErrorClassPrecedence(t *testing.T) {
+	cases := []struct {
+		err  error
+		want error
+	}{
+		{fmt.Errorf("%w: %w", ErrBadRequest, ErrContextTooLong), ErrContextTooLong},
+		{fmt.Errorf("%w: %w", ErrBadRequest, ErrUnsupported), ErrUnsupported},
+		{&ProviderError{Kind: errors.Join(ErrServer, context.Canceled)}, context.Canceled},
+		{&ProviderError{Kind: errors.Join(ErrServer, ErrTimeout)}, ErrTimeout},
+	}
+	for _, tc := range cases {
+		if got := ErrorClass(tc.err); got != tc.want {
+			t.Errorf("ErrorClass(%v) = %v, want %v", tc.err, got, tc.want)
+		}
+	}
+}
+
+func TestSafeErrorInfoExcludesProviderDetail(t *testing.T) {
+	err := fmt.Errorf("call: %w", &ProviderError{
+		Provider:   "openrouter",
+		HTTPStatus: 429,
+		Code:       "secret-code",
+		Message:    "echoed prompt with bearer token",
+		RetryAfter: 3 * time.Second,
+		Metadata:   map[string]any{"token": "secret-metadata"},
+		RawBody:    []byte("secret-body"),
+		Kind:       ErrRateLimited,
+	})
+	info := SafeErrorInfo(err)
+	want := ErrorInfo{Class: "rate_limited", Provider: "openrouter", HTTPStatus: 429, RetryAfter: 3 * time.Second}
+	if info != want {
+		t.Fatalf("SafeErrorInfo = %+v, want %+v", info, want)
+	}
+	encoded, marshalErr := json.Marshal(info)
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	for _, secret := range []string{"secret-code", "echoed prompt", "bearer token", "secret-metadata", "secret-body"} {
+		if strings.Contains(string(encoded), secret) {
+			t.Fatalf("SafeErrorInfo JSON leaked %q: %s", secret, encoded)
+		}
+	}
+	if got := SafeErrorInfo(&ProviderError{Provider: "bad label!", Kind: ErrServer}); got.Provider != "" {
+		t.Fatalf("unsafe provider label leaked: %+v", got)
+	}
+	if got := SafeErrorInfo(nil); got != (ErrorInfo{}) {
+		t.Fatalf("SafeErrorInfo(nil) = %+v, want zero", got)
+	}
+}
+
+func TestTransient(t *testing.T) {
+	transient := map[error]bool{
+		ErrRateLimited: true, ErrOverloaded: true, ErrServer: true, ErrTimeout: true,
+		ErrContextTooLong: false, ErrAuth: false, ErrPermission: false, ErrNotFound: false,
+		ErrBadRequest: false, ErrInsufficientCredits: false, ErrContentFiltered: false,
+		ErrUnsupported: false, ErrLoginExpired: false, context.Canceled: false,
+		context.DeadlineExceeded: false,
+	}
+	for sentinel, want := range transient {
+		if got := Transient(&ProviderError{Kind: sentinel}); got != want {
+			t.Errorf("Transient(%v) = %v, want %v", sentinel, got, want)
+		}
+	}
+	// A transient class wrapped alongside cancellation is not transient: the
+	// caller chose to stop.
+	if Transient(&ProviderError{Kind: errors.Join(ErrServer, context.Canceled)}) {
+		t.Fatal("canceled server error must not be transient")
+	}
+	if Transient(nil) || Transient(errors.New("plain")) {
+		t.Fatal("nil and unclassified errors must not be transient")
 	}
 }

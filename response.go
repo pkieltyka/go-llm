@@ -43,6 +43,27 @@ func (r *Response) Reasoning() string {
 	return b.String()
 }
 
+// Clone returns a deep copy of r, or nil when r is nil. Parts follow
+// CloneParts semantics; DroppedToolCalls and Usage.CostUSD are copied, and
+// nil versus empty slices are preserved. The
+// in-memory SDK payloads Response.Raw and Usage.Raw are shared by reference
+// because their concrete types belong to provider SDKs.
+func (r *Response) Clone() *Response {
+	if r == nil {
+		return nil
+	}
+	cloned := *r
+	cloned.Parts = cloneParts(r.Parts)
+	if r.Parts != nil && cloned.Parts == nil {
+		cloned.Parts = []Part{}
+	}
+	if r.DroppedToolCalls != nil {
+		cloned.DroppedToolCalls = append([]DroppedToolCall{}, r.DroppedToolCalls...)
+	}
+	cloned.Usage = cloneUsage(r.Usage)
+	return &cloned
+}
+
 // ToolCalls returns all top-level tool calls in order.
 func (r *Response) ToolCalls() []ToolCallPart {
 	if r == nil {

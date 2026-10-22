@@ -180,6 +180,33 @@ func AssistantParts(parts ...Part) Message {
 	return Message{Role: RoleAssistant, Parts: cloneParts(parts)}
 }
 
+// CloneParts returns a deep copy of parts. Pointer parts are normalized to
+// their value form (a typed nil pointer part becomes a nil element); byte
+// payloads (image and file data, tool-call
+// arguments, reasoning raw payloads, unknown-part data), cache hints, and
+// nested tool-result content are copied. Provider extension parts are shared
+// by reference because their concrete types live outside this package (the
+// same rule History.Messages documents). An empty or nil slice returns nil.
+func CloneParts(parts []Part) []Part {
+	return cloneParts(parts)
+}
+
+// CloneMessage returns a deep copy of msg with CloneParts semantics.
+func CloneMessage(msg Message) Message {
+	return Message{
+		Role:     msg.Role,
+		Parts:    cloneParts(msg.Parts),
+		Provider: msg.Provider,
+		Model:    msg.Model,
+	}
+}
+
+// CloneMessages returns a deep copy of msgs with CloneParts semantics. An
+// empty or nil slice returns nil.
+func CloneMessages(msgs []Message) []Message {
+	return cloneMessages(msgs)
+}
+
 func cloneMessages(msgs []Message) []Message {
 	if len(msgs) == 0 {
 		return nil

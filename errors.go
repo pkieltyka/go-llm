@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strconv"
@@ -123,6 +124,119 @@ func safeProviderErrorKind(kind error) string {
 		}
 	}
 	return ""
+}
+
+// errorClasses is the ErrorClass precedence order: cancellation first (the
+// caller's own decision), then specific provider conditions before the
+// generic ErrBadRequest/ErrServer buckets they may be wrapped alongside.
+var errorClasses = []struct {
+	err  error
+	name string
+}{
+	{context.Canceled, "canceled"},
+	{context.DeadlineExceeded, "deadline_exceeded"},
+	{ErrContextTooLong, "context_too_long"},
+	{ErrContentFiltered, "content_filtered"},
+	{ErrUnsupported, "unsupported"},
+	{ErrInsufficientCredits, "insufficient_credits"},
+	{ErrRateLimited, "rate_limited"},
+	{ErrOverloaded, "overloaded"},
+	{ErrTimeout, "timeout"},
+	{ErrAuth, "auth"},
+	{ErrPermission, "permission"},
+	{ErrNotFound, "not_found"},
+	{ErrLoginExpired, "login_expired"},
+	{ErrLoginStateMismatch, "login_state_mismatch"},
+	{ErrLoginClosed, "login_closed"},
+	{ErrBadRequest, "bad_request"},
+	{ErrServer, "server"},
+}
+
+// ErrorClass returns the normalized class of err: one of the package
+// sentinels (ErrAuth … ErrLoginClosed) or context.Canceled /
+// context.DeadlineExceeded, matched with errors.Is through the whole chain.
+// It returns nil for a nil or unclassified error. When a chain matches
+// several classes, context.Canceled wins, then context.DeadlineExceeded,
+// then specific conditions
+// (ErrContextTooLong, ErrContentFiltered, ...) win over the generic
+// ErrBadRequest and ErrServer.
+func ErrorClass(err error) error {
+	if err == nil {
+		return nil
+	}
+	for _, class := range errorClasses {
+		if errors.Is(err, class.err) {
+			return class.err
+		}
+	}
+	return nil
+}
+
+// ErrorInfo is a serializable, log-safe description of an error, suitable
+// for events, metrics labels, and durable records. It never carries
+// provider-controlled detail (ProviderError Code, Message, Metadata, or
+// RawBody).
+type ErrorInfo struct {
+	// Class is the stable lowercase name of ErrorClass(err): "canceled",
+	// "deadline_exceeded", "context_too_long", "content_filtered",
+	// "unsupported", "insufficient_credits", "rate_limited", "overloaded",
+	// "timeout", "auth", "permission", "not_found", "login_expired",
+	// "login_state_mismatch", "login_closed", "bad_request", or "server".
+	// Empty when the error is unclassified.
+	Class string `json:"class,omitempty"`
+	// Provider is the bounded adapter identity from a wrapped ProviderError,
+	// following SafeSummary's label rules; empty otherwise.
+	Provider string `json:"provider,omitempty"`
+	// HTTPStatus is the wrapped ProviderError's HTTP status, or zero.
+	HTTPStatus int `json:"http_status,omitempty"`
+	// RetryAfter is the wrapped ProviderError's provider-requested delay, or
+	// zero. It serializes as integer nanoseconds.
+	RetryAfter time.Duration `json:"retry_after,omitempty"`
+}
+
+// SafeErrorInfo describes err without any provider-controlled detail. A nil
+// error returns the zero ErrorInfo.
+func SafeErrorInfo(err error) ErrorInfo {
+	if err == nil {
+		return ErrorInfo{}
+	}
+	var info ErrorInfo
+	class := ErrorClass(err)
+	for _, candidate := range errorClasses {
+		if candidate.err == class {
+			info.Class = candidate.name
+			break
+		}
+	}
+	var providerErr *ProviderError
+	if errors.As(err, &providerErr) && providerErr != nil {
+		info.Provider = safeProviderLabel(providerErr.Provider)
+		info.HTTPStatus = providerErr.HTTPStatus
+		info.RetryAfter = providerErr.RetryAfter
+	}
+	return info
+}
+
+// Transient reports whether err's class is conventionally worth retrying as a
+// new, unchanged attempt: ErrRateLimited, ErrOverloaded, ErrServer, or
+// ErrTimeout. It is false for everything else, including ErrContextTooLong
+// (the request must change first), authentication, credits, content
+// filtering, bad requests, and cancellation or deadline expiry. An expired
+// provider WithTimeout surfaces as context.DeadlineExceeded and is therefore
+// not transient here; a caller that wants to retry its own per-call timeout
+// decides that explicitly.
+//
+// Transient is classification only. It never sleeps or retries, and attempt
+// budgets and backoff remain the caller's policy. Honor
+// ProviderError.RetryAfter (see SafeErrorInfo) when it is set. go-llm's own
+// transport retries have already run by the time an error reaches the caller.
+func Transient(err error) bool {
+	switch ErrorClass(err) {
+	case ErrRateLimited, ErrOverloaded, ErrServer, ErrTimeout:
+		return true
+	default:
+		return false
+	}
 }
 
 // Error formats as "llm/<provider>: <status> <code>: <message>", omitting

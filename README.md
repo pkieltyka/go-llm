@@ -320,6 +320,33 @@ be continued on a *different* provider: mid-conversation failover,
 cheap-model tool loops handed to a stronger model for synthesis, or histories
 that simply outlive your vendor choice.
 
+To persist a turn *while* it streams, collect it incrementally.
+`llm.Collector` has exactly `Collect`'s semantics, and `Snapshot` returns an
+owned copy of the partial response at any point:
+
+```go
+var c llm.Collector
+for event, err := range p.ChatStream(ctx, req) {
+	if err == nil {
+		err = c.Add(event)
+	}
+	if err != nil {
+		partial, finishErr := c.Finish(err) // partial survives, as with Collect
+		return persistAborted(partial, finishErr)
+	}
+	forward(event)
+	if time.Since(lastSave) > 100*time.Millisecond {
+		savePartial(c.Snapshot())
+		lastSave = time.Now()
+	}
+}
+resp, _ := c.Finish(nil)
+```
+
+For error handling across providers, `llm.ErrorClass`, `llm.Transient`, and
+the log-safe `llm.SafeErrorInfo` classify through the typed sentinel chain.
+Retry budgets and backoff stay your policy.
+
 ## CLI
 
 ```sh

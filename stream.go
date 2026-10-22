@@ -118,40 +118,133 @@ func Collect(events iter.Seq2[Event, error]) (*Response, error) {
 		return nil, fmt.Errorf("%w: nil stream", ErrBadRequest)
 	}
 
-	resp := &Response{}
-	blocks := map[int]Part{}
-	activeTools := map[int]struct{}{}
-	seenStart := false
-
-	partial := func() *Response {
-		if !seenStart && len(blocks) == 0 {
-			return nil
-		}
-		return finalizeCollectedResponse(resp, blocks)
-	}
-
+	var c Collector
 	for event, err := range events {
 		if err != nil {
-			return partial(), err
+			return c.Finish(err)
 		}
-		event, err = normalizeEvent(event)
-		if err != nil {
-			return partial(), err
-		}
-		if _, ok := event.(MessageStart); ok {
-			seenStart = true
-		}
-		if err := applyCollectEvent(resp, blocks, activeTools, event); err != nil {
-			return partial(), err
+		if err := c.Add(event); err != nil {
+			return c.Finish(err)
 		}
 	}
+	return c.Finish(nil)
+}
 
-	return finalizeCollectedResponse(resp, blocks), nil
+// Collector accumulates stream events into a Response one event at a time,
+// with exactly the semantics of Collect: Collect is a loop over Add followed
+// by Finish. Use it when a consumer must act on events as they arrive — for
+// example to forward deltas while also persisting periodic Snapshots of the
+// response so far.
+//
+// The zero value is ready to use. A Collector is not safe for concurrent use
+// (streams are single-use and consumed by one goroutine) and must not be
+// copied after first use.
+type Collector struct {
+	resp        Response
+	blocks      map[int]Part
+	activeTools map[int]struct{}
+	seenStart   bool
+	err         error
+	finished    bool
+	final       *Response
+}
+
+// Add normalizes and folds one event. Pointer events are accepted and
+// normalized to their value form, as in Collect.
+//
+// Add returns the canonical malformed-stream error for an event that
+// violates the stream grammar (unknown or nil event, index type collision,
+// mismatched ToolCallIDChanged, ...). The error is sticky: once Add fails,
+// later Add calls return the same error without applying anything, and
+// Finish reports it. Add after Finish returns ErrBadRequest.
+func (c *Collector) Add(event Event) error {
+	if c.finished {
+		return fmt.Errorf("%w: collector already finished", ErrBadRequest)
+	}
+	if c.err != nil {
+		return c.err
+	}
+	if c.blocks == nil {
+		c.blocks = map[int]Part{}
+		c.activeTools = map[int]struct{}{}
+	}
+	event, err := normalizeEvent(event)
+	if err != nil {
+		c.err = err
+		return err
+	}
+	if _, ok := event.(MessageStart); ok {
+		c.seenStart = true
+	}
+	if err := applyCollectEvent(&c.resp, c.blocks, c.activeTools, event); err != nil {
+		c.err = err
+		return err
+	}
+	return nil
+}
+
+// Snapshot returns an owned deep copy of the Response that Collect would
+// return if the stream failed now: nil before MessageStart and before any
+// content, otherwise the partial response (StopReason stays empty until
+// MessageEnd). After Finish it returns a copy of the response Finish
+// returned, including any changes the caller made to it. Later Add calls never mutate a returned snapshot, and
+// mutating a snapshot never affects the Collector. Raw SDK payloads
+// (Response.Raw, Usage.Raw) are shared by reference, as with Response.Clone.
+func (c *Collector) Snapshot() *Response {
+	if c.finished {
+		return c.final.Clone()
+	}
+	if !c.seenStart && len(c.blocks) == 0 {
+		return nil
+	}
+	snapshot := c.resp
+	snapshot.DroppedToolCalls = append([]DroppedToolCall(nil), c.resp.DroppedToolCalls...)
+	snapshot.Usage = cloneUsage(c.resp.Usage)
+	return finalizeCollectedResponse(&snapshot, c.blocks)
+}
+
+// Finish completes collection and returns what Collect would return for the
+// same event sequence. Pass the terminal stream error, or nil when the
+// stream ended cleanly:
+//
+//   - clean end after successful Adds: the complete Response and nil;
+//   - a non-nil streamErr, or an earlier Add failure: the partial Response
+//     (nil before MessageStart and any content) and the error. An earlier
+//     Add failure takes precedence over streamErr, because Collect stops at
+//     the first error.
+//
+// The caller owns the returned Response. Finish is idempotent: later calls
+// return the same values.
+func (c *Collector) Finish(streamErr error) (*Response, error) {
+	if c.finished {
+		return c.final, c.err
+	}
+	c.finished = true
+	if c.err == nil {
+		c.err = streamErr
+	}
+	if c.err != nil && !c.seenStart && len(c.blocks) == 0 {
+		c.final = nil
+	} else {
+		c.final = finalizeCollectedResponse(&c.resp, c.blocks)
+	}
+	c.blocks = nil
+	c.activeTools = nil
+	return c.final, c.err
+}
+
+// NormalizeEvent applies the Event value-type doctrine: pointer events
+// dereference to their value form, while nil (typed or untyped) and unknown
+// event types return ErrBadRequest. Collect, Collector, and the built-in
+// middleware normalize this way; stream decorators can use it to see the same
+// value types.
+func NormalizeEvent(event Event) (Event, error) {
+	return normalizeEvent(event)
 }
 
 // applyCollectEvent folds one normalized event into an accumulating response.
-// It is the single event-application path shared by Collect and Session's
-// stream collection, so the two can never diverge.
+// It is Collector's single event-application path; Collect and Session's
+// stream collection both run through Collector, so they can never diverge.
 func applyCollectEvent(resp *Response, blocks map[int]Part, activeTools map[int]struct{}, event Event) error {
 	switch e := event.(type) {
 	case MessageStart:

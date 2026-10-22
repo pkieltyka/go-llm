@@ -156,9 +156,7 @@ func (s *Session) ChatStream(ctx context.Context, parts ...Part) iter.Seq2[Event
 		s.history.Add(UserParts(pendingParts...))
 		stream := s.provider.ChatStream(ctx, s.request())
 
-		resp := &Response{}
-		blocks := map[int]Part{}
-		activeTools := map[int]struct{}{}
+		var collector Collector
 		for event, err := range stream {
 			if err != nil {
 				yield(event, err)
@@ -169,7 +167,7 @@ func (s *Session) ChatStream(ctx context.Context, parts ...Part) iter.Seq2[Event
 				yield(nil, err)
 				return
 			}
-			if err := applyCollectEvent(resp, blocks, activeTools, event); err != nil {
+			if err := collector.Add(event); err != nil {
 				yield(nil, err)
 				return
 			}
@@ -177,7 +175,8 @@ func (s *Session) ChatStream(ctx context.Context, parts ...Part) iter.Seq2[Event
 				return
 			}
 		}
-		s.appendResponse(finalizeCollectedResponse(resp, blocks))
+		resp, _ := collector.Finish(nil)
+		s.appendResponse(resp)
 		committed = true
 	}
 }

@@ -188,3 +188,34 @@ func (c *AuthCredential) UnmarshalJSON(data []byte) error {
 	*c = next
 	return nil
 }
+
+// credentialEnvNames lists every credential-bearing environment variable read
+// in-process by go-llm code or its wrapped SDKs. A repository test scans
+// provider and CLI sources so the go-llm-read names cannot silently drift.
+var credentialEnvNames = []string{
+	"ANTHROPIC_API_KEY",         // providers/anthropic default API key
+	"OPENAI_API_KEY",            // providers/openai default API key
+	"OPENROUTER_API_KEY",        // providers/openrouter default API key
+	"OPENAI_CUSTOM_HEADERS",     // OpenAI-family ambient headers; may carry auth
+	"OPENAI_CODEX_ACCESS_TOKEN", // cmd/llm-cli Codex access token
+	// openai-go's DefaultClientOptions reads these in-process. The adapters
+	// override them, but they are credentials present in the process.
+	"OPENAI_ADMIN_KEY",
+	"OPENAI_WEBHOOK_SECRET",
+}
+
+// CredentialEnvNames returns the environment variables that can carry
+// credentials and are read in-process by go-llm providers, llm-cli, or the
+// wrapped SDKs, in a stable order. Hosts that spawn subprocesses (for example
+// agent tool runners) use it to scrub those variables from child
+// environments. go-llm code reads ANTHROPIC_API_KEY, OPENAI_API_KEY,
+// OPENROUTER_API_KEY, OPENAI_CUSTOM_HEADERS, and (llm-cli only)
+// OPENAI_CODEX_ACCESS_TOKEN. The OpenAI SDK's environment defaults
+// additionally read OPENAI_ADMIN_KEY and OPENAI_WEBHOOK_SECRET, which the
+// adapters override rather than use. The Anthropic SDK's environment defaults
+// are disabled. Self-hosted presets (vLLM, Ollama, the generic
+// chat-completions engine) read no environment variables. The returned slice
+// is a copy.
+func CredentialEnvNames() []string {
+	return append([]string(nil), credentialEnvNames...)
+}
