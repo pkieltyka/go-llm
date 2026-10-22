@@ -202,7 +202,7 @@ func (c config) sdkOptions() []sdkoption.RequestOption {
 					stored = storedCredential{cred: cred, ok: ok}
 				}
 				if stored.ok && stored.cred.Type == "oauth" {
-					return provideroauth.DoWithAuthRetry(req, provideroauth.MiddlewareNext(next), oauth, applyBearer)
+					return provideroauth.DoWithAuthRetry(req, provideroauth.MiddlewareNext(next), oauth.WithStored(stored.cred), applyBearer)
 				}
 				key, err := providerutil.APIKeyFromCredential(providerName, stored.cred, stored.ok, ambient)
 				if err != nil {

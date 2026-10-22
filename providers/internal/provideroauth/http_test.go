@@ -15,10 +15,10 @@ import (
 func TestDoWithAuthRetryUsesAlreadyRefreshedCredential(t *testing.T) {
 	var refreshCalls int
 	source := newTestResolver(t,
-		llm.AuthCredential{Type: "oauth", Access: "old", Refresh: "refresh"},
+		llm.AuthCredential{Type: "oauth", Access: "old", Expires: inAnHour(), Refresh: "refresh"},
 		func(context.Context, llm.AuthCredential) (llm.AuthCredential, error) {
 			refreshCalls++
-			return llm.AuthCredential{Type: "oauth", Access: "new"}, nil
+			return llm.AuthCredential{Type: "oauth", Access: "new", Expires: inAnHour()}, nil
 		},
 	)
 
@@ -61,7 +61,7 @@ func TestDoWithAuthRetryUsesAlreadyRefreshedCredential(t *testing.T) {
 func TestDoWithAuthRetryReturnsTokenError(t *testing.T) {
 	refreshErr := errors.New("refresh failed")
 	source := newTestResolver(t,
-		llm.AuthCredential{Type: "oauth", Access: "old", Refresh: "refresh"},
+		llm.AuthCredential{Type: "oauth", Access: "old", Expires: inAnHour(), Refresh: "refresh"},
 		func(context.Context, llm.AuthCredential) (llm.AuthCredential, error) {
 			return llm.AuthCredential{}, refreshErr
 		},
@@ -82,10 +82,10 @@ func TestDoWithAuthRetryBoundsAttemptsPerCredentialEpoch(t *testing.T) {
 	const maxRetries = 2
 	var refreshCalls int
 	source := newTestResolver(t,
-		llm.AuthCredential{Type: "oauth", Access: "old", Refresh: "refresh"},
+		llm.AuthCredential{Type: "oauth", Access: "old", Expires: inAnHour(), Refresh: "refresh"},
 		func(context.Context, llm.AuthCredential) (llm.AuthCredential, error) {
 			refreshCalls++
-			return llm.AuthCredential{Type: "oauth", Access: "new", Refresh: "refresh"}, nil
+			return llm.AuthCredential{Type: "oauth", Access: "new", Expires: inAnHour(), Refresh: "refresh"}, nil
 		},
 	)
 

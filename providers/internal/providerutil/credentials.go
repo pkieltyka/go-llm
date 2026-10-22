@@ -20,22 +20,23 @@ func StoredAPIKey(store llm.CredentialStore, providerID, ambient string) func(co
 }
 
 // APIKeyFromCredential applies pi's resolution rules to one store read: a
-// stored "api_key" credential is used; any other stored credential type
-// fails, because a stored credential owns the provider and never silently
-// falls back to the environment; with nothing stored (ok false), ambient
-// (the environment value captured at construction) is used when non-empty.
+// stored "api_key" credential's key is used; one without a key resolves
+// like nothing stored (pi keeps such entries for their other fields). Any
+// other stored credential type fails, because a stored credential owns the
+// provider and never silently falls back to the environment. With nothing
+// stored (ok false), ambient (the environment value captured at
+// construction) is used when non-empty.
 func APIKeyFromCredential(providerID string, cred llm.AuthCredential, ok bool, ambient string) (string, error) {
 	if ok {
 		if cred.Type != "" && cred.Type != "api_key" {
 			return "", fmt.Errorf("%w: stored %s credential has type %q; this provider accepts API keys only", llm.ErrAuth, providerID, cred.Type)
 		}
-		if cred.Key == "" {
-			return "", fmt.Errorf("%w: stored %s API key credential is empty", llm.ErrAuth, providerID)
+		if cred.Key != "" {
+			return cred.Key, nil
 		}
-		return cred.Key, nil
 	}
 	if ambient != "" {
 		return ambient, nil
 	}
-	return "", fmt.Errorf("%w: no %s credential is stored and no API key is configured", llm.ErrAuth, providerID)
+	return "", fmt.Errorf("%w: no %s API key is stored or configured", llm.ErrAuth, providerID)
 }

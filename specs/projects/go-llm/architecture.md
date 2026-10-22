@@ -650,7 +650,7 @@ credential source differs.
   key`; `oauth` → the internal `provideroauth.Resolver`, which refreshes five
   minutes before expiry inside `store.Modify` (re-checking under the lock),
   writes the rotated tokens before returning them, and bounds a started
-  refresh only by its own 30-second timeout (`context.WithoutCancel`). A 401
+  refresh only by its own 15-second timeout (`context.WithoutCancel`). A 401
   forces one refresh-if-still-current per request. With no stored entry,
   `OPENAI_API_KEY` is used.
 - Refresh: `POST https://auth.openai.com/api/accounts/oauth/token` with
@@ -963,15 +963,18 @@ type CredentialStore interface {
 ```
 
 `authstore.NewMemory(AuthFile)` and `authstore.NewFile(path)` implement it.
-`File` re-reads the file on every call, holds an in-process lock plus an OS
-lock on `<path>.lock` in pi's proper-lockfile protocol (a directory; mtime
-heartbeat every 15s; stale after 30s; bounded 45s wait returning
-`ErrTimeout`; ctx honored while waiting), writes
+`File` re-reads the file on every call (under the lock when it reads as
+empty or unparsable, since pi writes in place), holds an in-process lock
+plus an OS lock on `<path>.lock` in pi's proper-lockfile protocol (a
+directory; mtime heartbeat every 5s, inside the 10s stale age of pi's
+synchronous reload; stale after 30s; a holder whose lock was taken over
+writes nothing and leaves it; bounded 45s wait returning `ErrTimeout`; ctx
+honored while waiting), writes
 atomically (temp file, fsync, rename, directory sync) with mode 0600,
 replaces only credential fields on write, preserves other fields unless the
 credential type changes, always keeps `model`/`base_url`, and keeps file
 contents out of parse errors. A stored credential owns its provider: no env
-fallback once an entry exists. Token refresh lives in the internal
+fallback once an entry exists, except pi's keyless `api_key` entry. Token refresh lives in the internal
 `provideroauth.Resolver` (§3.2A); no exported token-source type exists.
 
 **Interactive login** uses a provider-neutral lifecycle while leaving wire

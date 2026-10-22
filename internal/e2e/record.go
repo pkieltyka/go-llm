@@ -34,7 +34,7 @@ var tokenRedactionPatterns = []*regexp.Regexp{
 
 var bearerPattern = regexp.MustCompile(`(?i)(bearer\s+)[A-Za-z0-9._~+/=-]{16,}`)
 
-var credentialJSONPattern = regexp.MustCompile(`(?i)("(api_key|key|authorization|x-api-key|access|refresh|access_token|refresh_token|accountId|chatgpt-account-id)"\s*:\s*")([^"]+)(")`)
+var credentialJSONPattern = regexp.MustCompile(`(?i)("(api_key|key|authorization|x-api-key|access|refresh|access_token|refresh_token|accountId)"\s*:\s*")([^"]+)(")`)
 
 var mockJSONPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)("(safety_identifier|prompt_cache_key|encrypted_content|signature|obfuscation|user|user_id|end_user_id)"\s*:\s*")([^"]+)(")`),
@@ -54,16 +54,15 @@ var sequentialMockPattern = regexp.MustCompile(`^MOCK-([A-Z0-9]+(?:-[A-Z0-9]+)*)
 var mockTokenPattern = regexp.MustCompile(`MOCK-[A-Za-z0-9_-]+`)
 
 var credentialFieldNames = map[string]struct{}{
-	"api_key":            {},
-	"key":                {},
-	"authorization":      {},
-	"x-api-key":          {},
-	"access":             {},
-	"refresh":            {},
-	"access_token":       {},
-	"refresh_token":      {},
-	"accountid":          {},
-	"chatgpt-account-id": {},
+	"api_key":       {},
+	"key":           {},
+	"authorization": {},
+	"x-api-key":     {},
+	"access":        {},
+	"refresh":       {},
+	"access_token":  {},
+	"refresh_token": {},
+	"accountid":     {},
 }
 
 var mockFieldNames = map[string]struct{}{
@@ -93,7 +92,6 @@ var sensitiveHeaderNames = map[string]struct{}{
 	"cookie":                    {},
 	"etag":                      {},
 	"set-cookie":                {},
-	"chatgpt-account-id":        {},
 	"anthropic-organization-id": {},
 	"cf-ray":                    {},
 	"nel":                       {},
@@ -1303,7 +1301,7 @@ func shannonEntropy(value []byte) float64 {
 }
 
 var unredactedFixturePatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)"(?:safety_identifier|prompt_cache_key|encrypted_content|signature|obfuscation|api_key|access|refresh|access_token|refresh_token|accountId|chatgpt-account-id)"\s*:\s*"[^"]+`),
+	regexp.MustCompile(`(?i)"(?:safety_identifier|prompt_cache_key|encrypted_content|signature|obfuscation|api_key|access|refresh|access_token|refresh_token|accountId)"\s*:\s*"[^"]+`),
 	regexp.MustCompile(`(?i)"(?:id|item_id|response_id|previous_response_id|request_id|call_id|tool_call_id|tool_use_id)"\s*:\s*"(?:resp|msg|req|rs|fc|call|toolu|gen|chatcmpl)[A-Za-z0-9._:-]+`),
 	regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9._~+/=-]{16,}`),
 	regexp.MustCompile(`(?i)user-[A-Za-z0-9_-]{8,}`),

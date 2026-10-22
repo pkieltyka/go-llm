@@ -16,11 +16,11 @@ import (
 // credentialKeys are the entry fields a credential write owns. Every other
 // key in an entry (pi's "scopes", go-llm's "model"/"base_url", future
 // fields) is preserved, unless the credential type changes.
-var credentialKeys = []string{"type", "key", "api_key", "access", "refresh", "expires", "accountId", "clientId"}
+var credentialKeys = []string{"type", "key", "access", "refresh", "expires", "accountId", "clientId"}
 
 // configKeys survive even a credential type change: they configure the
 // provider, not the credential.
-var configKeys = map[string]bool{"model": true, "base_url": true, "baseUrl": true}
+var configKeys = map[string]bool{"model": true, "base_url": true}
 
 // File is an llm.CredentialStore backed by a pi-compatible auth.json file:
 // either a bare {"<provider>": {...}} map or a {"providers": {...}} wrapper,
@@ -53,24 +53,36 @@ func (f *File) Path() string { return f.path }
 func (f *File) String() string { return "authstore: file " + f.path + " (redacted)" }
 
 // Read returns the stored credential for providerID. A missing file is an
-// empty store.
+// empty store. Read takes no lock unless the file reads as empty or
+// unparsable, which it then re-reads under the lock.
 func (f *File) Read(ctx context.Context, providerID string) (llm.AuthCredential, bool, error) {
 	if err := contextErr(ctx); err != nil {
 		return llm.AuthCredential{}, false, err
 	}
 	doc, err := f.load()
+	if err != nil || doc.blank {
+		// pi rewrites the file in place (truncate, then write) under its
+		// lock, so an empty or unparsable read may be a write in progress.
+		doc, err = f.loadLocked(ctx)
+	}
 	if err != nil {
 		return llm.AuthCredential{}, false, err
 	}
-	raw, ok := doc.providers[providerID]
-	if !ok {
-		return llm.AuthCredential{}, false, nil
+	return doc.credential(providerID)
+}
+
+func (f *File) loadLocked(ctx context.Context) (authDocument, error) {
+	release, err := acquireChannel(ctx, f.mu)
+	if err != nil {
+		return authDocument{}, err
 	}
-	var cred llm.AuthCredential
-	if err := json.Unmarshal(raw, &cred); err != nil {
-		return llm.AuthCredential{}, false, fmt.Errorf("authstore: parse %s credential: %w", providerID, sanitizeJSONError(err))
+	defer release()
+	lock, err := acquireFileLock(ctx, f.path+".lock")
+	if err != nil {
+		return authDocument{}, err
 	}
-	return cred, true, nil
+	defer func() { _ = lock.Release() }()
+	return f.load()
 }
 
 // Modify serializes fn per file across goroutines and processes. ctx bounds
@@ -143,6 +155,9 @@ func (f *File) locked(ctx context.Context, fn func(*authDocument) (bool, error))
 	if err != nil {
 		return err
 	}
+	if err := lock.Check(); err != nil {
+		return err
+	}
 	target := f.path
 	if resolved, err := filepath.EvalSymlinks(f.path); err == nil {
 		target = resolved // keep a dotfile symlink pointing at the store
@@ -154,6 +169,7 @@ type authDocument struct {
 	root      map[string]json.RawMessage
 	providers map[string]json.RawMessage
 	wrapped   bool
+	blank     bool // the file exists but is empty
 }
 
 func (f *File) load() (authDocument, error) {
@@ -167,6 +183,7 @@ func (f *File) load() (authDocument, error) {
 	}
 	data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))
 	if len(bytes.TrimSpace(data)) == 0 {
+		doc.blank = true
 		return doc, nil
 	}
 	if err := json.Unmarshal(data, &doc.root); err != nil {
@@ -257,11 +274,7 @@ func (doc *authDocument) setCredential(providerID string, cred llm.AuthCredentia
 		}
 	}
 	if cred.BaseURL != "" {
-		if _, hasCamel := entry["baseUrl"]; hasCamel {
-			if err := set("baseUrl", cred.BaseURL); err != nil {
-				return err
-			}
-		} else if err := set("base_url", cred.BaseURL); err != nil {
+		if err := set("base_url", cred.BaseURL); err != nil {
 			return err
 		}
 	}

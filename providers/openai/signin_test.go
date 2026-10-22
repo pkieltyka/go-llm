@@ -201,3 +201,18 @@ func TestStoredAPIKeyChatIsBlockingAndReadsTheStoreOnce(t *testing.T) {
 		t.Fatalf("store reads = %d, want 1 per request", store.reads)
 	}
 }
+
+func TestSignInWithChatGPTChatReadsTheStoreOnce(t *testing.T) {
+	s := newSignInServer(t)
+	store := &countingStore{CredentialStore: authstore.NewMemory(llm.AuthFile{"openai": {Type: "oauth", Access: "chatgpt-token", Refresh: "r", ClientID: "c", Expires: time.Now().Add(time.Hour).UnixMilli()}})}
+	p, err := New(WithCredentials(store), WithBaseURL(s.server.URL+"/v1"), WithMaxRetries(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Chat(context.Background(), &llm.Request{Model: "gpt-sub", Messages: []llm.Message{llm.UserText("ping")}}); err != nil {
+		t.Fatal(err)
+	}
+	if store.reads != 1 {
+		t.Fatalf("store reads = %d, want 1", store.reads)
+	}
+}

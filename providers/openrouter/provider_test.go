@@ -782,7 +782,6 @@ func TestOpenRouterModelCapabilities(t *testing.T) {
 	tests := []struct {
 		name       string
 		parameters []string
-		legacy     []string
 		inputs     []string
 		want       []llm.Capability
 	}{
@@ -801,9 +800,9 @@ func TestOpenRouterModelCapabilities(t *testing.T) {
 			},
 		},
 		{
-			name:       "reasoning_alias_and_legacy_image",
+			name:       "reasoning_alias_and_image",
 			parameters: []string{"include_reasoning"},
-			legacy:     []string{"text", "image"},
+			inputs:     []string{"text", "image"},
 			want:       []llm.Capability{llm.CapabilityReasoning, llm.CapabilityImageInput},
 		},
 		{
@@ -814,7 +813,7 @@ func TestOpenRouterModelCapabilities(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := openRouterModelCapabilities(tt.parameters, tt.legacy, tt.inputs)
+			got := openRouterModelCapabilities(tt.parameters, tt.inputs)
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("capabilities = %+v, want %+v", got, tt.want)
 			}

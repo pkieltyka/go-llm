@@ -13,8 +13,8 @@ const (
 	// anything less is refreshed first (pi: five minutes).
 	DefaultRefreshBefore = 5 * time.Minute
 	// DefaultRefreshTimeout bounds a started refresh, which ignores caller
-	// cancellation once it begins.
-	DefaultRefreshTimeout = 30 * time.Second
+	// cancellation once it begins (pi: 15 seconds).
+	DefaultRefreshTimeout = 15 * time.Second
 )
 
 // RefreshFunc exchanges a stored credential's refresh token for a renewed
@@ -42,7 +42,33 @@ func (r *Resolver) Credential(ctx context.Context) (llm.AuthCredential, error) {
 	if err != nil {
 		return llm.AuthCredential{}, fmt.Errorf("%w: read %s credential: %w", llm.ErrAuth, r.ProviderID, err)
 	}
-	if !ok || cred.Type != "oauth" {
+	if !ok {
+		return llm.AuthCredential{}, fmt.Errorf("%w: no %s OAuth credential is stored", llm.ErrAuth, r.ProviderID)
+	}
+	return r.resolve(ctx, cred)
+}
+
+// WithStored returns a CredentialSource that starts from cred, a credential
+// the caller already read from Store, instead of reading it again.
+func (r *Resolver) WithStored(cred llm.AuthCredential) CredentialSource {
+	return storedSource{resolver: r, cred: cred}
+}
+
+type storedSource struct {
+	resolver *Resolver
+	cred     llm.AuthCredential
+}
+
+func (s storedSource) Credential(ctx context.Context) (llm.AuthCredential, error) {
+	return s.resolver.resolve(ctx, s.cred)
+}
+
+func (s storedSource) ForceRefreshIfCurrent(ctx context.Context, failedAccess string) (llm.AuthCredential, error) {
+	return s.resolver.ForceRefreshIfCurrent(ctx, failedAccess)
+}
+
+func (r *Resolver) resolve(ctx context.Context, cred llm.AuthCredential) (llm.AuthCredential, error) {
+	if cred.Type != "oauth" {
 		return llm.AuthCredential{}, fmt.Errorf("%w: no %s OAuth credential is stored", llm.ErrAuth, r.ProviderID)
 	}
 	if !r.expiresSoon(cred) {
@@ -98,9 +124,6 @@ func (r *Resolver) refreshLocked(ctx context.Context, needsRefresh func(llm.Auth
 func (r *Resolver) expiresSoon(cred llm.AuthCredential) bool {
 	if cred.Access == "" {
 		return true
-	}
-	if cred.Expires == 0 {
-		return false
 	}
 	before := r.RefreshBefore
 	if before <= 0 {

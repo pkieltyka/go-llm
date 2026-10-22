@@ -272,8 +272,9 @@ func TestFileEdgeCases(t *testing.T) {
 func TestFileModifyHonorsContextWhileAnotherHolderHasTheLock(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "auth.json")
 	holder := authstore.NewFile(path)
-	started, release := make(chan struct{}), make(chan struct{})
+	started, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	go func() {
+		defer close(done)
 		_, _, _ = holder.Modify(context.Background(), "p", func(llm.AuthCredential, bool) (llm.AuthCredential, bool, error) {
 			close(started)
 			<-release
@@ -281,7 +282,7 @@ func TestFileModifyHonorsContextWhileAnotherHolderHasTheLock(t *testing.T) {
 		})
 	}()
 	<-started
-	defer close(release)
+	defer func() { close(release); <-done }()
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	// A second File value contends on the OS lock, as another process would.

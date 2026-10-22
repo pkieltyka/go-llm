@@ -25,7 +25,6 @@ var redactedHeaderNames = map[string]struct{}{
 	"cookie":                    {},
 	"etag":                      {},
 	"set-cookie":                {},
-	"chatgpt-account-id":        {},
 	"anthropic-organization-id": {},
 	"cf-ray":                    {},
 	"nel":                       {},

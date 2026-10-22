@@ -69,7 +69,7 @@ func assertNoCredentialSecret(t *testing.T, name, value string) {
 func TestParseAuthFileNestedAndBare(t *testing.T) {
 	nested, err := ParseAuthFile([]byte(`{
 		"providers": {
-			"anthropic": {"type": "api_key", "api_key": "key-1", "model": "claude-test", "base_url": "https://example.test"},
+			"anthropic": {"type": "api_key", "key": "key-1", "model": "claude-test", "base_url": "https://example.test"},
 			"openai": {"type": "oauth", "access": "access-1", "refresh": "refresh-1", "expires": 123, "clientId": "client-1", "scopes": ["chatgpt.tokens.use.direct"]}
 		}
 	}`))

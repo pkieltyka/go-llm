@@ -80,6 +80,22 @@ func WithCredentials(store llm.CredentialStore) Option {
 	return func(c *config) { c.credentials = store }
 }
 
+// storedAPIKey is providerutil.StoredAPIKey with a specific error for the
+// OAuth entry pi's Claude Pro/Max login writes under "anthropic".
+func storedAPIKey(store llm.CredentialStore, ambient string) apiKeyFunc {
+	return func(ctx context.Context) (string, error) {
+		cred, ok, err := store.Read(ctx, providerName)
+		if err != nil {
+			return "", fmt.Errorf("%w: read %s credential: %w", llm.ErrAuth, providerName, err)
+		}
+		if ok && cred.Type == "oauth" {
+			return "", fmt.Errorf("%w: stored %s credential is a Claude subscription (OAuth) login, which Anthropic permits only in its own apps; "+
+				"replace it with an \"api_key\" credential from console.anthropic.com, or remove it to use %s", llm.ErrAuth, providerName, apiKeyEnv)
+		}
+		return providerutil.APIKeyFromCredential(providerName, cred, ok, ambient)
+	}
+}
+
 // WithAPIKeyFunc sets a per-request key resolver. It wins over WithAPIKey.
 func WithAPIKeyFunc(fn func(context.Context) (string, error)) Option {
 	return func(c *config) {
@@ -208,7 +224,7 @@ func New(opts ...Option) (*Provider, error) {
 		return nil, err
 	}
 	if cfg.credentials != nil {
-		cfg.apiKeyFunc = providerutil.StoredAPIKey(cfg.credentials, providerName, cfg.apiKey)
+		cfg.apiKeyFunc = storedAPIKey(cfg.credentials, cfg.apiKey)
 	}
 	client := sdk.NewClient(cfg.sdkOptions()...)
 	return &Provider{

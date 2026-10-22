@@ -144,3 +144,5 @@ func TestForceRefreshIfCurrentSkipsWhenAlreadyRotated(t *testing.T) {
 		t.Fatalf("ForceRefreshIfCurrent = %+v, %v (calls %d), want the stored newer credential", cred, err, calls)
 	}
 }
+
+func inAnHour() int64 { return time.Now().Add(time.Hour).UnixMilli() }

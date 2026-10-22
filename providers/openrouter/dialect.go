@@ -242,10 +242,7 @@ func (dialect) Models(ctx context.Context, p *chatcompletions.Provider) ([]llm.M
 			Name                string   `json:"name"`
 			ContextLength       int      `json:"context_length"`
 			SupportedParameters []string `json:"supported_parameters"`
-			// Modalities is retained for compatibility with older catalog
-			// responses; Architecture is the current OpenRouter schema.
-			Modalities   []string `json:"modalities"`
-			Architecture struct {
+			Architecture        struct {
 				InputModalities []string `json:"input_modalities"`
 			} `json:"architecture"`
 			TopProvider struct {
@@ -264,7 +261,7 @@ func (dialect) Models(ctx context.Context, p *chatcompletions.Provider) ([]llm.M
 			ContextWindow:   row.ContextLength,
 			MaxOutputTokens: row.TopProvider.MaxCompletionTokens,
 			CanonicalID:     row.CanonicalSlug,
-			Capabilities:    openRouterModelCapabilities(row.SupportedParameters, row.Modalities, row.Architecture.InputModalities),
+			Capabilities:    openRouterModelCapabilities(row.SupportedParameters, row.Architecture.InputModalities),
 			Raw:             append(json.RawMessage(nil), rawRow...),
 		}
 		if pricing := parsePricing(row.Pricing); pricing != nil {
@@ -276,15 +273,15 @@ func (dialect) Models(ctx context.Context, p *chatcompletions.Provider) ([]llm.M
 	return models, nil
 }
 
-func openRouterModelCapabilities(parameters, legacyModalities, inputModalities []string) []llm.Capability {
+func openRouterModelCapabilities(parameters, inputModalities []string) []llm.Capability {
 	params := make(map[string]bool, len(parameters))
 	for _, parameter := range parameters {
 		if parameter = strings.TrimSpace(parameter); parameter != "" {
 			params[parameter] = true
 		}
 	}
-	modalities := make(map[string]bool, len(legacyModalities)+len(inputModalities))
-	for _, modality := range append(append([]string(nil), legacyModalities...), inputModalities...) {
+	modalities := make(map[string]bool, len(inputModalities))
+	for _, modality := range inputModalities {
 		if modality = strings.TrimSpace(modality); modality != "" {
 			modalities[modality] = true
 		}

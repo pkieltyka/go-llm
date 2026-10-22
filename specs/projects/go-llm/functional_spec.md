@@ -1261,13 +1261,17 @@ go-llm mirrors pi's authentication model (pi v1.4, `packages/ai/src/auth`).
     refresh token.
   - Implementations live in `authstore`. `NewMemory` is in-process.
     `NewFile(path)` is a pi-compatible auth.json:
-    - It re-reads the file on every `Read`.
+    - It re-reads the file on every `Read`, without the lock; a file that
+      reads as empty or unparsable is re-read under the lock, because pi
+      rewrites auth.json in place.
     - `Modify` and `Delete` hold an in-process lock plus pi's
       cross-process lock (proper-lockfile's protocol): `<path>.lock` is
-      created as a directory, the holder refreshes its mtime every 15 s, a
-      lock untouched for 30 s is stale and removed, and release removes it.
-      pi and go-llm therefore exclude each other on a shared auth.json.
-      Waits are bounded at 45 s (`ErrTimeout`).
+      created as a directory, the holder refreshes its mtime every 5 s
+      (pi's synchronous reload treats 10 s as stale), a lock untouched for
+      30 s is stale and removed, and release removes it. pi and go-llm
+      therefore exclude each other on a shared auth.json. A holder whose
+      lock was removed or replaced meanwhile writes nothing and leaves the
+      new lock alone. Waits are bounded at 45 s (`ErrTimeout`).
     - Writes go through a symlinked path to its target.
     - Writes are atomic (temporary file, fsync, rename, directory fsync)
       with mode 0600.
@@ -1277,20 +1281,28 @@ go-llm mirrors pi's authentication model (pi v1.4, `packages/ai/src/auth`).
     - Errors never quote file content.
 - **Provider resolution** (`WithCredentials(store)` on `openai`,
   `anthropic`, and `openrouter`) runs on every request:
-  - A stored credential owns the provider: an unusable stored credential
-    fails with `ErrAuth` and never falls back to the environment.
-  - With nothing stored, the provider's environment variable is used.
+  - A stored credential owns the provider: a stored credential of a type
+    the provider cannot use fails with `ErrAuth` and never falls back to
+    the environment.
+  - With nothing stored, or a stored `api_key` entry without a key (as in
+    pi), the provider's environment variable is used.
   - `WithCredentials` is mutually exclusive with `WithAPIKey`/
     `WithAPIKeyFunc`.
   - Anthropic and OpenRouter accept stored `api_key` credentials only.
+    Anthropic explains a stored `oauth` entry (pi's Claude Pro/Max login):
+    subscription credentials are limited to Anthropic's own apps, so the
+    entry must be replaced with an API key or removed.
 - **OAuth refresh** (`provideroauth.Resolver`) mirrors pi's
   `resolveStoredOAuth`:
-  - An optimistic `Read`; a token with less than five minutes left is
-    refreshed inside `Modify` after re-checking under the lock, so
-    concurrent requests and processes refresh exactly once.
+  - An optimistic `Read`; a token with less than five minutes left, or
+    without an expiry, is refreshed inside `Modify` after re-checking under
+    the lock, so concurrent requests and processes refresh exactly once.
+  - A minted or refreshed credential stores `expires` as now +
+    `expires_in` − 3 minutes, as pi does, so a shared file means the same
+    to both.
   - The renewed credential is stored before it is used.
   - A started refresh ignores caller cancellation and is bounded by a
-    30 s timeout.
+    15 s timeout (pi's).
   - Identity fields (`clientId`, `accountId`) survive a refresh response
     that omits them.
   - After an HTTP 401, the request is retried once with a forced refresh,

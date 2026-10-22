@@ -51,25 +51,18 @@ func TestFileWaitsForPiHeldLockDirectory(t *testing.T) {
 	}
 }
 
-func TestFileRecoversStaleLockAndLegacyLockFile(t *testing.T) {
+func TestFileRecoversStaleLock(t *testing.T) {
 	shortenLockTimings(t)
+	path := filepath.Join(t.TempDir(), "auth.json")
+	if err := os.Mkdir(path+".lock", 0o700); err != nil {
+		t.Fatal(err)
+	}
 	old := time.Now().Add(-time.Minute)
-	for name, create := range map[string]func(string) error{
-		"directory":    func(p string) error { return os.Mkdir(p, 0o700) },
-		"regular file": func(p string) error { return os.WriteFile(p, nil, 0o600) },
-	} {
-		t.Run(name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "auth.json")
-			if err := create(path + ".lock"); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Chtimes(path+".lock", old, old); err != nil {
-				t.Fatal(err)
-			}
-			if err := writeKey(context.Background(), NewFile(path)); err != nil {
-				t.Fatalf("Modify over a stale lock = %v", err)
-			}
-		})
+	if err := os.Chtimes(path+".lock", old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeKey(context.Background(), NewFile(path)); err != nil {
+		t.Fatalf("Modify over a stale lock = %v", err)
 	}
 }
 
@@ -104,17 +97,84 @@ func TestHeldLockStaysFresh(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	old := time.Now().Add(-time.Minute)
-	if err := os.Chtimes(lockPath, old, old); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(2 * staleLockAge)
 	info, err := os.Stat(lockPath)
-	if err != nil || time.Since(info.ModTime()) > staleLockAge {
+	if err != nil || time.Since(info.ModTime()) > staleLockAge/2 {
 		t.Fatalf("held lock went stale: %v %v", info, err)
+	}
+	if err := lock.Check(); err != nil {
+		t.Fatalf("Check on a held lock = %v", err)
 	}
 	if err := lock.Release(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// pi's heartbeat cadence must suit its synchronous reload, which treats a
+// lock older than proper-lockfile's default 10 s as stale.
+func TestLockUpdateOutpacesPiSyncStaleAge(t *testing.T) {
+	if lockUpdateEvery*2 > 10*time.Second {
+		t.Fatalf("lockUpdateEvery = %v, want at most 5s", lockUpdateEvery)
+	}
+}
+
+// A holder that stalled while another process judged its lock stale and
+// took it over must neither write nor remove the new holder's lock.
+func TestCompromisedLockWritesNothingAndKeepsForeignLock(t *testing.T) {
+	shortenLockTimings(t)
+	path := filepath.Join(t.TempDir(), "auth.json")
+	f := NewFile(path)
+	if err := writeKey(context.Background(), f); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := f.Modify(context.Background(), "p", func(llm.AuthCredential, bool) (llm.AuthCredential, bool, error) {
+		// Another process removes the "stale" lock and takes it.
+		if err := os.Remove(path + ".lock"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(path+".lock", 0o700); err != nil {
+			t.Fatal(err)
+		}
+		past := time.Now().Add(-time.Second)
+		if err := os.Chtimes(path+".lock", past, past); err != nil {
+			t.Fatal(err)
+		}
+		return llm.AuthCredential{Type: "api_key", Key: "overwritten"}, true, nil
+	})
+	if !errors.Is(err, errLockCompromised) {
+		t.Fatalf("Modify under a compromised lock = %v, want errLockCompromised", err)
+	}
+	if _, err := os.Stat(path + ".lock"); err != nil {
+		t.Fatalf("the other process's lock was removed: %v", err)
+	}
+	if cred, _, err := f.Read(context.Background(), "p"); err != nil || cred.Key != "k" {
+		t.Fatalf("stored credential = %+v, %v; want the original", cred, err)
+	}
+}
+
+// pi rewrites auth.json in place under its lock; a read that catches the
+// truncated file waits for the lock and sees the finished write.
+func TestFileReadWaitsOutInPlaceWriter(t *testing.T) {
+	shortenLockTimings(t)
+	path := filepath.Join(t.TempDir(), "auth.json")
+	for name, partial := range map[string]string{"empty": "", "partial": `{"p": {"type": "api_`} {
+		t.Run(name, func(t *testing.T) {
+			if err := os.Mkdir(path+".lock", 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(partial), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			go func() {
+				time.Sleep(50 * time.Millisecond)
+				_ = os.WriteFile(path, []byte(`{"p": {"type": "api_key", "key": "k"}}`), 0o600)
+				_ = os.Remove(path + ".lock")
+			}()
+			cred, ok, err := NewFile(path).Read(context.Background(), "p")
+			if err != nil || !ok || cred.Key != "k" {
+				t.Fatalf("Read during an in-place write = %+v, %v, %v", cred, ok, err)
+			}
+		})
 	}
 }
 

@@ -184,7 +184,8 @@ Authentication mirrors [pi](https://github.com/earendil-works/pi). A
 `llm.CredentialStore` holds one credential per provider id, and
 `WithCredentials(store)` makes a provider read it on every request. A stored
 credential owns its provider (no environment fallback); with nothing stored,
-the provider's usual environment variable is used. `WithCredentials` is
+or a keyless `api_key` entry as pi allows, the provider's usual environment
+variable is used. `WithCredentials` is
 mutually exclusive with `WithAPIKey`/`WithAPIKeyFunc`.
 
 ```go
@@ -222,10 +223,12 @@ The callback binds only `127.0.0.1:1455`. A Sign in with ChatGPT token
 reaches only the subscription's models (`Models` lists them) and a
 streaming-only endpoint. So, as pi does, `Chat` drains a stream there, and
 `MaxTokens`, `Temperature`, `TopP` and prompt-cache retention are not sent.
-Anthropic and OpenRouter accept `api_key` credentials only.
+Anthropic and OpenRouter accept `api_key` credentials only; a stored
+Anthropic subscription login (pi's Claude Pro/Max OAuth) fails with an
+`ErrAuth` that says to use an API key, because Anthropic limits subscription
+credentials to its own apps.
 
-This can leave the stored refresh token stale after restart and should be a
-conscious application decision. Provider-specific request extensions live in
+Provider-specific request extensions live in
 each provider's `Options` type, passed through `Request.ProviderOptions`; the
 raw SDK client is always reachable via each provider's `Client()`. Ordinary
 `openai.Options` fields use go-llm and standard-library types; only advanced

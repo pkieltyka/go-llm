@@ -77,8 +77,8 @@ type ModelPricing struct {
 	CacheWritePerMTok float64            `json:"cache_write_per_mtok"`
 	Tiers             []ModelPricingTier `json:"tiers,omitempty"`
 	// Availability distinguishes an explicitly reported zero/free component
-	// from an unknown component. Nil preserves the legacy contract: input and
-	// output rates are known, while cache rates are known when non-zero.
+	// from an unknown component. Nil means input and output rates are known
+	// and cache rates are known when non-zero.
 	Availability *ModelPricingAvailability `json:"availability,omitempty"`
 }
 

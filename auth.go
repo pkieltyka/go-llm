@@ -160,13 +160,12 @@ func ParseAuthFile(data []byte) (AuthFile, error) {
 	return providers, nil
 }
 
-// UnmarshalJSON accepts pi's camelCase fields plus go-llm's snake_case e2e
-// aliases. Unknown fields are intentionally ignored for forward compatibility.
+// UnmarshalJSON reads pi's auth.json fields plus go-llm's "model" and
+// "base_url" provider settings. Unknown fields are ignored.
 func (c *AuthCredential) UnmarshalJSON(data []byte) error {
 	type credential struct {
 		Type      string      `json:"type"`
 		Key       string      `json:"key"`
-		APIKey    string      `json:"api_key"`
 		Access    string      `json:"access"`
 		Refresh   string      `json:"refresh"`
 		Expires   json.Number `json:"expires"`
@@ -174,7 +173,6 @@ func (c *AuthCredential) UnmarshalJSON(data []byte) error {
 		ClientID  string      `json:"clientId"`
 		Model     string      `json:"model"`
 		BaseURL   string      `json:"base_url"`
-		BaseURL2  string      `json:"baseUrl"`
 	}
 	var in credential
 	if err := json.Unmarshal(data, &in); err != nil {
@@ -189,12 +187,6 @@ func (c *AuthCredential) UnmarshalJSON(data []byte) error {
 		ClientID:  in.ClientID,
 		Model:     in.Model,
 		BaseURL:   in.BaseURL,
-	}
-	if next.Key == "" {
-		next.Key = in.APIKey
-	}
-	if next.BaseURL == "" {
-		next.BaseURL = in.BaseURL2
 	}
 	if in.Expires != "" {
 		expires, err := in.Expires.Int64()
