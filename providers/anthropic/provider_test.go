@@ -1719,3 +1719,14 @@ func TestAnthropicCountTokensMapsErrorsAndValidates(t *testing.T) {
 		t.Fatalf("CountTokens must validate like Chat, got %v", err)
 	}
 }
+
+func TestAnthropicNoArgumentToolSendsInputSchema(t *testing.T) {
+	for _, schema := range []string{`{"type":"object"}`, `{}`} {
+		tools, err := buildTools([]llm.Tool{{Name: "now", InputSchema: json.RawMessage(schema)}})
+		if err != nil {
+			t.Fatalf("buildTools(%s) returned error: %v", schema, err)
+		}
+		testutil.AssertJSONEqual(t, testutil.MustCompactJSON(t, tools),
+			`[{"input_schema":{"properties":{},"type":"object"},"name":"now","strict":false,"type":"custom"}]`)
+	}
+}

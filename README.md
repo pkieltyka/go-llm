@@ -28,8 +28,9 @@ where they exist and pulled in only by the provider package you import.
 - **Tools**: parallel calls, streamed arguments, and a defined contract for
   malformed tool calls — rescue what's rescuable, drop the rest *visibly*
   (`ToolCallDropped`), with an opt-in `llm.RetryDroppedToolCalls` middleware.
-  OpenAI-compatible no-argument tool schemas are sent with
-  `parameters.properties: {}`; non-object `properties` values fail locally.
+  No-argument tool schemas are sent with an explicit empty `properties: {}`
+  (OpenAI-compatible `parameters`, Anthropic `input_schema`); non-object
+  `properties` values fail locally.
 - **Structured output**: `llm.Parse[T]` decodes model output straight into
   your struct (native JSON-schema mode where supported, forced-tool or
   JSON-mode fallback elsewhere), and `schema.For[T]` generates JSON Schema

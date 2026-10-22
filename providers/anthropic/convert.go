@@ -403,6 +403,12 @@ func toolSchema(value any) (sdk.ToolInputSchemaParam, error) {
 	if len(out.ExtraFields) == 0 {
 		out.ExtraFields = nil
 	}
+	if out.Properties == nil {
+		// The SDK omits a zero input schema entirely, and the Messages API
+		// requires input_schema, so a no-argument tool ({"type":"object"})
+		// sends an explicit empty object schema.
+		out.Properties = map[string]any{}
+	}
 	return out, nil
 }
 
