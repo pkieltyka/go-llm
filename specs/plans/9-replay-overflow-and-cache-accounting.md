@@ -1,7 +1,8 @@
 ---
-status: ready
+status: complete
 planned_at: e94fcb3
 planned_at_date: 2026-10-22
+implemented_at_date: 2026-10-22
 ---
 
 # Replay, Overflow, and Cache-Accounting Correctness Plan
@@ -162,9 +163,157 @@ rejected.
   errors in the negative corpus.
 - Cost handling for 1h writes would need curated pricing data (option B is rejected).
 
-## Probe evidence
+## Probe evidence (2026-10-22)
 
-_(filled in by the executor in Phase 1a)_
+**Provider coverage.** Only OpenRouter and vLLM had working credentials. The
+`anthropic` entry in `gollm-test.json` is an OAuth credential, which the
+API-key-only provider rejects; no `openai` key is configured; the Codex
+refresh token is stale. The direct OpenAI, Anthropic, and Codex cases are
+therefore not probed. They are covered offline by the engine tests, and the
+live scenario is reusable when credentials return.
+
+**OpenRouter.** Each case: turn 1 makes a tool call at `Effort: low` and
+returns a `ReasoningPart` with raw `reasoning_details`; turn 2 continues on
+another model with the reasoning kept, then with it dropped. All 16
+continuations succeeded:
+
+| Producer → consumer | Keep raw | Drop raw |
+|---|---|---|
+| claude-haiku-4.5 → claude-haiku-4.5 (baseline) | OK | OK |
+| claude-haiku-4.5 → claude-haiku-5.5 | OK | OK |
+| claude-haiku-4.5 → openai/gpt-5-mini | OK | OK |
+| openai/gpt-5-mini → claude-haiku-4.5 | OK | OK |
+| openai/gpt-5-mini → openai/gpt-5-nano | OK | OK |
+| google/gemini-3-flash-preview → claude-haiku-4.5 | OK | OK |
+| claude-haiku-4.5 → google/gemini-3-flash-preview | OK | OK |
+| qwen/qwen3.6-27b → claude-haiku-4.5 | OK | OK |
+
+No consumer rejected foreign reasoning, and none required it. That includes
+Anthropic with thinking enabled continuing a tool loop whose assistant turn
+lacked a thinking block; OpenRouter reconciles this. The STOP condition did
+not trigger, and the drop rule is safe.
+
+**vLLM.** The deployment serves one model (`nvidia/Qwen3.8-Flash-Next-NVFP4`),
+so a cross-model case was not applicable.
+
+**Overflow wording (vLLM, live).**
+- Prompt over the window: HTTP 400, "This model's maximum context length is
+  262144 tokens. However, you requested 16 output tokens and your prompt
+  contains at least 262129 input tokens …". This was already
+  `ErrContextTooLong`.
+- `max_tokens` above the window: "max_tokens=300000 cannot be greater than
+  max_model_len=max_total_tokens=262144 …". This intentionally stays
+  `ErrBadRequest`.
+
+## Implementation notes (2026-10-22)
+
+- **Phase 1: model-aware replay.**
+  - `llm.SameModel(a, b)` is exported from `model_matching.go`, reusing
+    `plausibleModelDate`. go-agent's switch detection needs it too.
+  - One shared pre-pass, `providerutil.ReplayableHistory(messages, model)`,
+    runs ahead of conversion in all three engines: Anthropic
+    `buildParamsAfterValidation`, responsesapi `buildParamsAfterValidation`,
+    and chatcompletions `buildMessages`. This replaced threading the request
+    model into each converter.
+  - The pre-pass drops whole `ReasoningPart`s, both `Raw` and text, from
+    foreign-model assistant messages, and drops an assistant message left
+    empty.
+  - `responsesapi.Adapter.BuildInput` has no request model, so it stays
+    unfiltered. It has no production callers, only tests.
+- **Phase 1c: live scenario.** `reasoning_model_switch` is registered as an
+  OpenRouter extension scenario, not under `CapabilityReasoning`. The
+  registry is exhaustive, and runners for Anthropic, OpenAI, and Codex
+  could not be live-verified without credentials.
+  `liveReasoningModelSwitchScenario` is generic.
+  `e2e.RecordingCaptures(ctx)` exposes the capture log so the scenario can
+  assert on the consumer's request body. Live result: PASS
+  (haiku-4.5 → gpt-5-mini, producer raw absent from the consumer request).
+- **Phase 2: overflow.**
+  - `providerutil.IsContextOverflow(code, message)` replaces Anthropic's
+    `isContextOverflowMessage` and the overflow branch of
+    `heuristicErrorKind`.
+  - 413 maps to `ErrContextTooLong` in the canonical table.
+  - Anthropic classifies unnamed overflow types (`request_too_large`,
+    including in-stream) before its status fallback.
+  - The corpus test has 21 attributed positives and 7 negatives.
+  - The one-channel audit found no adapter emitting both an error and a stop
+    reason. The FS states the rule as "exactly one channel per event".
+- **Phase 3: one-hour cache writes.**
+  - `Usage.CacheWrite1hTokens` comes from Anthropic
+    `cache_creation.ephemeral_1h_input_tokens` on blocking responses and
+    `message_start`.
+  - It is serialized as `cache_write_1h_tokens` (omitempty) and summed by
+    `UsageTracker`.
+  - `pricingCoversUsage` treats any one-hour writes as unpriced, so an
+    estimated `CostUSD` stays nil, in line with the existing all-or-nothing
+    rule; no new signal was needed. Native costs are untouched.
+- **Docs:** FS §11, §16, and §18, and the README handoff paragraph.
+- **Verification:**
+  - Offline: `go vet` (including the live tag), `make test` (race),
+    coverage floors, lint (0 issues), the Collector fuzz test, and the
+    go-agent build and vet all pass.
+  - Live: OpenRouter and vLLM ran 34 passing scenarios. The only failures
+    were `cross_provider_handoff` in both suites, caused by the pre-existing
+    Anthropic OAuth credential problem.
+
+## Review (2026-10-22)
+
+A clean-context adversarial review gave "ship after fixes". All findings
+were addressed before commit:
+
+- **BLOCKER: `SameModel` treated an alias and its own response as
+  different models.**
+  - `Message.Model` is the server-reported ID, and Anthropic answers its
+    aliases with different dated IDs: `claude-opus-4-0` becomes
+    `claude-opus-4-20250514`, and `claude-3-7-sonnet-latest` becomes a
+    dated ID.
+  - Date-only normalization therefore stripped the signed thinking from a
+    same-model tool loop, which direct Anthropic rejects when thinking is
+    enabled.
+  - Fix: `modelIdentityKey` now also removes one `:variant` suffix, one
+    `-latest`, and one trailing `-0`, and leans toward matching, because a
+    false match reproduces the previous behavior. The three alias pairs,
+    routing and Bedrock variants, and non-match guards (`gpt-5` vs
+    `gpt-5-mini`, `claude-opus-4-1` vs `claude-opus-4-20250514`) are now
+    regression cases.
+  - This intentionally reverses the earlier "`:variant` differs" decision.
+- **MAJOR: the live replay scenarios could not catch the blocker.** The
+  Anthropic, OpenAI, OpenRouter, and vLLM `reasoning_replay` scenarios
+  replayed under `first.Model`. They now replay under the requested
+  alias while the assistant message carries the response model, which is
+  the shape real callers produce.
+- **MAJOR: direct-Anthropic mid-tool-loop model switch is unverified.**
+  FS §18 now states this and advises disabling thinking for the switch
+  turn until it is live-verified. It stays an open follow-up below.
+- **Minors and nits:**
+  - The model-switch marker prefers opaque values (signature, data,
+    encrypted content) and is also matched JSON-escaped.
+  - The README notes that cost is unknown when one-hour writes are present.
+  - FS §5 points to the §16 one-channel rule.
+  - FS §16 notes that 413 can be request size (attachments), not only
+    context.
+  - `assertReplayUsage` checks `CacheWrite1hTokens <= CacheWriteTokens`.
+  - llm-cli prints `cache_write_1h=` when the value is nonzero.
+  - `TestReplayableHistory` covers a foreign first message.
+
+Re-verified after the fixes: vet (including the live tag), `make test`
+(race), the manifest test, coverage floors, lint, and the go-agent build
+all pass. The OpenRouter and vLLM live suites ran 34 passing scenarios;
+the only failures were the credential-blocked `cross_provider_handoff`
+scenarios.
+
+## Open follow-ups
+
+- **Request a one-hour rate from models.dev.** File an issue or PR asking for
+  a `cache_write_1h` rate. This is outward-facing, so the maintainer files
+  it.
+- **Probe the direct providers once credentials are fixed.** Run Phase 1a
+  against OpenAI Responses, Anthropic, and Codex, and register
+  `reasoning_model_switch` runners for them.
+  - This includes the direct-Anthropic switch mid tool loop with thinking
+    enabled. If Anthropic rejects a final assistant turn without thinking,
+    disable thinking for the switch turn, either in go-agent or as an
+    adapter rule, and record which.
 
 ## Downstream
 

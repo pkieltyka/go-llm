@@ -233,12 +233,10 @@ func liveVLLMReasoningReplayScenario(ctx context.Context, t *testing.T, p llm.Pr
 	if part := vllmReasoningPart(first); part == nil {
 		t.Fatalf("reasoning replay needs a reasoning part: parts=%d stop_reason=%s", len(first.Parts), first.StopReason)
 	}
-	replayModel := first.Model
-	if replayModel == "" {
-		replayModel = model
-	}
+	// Replay under the requested model while the assistant message carries
+	// the served model (FS §18 model-aware replay).
 	resp, err := p.Chat(ctx, &llm.Request{
-		Model:     replayModel,
+		Model:     model,
 		MaxTokens: 128,
 		Effort:    llm.EffortNone,
 		Messages: []llm.Message{

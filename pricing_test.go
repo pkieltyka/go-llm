@@ -270,3 +270,27 @@ func TestEmbeddedTableGPT56CacheWritePricing(t *testing.T) {
 		t.Fatalf("cost source = %q, want estimated", costed.CostSource)
 	}
 }
+
+func TestEstimateCostLeavesOneHourCacheWritesUnknown(t *testing.T) {
+	pricing := llm.ModelPricing{InputPerMTok: 1, OutputPerMTok: 5, CacheReadPerMTok: 0.1, CacheWritePerMTok: 1.25}
+	base := llm.Usage{InputTokens: 1000, OutputTokens: 100, CacheWriteTokens: 4000}
+
+	priced := llm.EstimateCost(base, pricing)
+	if priced.CostUSD == nil || priced.CostSource != llm.CostSourceEstimated {
+		t.Fatalf("5m-only cache writes must be priced: %+v", priced)
+	}
+
+	oneHour := base
+	oneHour.CacheWrite1hTokens = 4000
+	if got := llm.EstimateCost(oneHour, pricing); got.CostUSD != nil || got.CostSource != "" {
+		t.Fatalf("1h cache writes priced at the default write rate: cost=%v source=%q", *got.CostUSD, got.CostSource)
+	}
+
+	native := 0.42
+	reported := oneHour
+	reported.CostUSD = &native
+	reported.CostSource = llm.CostSourceNative
+	if got := llm.EstimateCost(reported, pricing); got.CostUSD == nil || *got.CostUSD != native {
+		t.Fatal("a provider-reported cost must be left untouched")
+	}
+}

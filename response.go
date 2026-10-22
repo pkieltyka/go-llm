@@ -129,6 +129,12 @@ type Usage struct {
 	// CacheWriteTokens counts prompt tokens written to a provider cache;
 	// zero when unreported.
 	CacheWriteTokens int64
+	// CacheWrite1hTokens is the informational SUBSET of CacheWriteTokens
+	// written with a one-hour cache lifetime (Anthropic CacheHint.TTL > 5m),
+	// never additive. Price tables publish no one-hour rate, so a nonzero
+	// value leaves an estimated CostUSD unknown rather than pricing it at the
+	// default write rate (FS §11).
+	CacheWrite1hTokens int64
 	// ReasoningTokens is an informational SUBSET of OutputTokens, never
 	// additive — context and cost math count output exactly once. Exception
 	// (FS §11): when a provider's native accounting violates the subset

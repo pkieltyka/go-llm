@@ -403,6 +403,7 @@ func (u Usage) MarshalJSON() ([]byte, error) {
 		TotalTokens:      u.TotalTokens,
 		CacheReadTokens:  u.CacheReadTokens,
 		CacheWriteTokens: u.CacheWriteTokens,
+		CacheWrite1h:     u.CacheWrite1hTokens,
 		ReasoningTokens:  u.ReasoningTokens,
 		CostUSD:          u.CostUSD,
 		CostSource:       u.CostSource,
@@ -415,26 +416,29 @@ func (u *Usage) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*u = Usage{
-		InputTokens:      wire.InputTokens,
-		OutputTokens:     wire.OutputTokens,
-		TotalTokens:      wire.TotalTokens,
-		CacheReadTokens:  wire.CacheReadTokens,
-		CacheWriteTokens: wire.CacheWriteTokens,
-		ReasoningTokens:  wire.ReasoningTokens,
-		CostUSD:          wire.CostUSD,
-		CostSource:       wire.CostSource,
+		InputTokens:        wire.InputTokens,
+		OutputTokens:       wire.OutputTokens,
+		TotalTokens:        wire.TotalTokens,
+		CacheReadTokens:    wire.CacheReadTokens,
+		CacheWriteTokens:   wire.CacheWriteTokens,
+		CacheWrite1hTokens: wire.CacheWrite1h,
+		ReasoningTokens:    wire.ReasoningTokens,
+		CostUSD:            wire.CostUSD,
+		CostSource:         wire.CostSource,
 	}
 	return nil
 }
 
-// usageJSON adds cost_source with omitempty: the canonical envelope is
-// forward-compatible for additive optional keys, so no version bump.
+// usageJSON adds cost_source and cache_write_1h_tokens with omitempty: the
+// canonical envelope is forward-compatible for additive optional keys, so no
+// version bump.
 type usageJSON struct {
 	InputTokens      int64    `json:"input_tokens"`
 	OutputTokens     int64    `json:"output_tokens"`
 	TotalTokens      int64    `json:"total_tokens"`
 	CacheReadTokens  int64    `json:"cache_read_tokens"`
 	CacheWriteTokens int64    `json:"cache_write_tokens"`
+	CacheWrite1h     int64    `json:"cache_write_1h_tokens,omitempty"`
 	ReasoningTokens  int64    `json:"reasoning_tokens"`
 	CostUSD          *float64 `json:"cost_usd,omitempty"`
 	CostSource       string   `json:"cost_source,omitempty"`

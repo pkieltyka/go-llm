@@ -46,7 +46,7 @@ func (p *Provider) buildParamsAfterValidation(req *llm.Request) (sdk.MessageNewP
 	if err != nil {
 		return sdk.MessageNewParams{}, nil, err
 	}
-	messages, err := buildMessages(req.Messages)
+	messages, err := buildMessages(providerutil.ReplayableHistory(req.Messages, req.Model))
 	if err != nil {
 		return sdk.MessageNewParams{}, nil, err
 	}

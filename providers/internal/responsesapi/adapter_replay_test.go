@@ -335,3 +335,35 @@ func TestToolResultWithImageBuildsContentArray(t *testing.T) {
 		t.Fatalf("non-PDF tool-result file error = %v, want ErrUnsupported", err)
 	}
 }
+
+func TestBuildParamsDropsForeignModelReasoning(t *testing.T) {
+	adapter := replayAdapter()
+	raw := json.RawMessage(`{"type":"reasoning","id":"rs_1","encrypted_content":"enc-model-a","summary":[]}`)
+	history := []llm.Message{
+		llm.UserText("hello"),
+		{Role: llm.RoleAssistant, Provider: replayAdapterName, Model: "gpt-a-2026-08-15", Parts: []llm.Part{
+			llm.ReasoningPart{Provider: replayAdapterName, Raw: raw},
+			llm.Text("answer"),
+		}},
+		llm.UserText("continue"),
+	}
+	for _, tt := range []struct {
+		model string
+		want  bool
+	}{
+		{model: "gpt-a", want: true},
+		{model: "gpt-b", want: false},
+	} {
+		params, err := adapter.BuildParams(&llm.Request{Model: tt.model, Messages: history}, false)
+		if err != nil {
+			t.Fatalf("BuildParams(%s) returned error: %v", tt.model, err)
+		}
+		body := marshalWire(t, params)
+		if got := strings.Contains(body, "enc-model-a"); got != tt.want {
+			t.Fatalf("model %s: encrypted reasoning replayed = %v, want %v\n%s", tt.model, got, tt.want, body)
+		}
+		if !strings.Contains(body, "answer") {
+			t.Fatalf("model %s: assistant text missing: %s", tt.model, body)
+		}
+	}
+}

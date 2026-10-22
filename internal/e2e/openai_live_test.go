@@ -121,12 +121,10 @@ func liveOpenAIReasoningReplayScenario(ctx context.Context, t *testing.T, p llm.
 	if !hasOpenAIReasoningRaw(first) {
 		t.Fatalf("reasoning replay needs OpenAI raw reasoning: %+v", first.Parts)
 	}
-	replayModel := first.Model
-	if replayModel == "" {
-		replayModel = liveOpenAIReasoningModel(model)
-	}
+	// Replay under the requested alias while the assistant message carries
+	// the dated response model (FS §18 model-aware replay).
 	resp, err := p.Chat(ctx, &llm.Request{
-		Model:     replayModel,
+		Model:     liveOpenAIReasoningModel(model),
 		MaxTokens: 64,
 		Messages: []llm.Message{
 			llm.UserText(openAIReasoningPrompt),

@@ -216,7 +216,10 @@ Content part types:
 
 `StopReason` values: `end_turn`, `max_tokens`, `stop_sequence`, `tool_use`,
 `content_filter`, `refusal`, `context_overflow`, `paused`, `error`, `other`.
-The raw provider value is always preserved alongside.
+The raw provider value is always preserved alongside. `context_overflow`,
+`content_filter`, and `refusal` describe a generation the provider stopped;
+a rejected request surfaces as the matching error sentinel instead, never
+both (the one-channel rule in §16).
 
 | Provider raw | Normalized |
 |---|---|
@@ -618,6 +621,11 @@ Every response (and `MessageEnd` stream event) carries a normalized `Usage`:
 
 - `InputTokens`, `OutputTokens`, `TotalTokens`
 - `CacheReadTokens`, `CacheWriteTokens` (zero when unreported)
+- `CacheWrite1hTokens`: the informational subset of `CacheWriteTokens`
+  written with a one-hour lifetime (Anthropic `cache_creation.
+  ephemeral_1h_input_tokens`, produced by `CacheHint.TTL > 5m`), never
+  additive. Serialized as `cache_write_1h_tokens` (omitempty; additive key,
+  no envelope version bump).
 - `ReasoningTokens` (zero when unreported)
 - `CostUSD *float64` — `nil` when unknown
 - `CostSource string` — cost provenance: `"native"` (provider-reported,
@@ -659,6 +667,13 @@ Cost sourcing:
    rate; a rate absent from both stays unknown rather than reading as free.
    At estimation time a selected tier never falls back to base rates.
    Invalid caller-supplied tiers are ignored. Native cost always wins.
+   **One-hour cache writes** have no published rate in any upstream table,
+   so a nonzero `CacheWrite1hTokens` leaves an estimated `CostUSD` nil
+   (unknown) rather than pricing those writes at the default write rate,
+   which would understate cost (Anthropic bills one-hour writes at 2× input
+   versus 1.25× for five-minute writes). This follows the
+   no-curated-pricing rule: a multiplier constant is never hand-maintained.
+   When upstream publishes a one-hour rate, it joins `ModelPricing`.
    The shipped table is a **trimmed JSON snapshot of the
    community-maintained models.dev database** and OpenRouter's catalog,
    refreshed by a dev-time script, embedded via `go:embed`,
@@ -874,17 +889,48 @@ yield identical sentinels across providers):
 | 403 | `ErrPermission` |
 | 404 | `ErrNotFound` |
 | 408 | `ErrTimeout` |
+| 413 | `ErrContextTooLong` (request-size or context overflow) |
 | 429 | `ErrRateLimited` |
 | 503 and 529 | `ErrOverloaded` |
 | any other 5xx | `ErrServer` |
 | any other 4xx | `ErrBadRequest` |
 
-Provider-native error codes/messages classify first (scoped heuristics —
-e.g. `context_length…` codes and "context window/length/limit" messages →
-`ErrContextTooLong`; a bare "context" substring deliberately does NOT
-match), then the status table, then weak code fallbacks for status-less
-in-stream errors (`invalid_request` → `ErrBadRequest`, `server_error` →
-`ErrServer`).
+Provider-native error codes/messages classify first (scoped heuristics),
+then the status table, then weak code fallbacks for status-less in-stream
+errors (`invalid_request` → `ErrBadRequest`, `server_error` → `ErrServer`).
+
+**Context overflow** uses one scoped matcher shared by every engine,
+including Anthropic and in-stream errors:
+
+- **Codes:** `context_length…`, `request_too_large`, and
+  `model_context_window_exceeded`.
+- **Messages:** an attributed corpus of real provider phrasings, covering
+  "context window/length/limit/size", "maximum context",
+  "prompt (is) too long", "maximum prompt length", "maximum model length",
+  "reduce the length of the messages", "maximum allowed input length",
+  "exceeded model token limit", "range of input length should be", and
+  "input token count".
+- **Vetoes:** throttling texts ("rate limit", "too many requests",
+  "throttl…", "per minute", "tokens per min") never classify as overflow.
+  A bare "context" or "tokens" substring deliberately does not match.
+- **413 is request size.** It can come from oversized attachments (images,
+  PDFs) rather than the conversation, so compaction alone may not fix it.
+- **Not overflow:** `max_tokens` above the model window (vLLM `max_tokens …
+  cannot be greater than max_model_len`) stays `ErrBadRequest`. The fix is
+  a smaller `MaxTokens`, not a shorter prompt.
+
+**One channel per event.** Overflow and content filtering each reach the
+caller through exactly one signal, never both:
+
+- A request the provider rejects, and any provider error event, including
+  a mid-stream error that names filtering, surfaces as the error sentinel
+  (`ErrContextTooLong`, `ErrContentFiltered`).
+- A generation that ends normally with a provider stop reason surfaces as
+  `StopReasonContextOverflow`, `StopReasonContentFilter`, or
+  `StopReasonRefusal` on a successful `MessageEnd`.
+- Consumers that handle a condition must therefore check both forms: the
+  error sentinel for rejections and the stop reason for stopped
+  generations.
 
 OpenRouter 403 moderation carries structured metadata (surfaced via `ProviderError`)
 and its status-less mid-stream numeric code `"402"` →
@@ -1123,6 +1169,40 @@ stay in provider packages.
 - **Reasoning round-trip**: replaying history containing `Reasoning` parts
   re-emits the preserved raw payloads for the same provider; other providers
   receive only what their API accepts (raw payloads dropped).
+- **Model-aware replay**: a `ReasoningPart` replays only when its assistant
+  message was produced by the request's model.
+  - Every engine applies one shared pre-pass. When `Message.Model` is set
+    and `!llm.SameModel(Message.Model, Request.Model)`, the message's
+    reasoning parts are dropped, never converted to text.
+  - An assistant message left empty is dropped, as with provider filtering.
+  - `Message.Model` is the server-reported model, which often differs from
+    the requested alias (Anthropic answers `claude-opus-4-0` as
+    `claude-opus-4-20250514` and `…-latest` with a dated ID; OpenAI appends
+    a date). `llm.SameModel` therefore compares IDs case-insensitively
+    after trimming and removing, in order, one `:variant` routing suffix,
+    one trailing date snapshot (`-YYYYMMDD`, `_YYYYMMDD`, `@YYYYMMDD`,
+    `-YYYY-MM-DD`), one `-latest`, and one trailing `-0`.
+  - The normalization deliberately leans toward matching. A false match
+    reproduces the earlier provider-gated replay, while a false mismatch
+    would strip the signed thinking a same-model Anthropic tool loop
+    requires. Different versions or sizes (`gpt-5` vs `gpt-5-mini`) still
+    differ.
+  - History with an empty `Message.Model` (legacy) keeps provider-gated
+    replay. Persisting assistant provenance (as `History.AddResponse` does)
+    is what enables the rule.
+  - The rule matters most on aggregators such as OpenRouter, where one
+    provider fronts many model families. Live probes (2026-10-22) found
+    OpenRouter accepts cross-family `reasoning_details` without rejecting
+    them, and never requires them to continue a tool loop. Dropping them is
+    therefore safe there and keeps another model's signed reasoning off the
+    wire.
+  - Unverified on direct Anthropic: switching models mid tool loop with
+    thinking enabled leaves the final assistant turn without a thinking
+    block, which Anthropic may reject. Before this rule the previous model's
+    signed block was sent instead, and whether Anthropic accepts that across
+    models is equally unverified. Callers
+    switching models mid tool loop on direct Anthropic should disable
+    thinking for the switch turn until this is live-verified.
 - **OpenAI statelessness**: the adapter always sends `store: false` +
   `include: ["reasoning.encrypted_content"]` — no server-side conversation
   state unless explicitly opted into via `openai.Options`. Encrypted

@@ -108,7 +108,7 @@ func (p *Provider) buildMessages(req *llm.Request) ([]sdk.ChatCompletionMessageP
 		msg := jsonObject{"role": "system", "content": []any{textBlock(req.System, req.SystemCache)}}
 		messages = append(messages, sdkparam.Override[sdk.ChatCompletionMessageParamUnion](msg))
 	}
-	for _, message := range req.Messages {
+	for _, message := range providerutil.ReplayableHistory(req.Messages, req.Model) {
 		if message.Role == llm.RoleTool {
 			toolMessages, err := p.buildToolMessages(message)
 			if err != nil {

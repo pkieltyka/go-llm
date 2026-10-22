@@ -1561,3 +1561,94 @@ func (b *anthropicReadErrorBody) Read(p []byte) (int, error) {
 }
 
 func (*anthropicReadErrorBody) Close() error { return nil }
+
+func TestAnthropicReplayDropsForeignModelReasoning(t *testing.T) {
+	raw := json.RawMessage(`{"type":"thinking","thinking":"because","signature":"sig-model-a"}`)
+	history := func() []llm.Message {
+		return []llm.Message{
+			llm.UserText("hello"),
+			{Role: llm.RoleAssistant, Provider: providerName, Model: "claude-model-a-20260101", Parts: []llm.Part{
+				llm.ReasoningPart{Provider: providerName, Raw: raw},
+				llm.Text("answer"),
+			}},
+			llm.UserText("continue"),
+		}
+	}
+	p := &Provider{defaultMaxTokens: 99}
+	for _, tt := range []struct {
+		model string
+		want  bool
+	}{
+		{model: "claude-model-a", want: true},
+		{model: "claude-model-b", want: false},
+	} {
+		params, _, err := p.buildParams(&llm.Request{Model: tt.model, Messages: history()})
+		if err != nil {
+			t.Fatalf("buildParams(%s) returned error: %v", tt.model, err)
+		}
+		body := testutil.MustCompactJSON(t, params)
+		if got := strings.Contains(body, "sig-model-a"); got != tt.want {
+			t.Fatalf("model %s: signed thinking replayed = %v, want %v\n%s", tt.model, got, tt.want, body)
+		}
+		if !strings.Contains(body, `"answer"`) {
+			t.Fatalf("model %s: assistant text missing after reasoning filter: %s", tt.model, body)
+		}
+	}
+}
+
+func TestAnthropicRequestTooLargeIsContextTooLong(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		status  int
+		code    string
+		message string
+	}{
+		{name: "http 413", status: 413, code: "request_too_large", message: "Request exceeds the maximum size"},
+		{name: "in-stream", status: 0, code: "request_too_large", message: "Request exceeds the maximum size"},
+		{name: "413 without body type", status: 413, code: "", message: ""},
+		{name: "prompt too long", status: 400, code: "invalid_request_error", message: "prompt is too long: 213462 tokens > 200000 maximum"},
+	} {
+		if got := errorKind(tc.status, tc.code, tc.message); !errors.Is(got, llm.ErrContextTooLong) {
+			t.Errorf("%s: errorKind = %v, want ErrContextTooLong", tc.name, got)
+		}
+	}
+	if got := errorKind(400, "invalid_request_error", "messages: text content blocks must be non-empty"); !errors.Is(got, llm.ErrBadRequest) {
+		t.Errorf("ordinary invalid request = %v, want ErrBadRequest", got)
+	}
+}
+
+func TestAnthropicOneHourCacheWritesTrackedAndLeaveCostUnknown(t *testing.T) {
+	p := &Provider{}
+	usage := p.mapUsage(sdk.Model("claude-haiku-4-5"), sdk.Usage{
+		InputTokens:              10,
+		OutputTokens:             5,
+		CacheCreationInputTokens: 300,
+		CacheCreation:            sdk.CacheCreation{Ephemeral1hInputTokens: 200, Ephemeral5mInputTokens: 100},
+	})
+	if usage.CacheWriteTokens != 300 || usage.CacheWrite1hTokens != 200 {
+		t.Fatalf("cache write split = %d/%d, want 300 total with 200 at 1h", usage.CacheWriteTokens, usage.CacheWrite1hTokens)
+	}
+	if usage.CostUSD != nil {
+		t.Fatalf("1h writes must leave the estimated cost unknown, got %v", *usage.CostUSD)
+	}
+	fiveMinute := p.mapUsage(sdk.Model("claude-haiku-4-5"), sdk.Usage{
+		InputTokens:              10,
+		OutputTokens:             5,
+		CacheCreationInputTokens: 100,
+		CacheCreation:            sdk.CacheCreation{Ephemeral5mInputTokens: 100},
+	})
+	if fiveMinute.CostUSD == nil {
+		t.Fatal("5m-only cache writes on a priced model must keep an estimated cost")
+	}
+
+	resp := collectAnthropicStream(t, []string{
+		`{"type":"message_start","message":{"id":"msg_1","model":"claude-haiku-4-5","usage":{"input_tokens":10,"cache_creation_input_tokens":300,"cache_creation":{"ephemeral_1h_input_tokens":200,"ephemeral_5m_input_tokens":100},"output_tokens":0}}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"hi"}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}`,
+		`{"type":"message_stop"}`,
+	})
+	if resp.Usage.CacheWrite1hTokens != 200 || resp.Usage.CostUSD != nil {
+		t.Fatalf("streamed usage = %+v, want 200 1h writes and unknown cost", resp.Usage)
+	}
+}

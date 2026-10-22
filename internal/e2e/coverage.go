@@ -66,6 +66,9 @@ var liveProviderProfiles = map[string]liveProviderProfile{
 			llm.Capability("openrouter/routing"): "routing selection is account and upstream availability dependent; request mapping is covered offline",
 			llm.Capability("openrouter/plugins"): "plugins invoke external services with nondeterministic availability; request mapping is covered offline",
 		},
+		Extensions: map[string]string{
+			"reasoning_model_switch": "cross-family model switch drops foreign reasoning_details (FS §18 model-aware replay); OpenRouter is the one configured preset fronting several reasoning model families",
+		},
 	},
 	"vllm": {
 		Extensions: map[string]string{
@@ -88,6 +91,7 @@ var liveScenarioOrder = []string{
 	"json_mode",
 	"reasoning",
 	"reasoning_replay",
+	"reasoning_model_switch",
 	"multimodal",
 	"stop_sequences",
 	"prompt_cache",

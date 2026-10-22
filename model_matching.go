@@ -285,3 +285,64 @@ func normalizeModelSearch(value string) string {
 	value = strings.ReplaceAll(value, "-", "")
 	return strings.ReplaceAll(value, ".", "")
 }
+
+// SameModel reports whether two model IDs name the same model, so that a
+// provider's response ID matches the alias it was requested by. IDs are
+// compared case-insensitively after trimming surrounding whitespace and
+// removing, in order:
+//   - one ":variant" routing suffix after the last '/' (OpenRouter ":free",
+//     ":nitro", Bedrock ":0");
+//   - one trailing release-date snapshot (-YYYYMMDD, _YYYYMMDD, @YYYYMMDD, or
+//     -YYYY-MM-DD);
+//   - one trailing "-latest" alias marker;
+//   - one trailing "-0" minor-zero alias ("claude-opus-4-0" is served as
+//     "claude-opus-4-20250514").
+//
+// It is an identity check, not family matching: different versions or sizes
+// ("gpt-5" vs "gpt-5-mini", "claude-haiku-4.5" vs "claude-haiku-5.5") differ,
+// and an empty ID never matches. The normalization deliberately leans toward
+// matching, because a false match only preserves same-provider replay while a
+// false mismatch drops reasoning a same-model tool loop needs.
+func SameModel(a, b string) bool {
+	a, b = modelIdentityKey(a), modelIdentityKey(b)
+	return a != "" && a == b
+}
+
+func modelIdentityKey(id string) string {
+	id = strings.ToLower(strings.TrimSpace(id))
+	if colon := strings.LastIndexByte(id, ':'); colon > strings.LastIndexByte(id, '/') && colon > 0 {
+		id = id[:colon]
+	}
+	id = stripModelDateSuffix(id)
+	id = strings.TrimSuffix(id, "-latest")
+	if trimmed := strings.TrimSuffix(id, "-0"); trimmed != "" {
+		id = trimmed
+	}
+	return id
+}
+
+func stripModelDateSuffix(id string) string {
+	if n := len(id); n > 9 {
+		if sep := id[n-9]; sep == '-' || sep == '_' || sep == '@' {
+			if date := id[n-8:]; allASCIIDigits(date) && plausibleModelDate(date[0:4], date[4:6], date[6:8]) {
+				return id[:n-9]
+			}
+		}
+	}
+	if n := len(id); n > 11 && id[n-11] == '-' && id[n-6] == '-' && id[n-3] == '-' {
+		year, month, day := id[n-10:n-6], id[n-5:n-3], id[n-2:]
+		if allASCIIDigits(year) && plausibleModelDate(year, month, day) {
+			return id[:n-11]
+		}
+	}
+	return id
+}
+
+func allASCIIDigits(value string) bool {
+	for i := 0; i < len(value); i++ {
+		if !isASCIIDigit(value[i]) {
+			return false
+		}
+	}
+	return value != ""
+}

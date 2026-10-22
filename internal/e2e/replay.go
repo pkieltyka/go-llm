@@ -385,8 +385,11 @@ func assertReplayStopReason(t *testing.T, resp *llm.Response) {
 // OutputTokens, and TotalTokens equals prompt occupancy plus output.
 func assertReplayUsage(t *testing.T, u llm.Usage) {
 	t.Helper()
-	if u.InputTokens < 0 || u.OutputTokens < 0 || u.TotalTokens < 0 || u.CacheReadTokens < 0 || u.CacheWriteTokens < 0 || u.ReasoningTokens < 0 {
+	if u.InputTokens < 0 || u.OutputTokens < 0 || u.TotalTokens < 0 || u.CacheReadTokens < 0 || u.CacheWriteTokens < 0 || u.CacheWrite1hTokens < 0 || u.ReasoningTokens < 0 {
 		t.Fatalf("replay usage has negative counts: %+v", u)
+	}
+	if u.CacheWrite1hTokens > u.CacheWriteTokens {
+		t.Fatalf("replay usage 1h cache writes exceed total cache writes: %+v", u)
 	}
 	if u.OutputTokens == 0 {
 		t.Fatalf("replay usage missing output tokens: %+v", u)

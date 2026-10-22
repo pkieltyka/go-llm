@@ -58,7 +58,7 @@ func (a Adapter) validateRequest(req *llm.Request, stream bool) error {
 }
 
 func (a Adapter) buildParamsAfterValidation(req *llm.Request) (responses.ResponseNewParams, error) {
-	input, err := a.buildInput(req.Messages)
+	input, err := a.buildInput(providerutil.ReplayableHistory(req.Messages, req.Model))
 	if err != nil {
 		return responses.ResponseNewParams{}, err
 	}

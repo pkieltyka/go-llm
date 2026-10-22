@@ -49,7 +49,10 @@ where they exist and pulled in only by the provider package you import.
   provenance in `CostSource` (`native` vs `estimated`) — plus `ContextUsage`
   for context-window accounting. Live model catalogs preserve independent
   input/output/cache-read/cache-write availability, so unknown rates are not
-  displayed as free while explicit zero rates remain visible.
+  displayed as free while explicit zero rates remain visible. Anthropic
+  one-hour cache writes are tracked separately (`CacheWrite1hTokens`); no
+  price table publishes their rate, so an estimated cost containing them is
+  reported as unknown rather than understated.
 - **Capabilities**: provider-wide `Capabilities()` discovery with pre-flight
   request validation, plus advisory per-model capabilities from rich live
   catalogs such as OpenRouter and Codex. Unsupported provider features fail
@@ -318,7 +321,11 @@ neutral history into its own wire shape (and drops what only the original
 provider can accept, like signed thinking blocks), a saved conversation can
 be continued on a *different* provider: mid-conversation failover,
 cheap-model tool loops handed to a stronger model for synthesis, or histories
-that simply outlive your vendor choice.
+that simply outlive your vendor choice. Reasoning is replayed only to the
+model that produced it. On a model switch, even within one provider (an
+OpenRouter hop from `anthropic/*` to `openai/*`, or Opus to Haiku), the
+previous model's reasoning payloads are dropped. Keep `Message.Model`
+populated (`History.AddResponse` does) so go-llm can tell.
 
 To persist a turn *while* it streams, collect it incrementally.
 `llm.Collector` has exactly `Collect`'s semantics, and `Snapshot` returns an

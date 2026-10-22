@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -401,5 +402,30 @@ func TestResponseJSONExcludesRaw(t *testing.T) {
 	}
 	if !bytes.Equal(first, second) {
 		t.Fatalf("response round trip bytes differ:\nfirst:  %s\nsecond: %s", first, second)
+	}
+}
+
+func TestUsageCacheWrite1hRoundTripsAndOmitsZero(t *testing.T) {
+	usage := Usage{InputTokens: 1, CacheWriteTokens: 9, CacheWrite1hTokens: 4}
+	data, err := json.Marshal(usage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"cache_write_1h_tokens":4`) {
+		t.Fatalf("encoded usage = %s, want cache_write_1h_tokens", data)
+	}
+	var decoded Usage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.CacheWrite1hTokens != 4 || decoded.CacheWriteTokens != 9 {
+		t.Fatalf("decoded usage = %+v", decoded)
+	}
+	zero, err := json.Marshal(Usage{CacheWriteTokens: 9})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(zero), "cache_write_1h_tokens") {
+		t.Fatalf("zero 1h writes must be omitted for envelope stability: %s", zero)
 	}
 }

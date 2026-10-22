@@ -133,3 +133,117 @@ func liveImplicitPromptCacheScenario(ctx context.Context, t *testing.T, p llm.Pr
 		t.Fatalf("prompt cache usage missing input tokens: first=%+v second=%+v", first.Usage, second.Usage)
 	}
 }
+
+// liveReasoningModelSwitchScenario produces a reasoning-bearing tool call on
+// producer, then continues the tool loop on consumer with the full,
+// provenance-stamped history. It asserts the continuation succeeds and that
+// no part of the producer's raw reasoning payload reached the consumer
+// request (FS §18 model-aware replay). Tool choice stays auto because
+// Anthropic-family models reject forced tool use with thinking enabled.
+func liveReasoningModelSwitchScenario(ctx context.Context, t *testing.T, p llm.Provider, producer, consumer string) {
+	t.Helper()
+	captures := RecordingCaptures(ctx)
+	if captures == nil {
+		t.Fatal("reasoning_model_switch needs a RecordingContext capture log")
+	}
+	tool := llm.Tool{
+		Name:        "get_weather",
+		Description: "Get the current weather for a city.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false}`),
+	}
+	user := llm.UserText("What's the weather in Paris? Use the get_weather tool, then answer in one short sentence.")
+	first, err := p.Chat(ctx, &llm.Request{
+		Model: producer, MaxTokens: 2048, Effort: llm.EffortLow,
+		Tools: []llm.Tool{tool}, Messages: []llm.Message{user},
+	})
+	if err != nil {
+		t.Fatalf("producer %s Chat returned error: %v", producer, err)
+	}
+	calls := first.ToolCalls()
+	marker := reasoningRawMarker(first)
+	if len(calls) == 0 || marker == "" {
+		t.Fatalf("producer %s must return a tool call with raw reasoning: tool_calls=%d raw_marker=%t stop_reason=%s", producer, len(calls), marker != "", first.StopReason)
+	}
+	results := make([]llm.Part, 0, len(calls))
+	for _, call := range calls {
+		results = append(results, llm.ToolResult(call.ID, `{"city":"Paris","temp_c":18,"sky":"cloudy"}`))
+	}
+
+	before := len(captures.Snapshot().Captures)
+	resp, err := p.Chat(ctx, &llm.Request{
+		Model: consumer, MaxTokens: 2048, Effort: llm.EffortLow,
+		Tools: []llm.Tool{tool},
+		Messages: []llm.Message{
+			user,
+			{Role: llm.RoleAssistant, Parts: first.Parts, Provider: first.Provider, Model: first.Model},
+			{Role: llm.RoleTool, Parts: results},
+		},
+	})
+	if err != nil {
+		t.Fatalf("consumer %s continuation returned error: %v", consumer, err)
+	}
+	if strings.TrimSpace(resp.Text()) == "" {
+		t.Fatalf("consumer %s continuation text empty: stop_reason=%s", consumer, resp.StopReason)
+	}
+	sent := captures.Snapshot().Captures[before:]
+	if len(sent) == 0 {
+		t.Fatal("no wire capture recorded for the consumer request")
+	}
+	escaped, _ := json.Marshal(marker)
+	for _, capture := range sent {
+		body := string(capture.RequestBody)
+		if strings.Contains(body, marker) || strings.Contains(body, strings.Trim(string(escaped), `"`)) {
+			t.Fatalf("consumer %s request replayed the producer's raw reasoning payload", consumer)
+		}
+	}
+	t.Logf("model switch %s -> %s: continuation ok, producer raw reasoning absent from %d consumer request(s)", producer, consumer, len(sent))
+}
+
+// reasoningRawMarker returns a wire-presence marker from the response's raw
+// reasoning payloads: the longest opaque value (signature, data, or encrypted
+// content) of at least 16 bytes, falling back to the longest string value.
+// Opaque values cannot legitimately appear in a prompt or tool schema. Empty
+// when none exists.
+func reasoningRawMarker(resp *llm.Response) string {
+	var opaque, best string
+	var walk func(key string, value any)
+	walk = func(key string, value any) {
+		switch v := value.(type) {
+		case string:
+			if len(v) < 16 {
+				return
+			}
+			switch key {
+			case "signature", "data", "encrypted_content", "encrypted":
+				if len(v) > len(opaque) {
+					opaque = v
+				}
+			}
+			if len(v) > len(best) {
+				best = v
+			}
+		case []any:
+			for _, item := range v {
+				walk(key, item)
+			}
+		case map[string]any:
+			for k, item := range v {
+				walk(k, item)
+			}
+		}
+	}
+	for _, part := range resp.Parts {
+		reasoning, ok := part.(llm.ReasoningPart)
+		if !ok || len(reasoning.Raw) == 0 {
+			continue
+		}
+		var decoded any
+		if json.Unmarshal(reasoning.Raw, &decoded) == nil {
+			walk("", decoded)
+		}
+	}
+	if opaque != "" {
+		return opaque
+	}
+	return best
+}

@@ -59,8 +59,9 @@ func modelIDHasBoundaryPrefix(modelID, prefix string) bool {
 
 // EstimateCost returns a copy of usage with CostUSD populated from pricing
 // and CostSource set to CostSourceEstimated. It leaves cost unknown when a
-// nonzero usage component has no available rate. Provider-reported costs are
-// left untouched.
+// nonzero usage component has no available rate, including any one-hour
+// cache writes (Usage.CacheWrite1hTokens), for which no table publishes a
+// rate. Provider-reported costs are left untouched.
 func EstimateCost(usage Usage, pricing ModelPricing) Usage {
 	if usage.CostUSD != nil {
 		return usage
@@ -116,6 +117,11 @@ func tierAvailability(tier ModelPricingTier) ModelPricingAvailability {
 }
 
 func pricingCoversUsage(usage Usage, pricing ModelPricing) bool {
+	// No published price table carries a one-hour cache-write rate, so those
+	// tokens are never priced at the default write rate (FS §11).
+	if usage.CacheWrite1hTokens > 0 {
+		return false
+	}
 	if pricing.Availability == nil {
 		return true
 	}

@@ -981,3 +981,33 @@ func (r *responseRecorder) response(req *http.Request) *http.Response {
 		Request:    req,
 	}
 }
+
+func TestOpenRouterReplayDropsForeignModelReasoningDetails(t *testing.T) {
+	const details = `[{"type":"reasoning.text","text":"why","signature":"sig-anthropic"}]`
+	p := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {})
+	history := []llm.Message{
+		llm.UserText("hello"),
+		{Role: llm.RoleAssistant, Provider: providerName, Model: "anthropic/claude-haiku-4.5", Parts: []llm.Part{
+			llm.ReasoningPart{Provider: providerName, Text: "why", Raw: json.RawMessage(details)},
+			llm.Text("hi"),
+		}},
+		llm.UserText("continue"),
+	}
+	for _, tt := range []struct {
+		model string
+		want  bool
+	}{
+		{model: "anthropic/claude-haiku-4.5", want: true},
+		{model: "openai/gpt-5-mini", want: false},
+		{model: "anthropic/claude-haiku-5.5", want: false},
+	} {
+		params, err := p.buildParams(&llm.Request{Model: tt.model, Messages: history}, false)
+		if err != nil {
+			t.Fatalf("buildParams(%s) returned error: %v", tt.model, err)
+		}
+		body := testutil.MustCompactJSON(t, params)
+		if got := strings.Contains(body, "sig-anthropic"); got != tt.want {
+			t.Fatalf("model %s: reasoning_details replayed = %v, want %v\n%s", tt.model, got, tt.want, body)
+		}
+	}
+}

@@ -41,7 +41,18 @@ type recordingSecretsContextKey struct{}
 
 func RecordingContext(ctx context.Context, captures *CaptureLog, secrets *SecretSet) context.Context {
 	ctx = llm.WithWireCaptureObserver(ctx, captures)
+	ctx = context.WithValue(ctx, recordingCapturesContextKey{}, captures)
 	return context.WithValue(ctx, recordingSecretsContextKey{}, secrets)
+}
+
+type recordingCapturesContextKey struct{}
+
+// RecordingCaptures returns the CaptureLog installed by RecordingContext, or
+// nil when ctx carries none. Scenarios use it to assert on the exact request
+// bodies their provider sent.
+func RecordingCaptures(ctx context.Context) *CaptureLog {
+	captures, _ := ctx.Value(recordingCapturesContextKey{}).(*CaptureLog)
+	return captures
 }
 
 func ScheduleFixtureRecording(t *testing.T, path string, captures *CaptureLog, secrets *SecretSet, report *ScenarioReport, allowIncomplete bool) {

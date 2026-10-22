@@ -85,8 +85,10 @@ func (p *Provider) mapUsage(model sdk.Model, usage sdk.Usage) llm.Usage {
 		OutputTokens:     usage.OutputTokens,
 		CacheReadTokens:  usage.CacheReadInputTokens,
 		CacheWriteTokens: usage.CacheCreationInputTokens,
-		ReasoningTokens:  usage.OutputTokensDetails.ThinkingTokens,
-		Raw:              usage,
+		// The one-hour split is a subset of cache_creation_input_tokens.
+		CacheWrite1hTokens: usage.CacheCreation.Ephemeral1hInputTokens,
+		ReasoningTokens:    usage.OutputTokensDetails.ThinkingTokens,
+		Raw:                usage,
 	}
 	out.TotalTokens = out.InputTokens + out.CacheReadTokens + out.CacheWriteTokens + out.OutputTokens
 	if p.priceTable != nil {

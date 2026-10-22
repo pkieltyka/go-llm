@@ -39,6 +39,10 @@ const (
 	// tool-dependent scenarios pin an Anthropic-family model; qwen tool paths
 	// stay covered by the vLLM suite, which runs the same family natively.
 	openRouterToolsModel = "anthropic/claude-haiku-4.5"
+	// The model-switch scenario produces signed Anthropic reasoning_details
+	// and continues the tool loop on a different model family.
+	openRouterSwitchProducerModel = "anthropic/claude-haiku-4.5"
+	openRouterSwitchConsumerModel = "openai/gpt-5-mini"
 )
 
 func TestLiveOpenRouter(t *testing.T) {
@@ -213,6 +217,9 @@ func openRouterLiveScenarioRunners(reasoningModel, cacheModel, parallelToolsMode
 	runners["reasoning_replay"] = func(ctx context.Context, t *testing.T, p llm.Provider, _ string) {
 		liveOpenRouterReasoningReplayScenario(ctx, t, p, reasoningModel)
 	}
+	runners["reasoning_model_switch"] = func(ctx context.Context, t *testing.T, p llm.Provider, _ string) {
+		liveReasoningModelSwitchScenario(ctx, t, p, openRouterSwitchProducerModel, openRouterSwitchConsumerModel)
+	}
 	runners["prompt_cache"] = func(ctx context.Context, t *testing.T, p llm.Provider, _ string) {
 		livePromptCacheScenario(ctx, t, p, cacheModel)
 	}
@@ -311,12 +318,10 @@ func liveOpenRouterReasoningReplayScenario(ctx context.Context, t *testing.T, p 
 	if !hasOpenRouterReasoningRaw(first) {
 		t.Fatalf("reasoning replay needs OpenRouter raw reasoning_details: parts=%d stop_reason=%s", len(first.Parts), first.StopReason)
 	}
-	replayModel := first.Model
-	if replayModel == "" {
-		replayModel = model
-	}
+	// Replay under the requested model, as callers do, while the assistant
+	// message carries the server-reported model (FS §18 model-aware replay).
 	resp, err := p.Chat(ctx, &llm.Request{
-		Model:     replayModel,
+		Model:     model,
 		MaxTokens: 2048,
 		ProviderOptions: openrouterProvider.Options{
 			Provider: map[string]any{"require_parameters": true},

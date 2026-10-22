@@ -347,12 +347,11 @@ func liveReasoningReplayScenario(ctx context.Context, t *testing.T, p llm.Provid
 	if !hasAnthropicReasoningRaw(first) {
 		t.Fatalf("reasoning replay needs Anthropic raw reasoning: parts=%d stop_reason=%s", len(first.Parts), first.StopReason)
 	}
-	replayModel := first.Model
-	if replayModel == "" {
-		replayModel = model
-	}
+	// Replay under the requested alias, as callers do, while the assistant
+	// message carries the server-reported model: same-model replay must
+	// survive alias-to-response-ID differences (FS §18).
 	resp, err := p.Chat(ctx, &llm.Request{
-		Model:     replayModel,
+		Model:     model,
 		MaxTokens: 128,
 		Messages: []llm.Message{
 			llm.UserText(anthropicReasoningPrompt),
