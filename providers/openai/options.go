@@ -11,6 +11,7 @@ import (
 	sdk "github.com/openai/openai-go/v3"
 	sdkoption "github.com/openai/openai-go/v3/option"
 	llm "github.com/pkieltyka/go-llm"
+	"github.com/pkieltyka/go-llm/providers/internal/provideroauth"
 	"github.com/pkieltyka/go-llm/providers/internal/providerutil"
 )
 
@@ -30,7 +31,10 @@ type apiKeyFunc func(context.Context) (string, error)
 
 type config struct {
 	apiKey          string
+	apiKeySet       bool
 	apiKeyFunc      apiKeyFunc
+	credentials     llm.CredentialStore
+	oauthTokenURL   string
 	baseURL         string
 	httpClient      *http.Client
 	maxRetries      *int
@@ -54,8 +58,21 @@ func defaultConfig() config {
 func WithAPIKey(key string) Option {
 	return func(c *config) {
 		c.apiKey = key
+		c.apiKeySet = true
 		c.apiKeyFunc = nil
 	}
+}
+
+// WithCredentials resolves auth on every request from store's "openai"
+// entry, as pi does: an "oauth" credential (Sign in with ChatGPT, from
+// NewLoginFlow or pi's auth.json) is sent as a bearer token, refreshed under
+// the store's lock before it expires and once after a 401, and the renewed
+// credential is stored before use; an "api_key" credential is sent as is.
+// A stored credential owns the provider (no environment fallback); with
+// nothing stored, OPENAI_API_KEY is used if set. WithCredentials is mutually
+// exclusive with WithAPIKey and WithAPIKeyFunc.
+func WithCredentials(store llm.CredentialStore) Option {
+	return func(c *config) { c.credentials = store }
 }
 
 // WithAPIKeyFunc sets a per-request key resolver. It wins over WithAPIKey.
@@ -120,7 +137,11 @@ func WithProject(project string) Option {
 }
 
 func (c config) validate() error {
-	if c.apiKeyFunc == nil && c.apiKey == "" {
+	if c.credentials != nil {
+		if c.apiKeySet || c.apiKeyFunc != nil {
+			return fmt.Errorf("%w: OpenAI WithCredentials cannot be combined with WithAPIKey or WithAPIKeyFunc", llm.ErrBadRequest)
+		}
+	} else if c.apiKeyFunc == nil && c.apiKey == "" {
 		return fmt.Errorf("%w: missing OpenAI API key; set WithAPIKey or %s", llm.ErrAuth, apiKeyEnv)
 	}
 	if c.httpClient == nil {
@@ -158,7 +179,40 @@ func (c config) sdkOptions() []sdkoption.RequestOption {
 	if c.project != "" {
 		opts = append(opts, sdkoption.WithProject(c.project))
 	}
-	if c.apiKeyFunc != nil {
+	if c.credentials != nil {
+		oauth := &provideroauth.Resolver{
+			Store:      c.credentials,
+			ProviderID: providerName,
+			Refresh: func(ctx context.Context, cred llm.AuthCredential) (llm.AuthCredential, error) {
+				return refreshChatGPTOAuth(ctx, c.httpClient, c.oauthTokenURL, cred)
+			},
+		}
+		ambient := c.apiKey
+		opts = append(opts,
+			sdkoption.WithAPIKey("stored"),
+			sdkoption.WithMiddleware(func(req *http.Request, next sdkoption.MiddlewareNext) (*http.Response, error) {
+				// Chat and ChatStream pass the read that chose the request
+				// shape, so the token comes from the same credential.
+				stored, cached := req.Context().Value(storedCredentialKey{}).(storedCredential)
+				if !cached {
+					cred, ok, err := readCredential(req.Context(), c.credentials)
+					if err != nil {
+						return nil, err
+					}
+					stored = storedCredential{cred: cred, ok: ok}
+				}
+				if stored.ok && stored.cred.Type == "oauth" {
+					return provideroauth.DoWithAuthRetry(req, provideroauth.MiddlewareNext(next), oauth, applyBearer)
+				}
+				key, err := providerutil.APIKeyFromCredential(providerName, stored.cred, stored.ok, ambient)
+				if err != nil {
+					return nil, err
+				}
+				req.Header.Set("Authorization", "Bearer "+key)
+				return next(req)
+			}),
+		)
+	} else if c.apiKeyFunc != nil {
 		opts = append(opts,
 			sdkoption.WithAPIKey("dynamic"),
 			sdkoption.WithMiddleware(func(req *http.Request, next sdkoption.MiddlewareNext) (*http.Response, error) {
@@ -180,10 +234,11 @@ func (c config) sdkOptions() []sdkoption.RequestOption {
 // wraps openai-go's Responses surface directly and, by default, keeps every
 // request stateless (store: false + encrypted reasoning round-tripping).
 type Provider struct {
-	client     *sdk.Client
-	priceTable llm.PriceTable
-	logger     *slog.Logger
-	timeout    time.Duration
+	client      *sdk.Client
+	credentials llm.CredentialStore
+	priceTable  llm.PriceTable
+	logger      *slog.Logger
+	timeout     time.Duration
 }
 
 // New constructs an OpenAI Responses provider.
@@ -197,10 +252,11 @@ func New(opts ...Option) (*Provider, error) {
 	}
 	client := sdk.NewClient(cfg.sdkOptions()...)
 	return &Provider{
-		client:     &client,
-		priceTable: cfg.priceTable,
-		logger:     cfg.logger,
-		timeout:    cfg.timeout,
+		client:      &client,
+		credentials: cfg.credentials,
+		priceTable:  cfg.priceTable,
+		logger:      cfg.logger,
+		timeout:     cfg.timeout,
 	}, nil
 }
 
@@ -212,4 +268,23 @@ func (p *Provider) Client() *sdk.Client {
 		return nil
 	}
 	return p.client
+}
+
+type storedCredentialKey struct{}
+
+type storedCredential struct {
+	cred llm.AuthCredential
+	ok   bool
+}
+
+func readCredential(ctx context.Context, store llm.CredentialStore) (llm.AuthCredential, bool, error) {
+	cred, ok, err := store.Read(ctx, providerName)
+	if err != nil {
+		return llm.AuthCredential{}, false, fmt.Errorf("%w: read OpenAI credential: %w", llm.ErrAuth, err)
+	}
+	return cred, ok, nil
+}
+
+func applyBearer(req *http.Request, cred llm.AuthCredential) {
+	req.Header.Set("Authorization", "Bearer "+cred.Access)
 }

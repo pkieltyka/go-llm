@@ -56,19 +56,19 @@ func TestConfiguredKeylessBaseURL(t *testing.T) {
 
 func TestProviderReturnsOAuthCredential(t *testing.T) {
 	cfg := Config{Providers: llm.AuthFile{
-		"openai-codex": {
-			Type:      "oauth",
-			Access:    "access",
-			Refresh:   "refresh",
-			Expires:   123,
-			AccountID: "acct",
-			Model:     "gpt-5.4-mini",
+		"openai": {
+			Type:     "oauth",
+			Access:   "access",
+			Refresh:  "refresh",
+			Expires:  123,
+			ClientID: "client",
+			Model:    "gpt-5.4-mini",
 		},
 	}}
 
-	provider := cfg.Provider("openai-codex", "")
+	provider := cfg.Provider("openai", "")
 	auth := provider.Auth
-	if auth.Type != "oauth" || auth.Access != "access" || auth.Refresh != "refresh" || auth.AccountID != "acct" || auth.Expires != 123 {
+	if auth.Type != "oauth" || auth.Access != "access" || auth.Refresh != "refresh" || auth.ClientID != "client" || auth.Expires != 123 {
 		t.Fatalf("oauth provider = %+v", provider)
 	}
 	if provider.Model != "gpt-5.4-mini" {
@@ -88,10 +88,10 @@ func TestValidateLiveProviderConfigDistinguishesMissingAndInvalid(t *testing.T) 
 		{name: "valid API key", provider: "anthropic", config: ProviderConfig{Auth: llm.AuthCredential{Type: "api_key", Key: "key"}}},
 		{name: "configured rejected API key is not missing", provider: "openai", config: ProviderConfig{Auth: llm.AuthCredential{Type: "api_key", Key: "invalid-key"}}},
 		{name: "unsupported Anthropic OAuth", provider: "anthropic", config: ProviderConfig{Auth: llm.AuthCredential{Type: "oauth", Access: "access"}}, invalid: true},
-		{name: "missing Codex OAuth", provider: "openai-codex", missing: true},
-		{name: "malformed Codex OAuth", provider: "openai-codex", config: ProviderConfig{Auth: llm.AuthCredential{Type: "oauth", Refresh: "refresh"}}, invalid: true},
-		{name: "valid Codex OAuth", provider: "openai-codex", config: ProviderConfig{Auth: llm.AuthCredential{Type: "oauth", Access: "access"}}},
-		{name: "configured rejected Codex token is not missing", provider: "openai-codex", config: ProviderConfig{Auth: llm.AuthCredential{Type: "oauth", Access: "invalid-token"}}},
+		{name: "missing OpenAI credential", provider: "openai", missing: true},
+		{name: "OpenAI OAuth without client ID", provider: "openai", config: ProviderConfig{Auth: llm.AuthCredential{Type: "oauth", Access: "a", Refresh: "refresh"}}, invalid: true},
+		{name: "OpenAI OAuth without tokens", provider: "openai", config: ProviderConfig{Auth: llm.AuthCredential{Type: "oauth"}}, invalid: true},
+		{name: "valid OpenAI OAuth", provider: "openai", config: ProviderConfig{Auth: llm.AuthCredential{Type: "oauth", Access: "access", Refresh: "r", ClientID: "c"}}},
 		{name: "missing vLLM URL", provider: "vllm", missing: true},
 		{name: "vLLM key without URL", provider: "vllm", config: ProviderConfig{Auth: llm.AuthCredential{Key: "key"}}, invalid: true},
 		{name: "valid keyless vLLM", provider: "vllm", config: ProviderConfig{BaseURL: "http://localhost:8000/v1"}},
@@ -111,12 +111,12 @@ func TestValidateLiveProviderConfigDistinguishesMissingAndInvalid(t *testing.T) 
 	}
 }
 
-func TestLoadConfigUsesAuthFileFormatsForAnthropicAndCodex(t *testing.T) {
+func TestLoadConfigUsesAuthFileFormatsForAnthropicAndOpenAIOAuth(t *testing.T) {
 	root := t.TempDir()
 	data := []byte(`{
 		"providers": {
 			"anthropic": {"type":"api_key","key":"anthropic-test","model":"claude-test"},
-			"openai-codex": {"type":"oauth","access":"codex-access","refresh":"codex-refresh","expires":123,"accountId":"acct-test","model":"gpt-test"}
+			"openai": {"type":"oauth","access":"chatgpt-access","refresh":"chatgpt-refresh","expires":123,"clientId":"client-test","scopes":["chatgpt.tokens.use.direct"],"model":"gpt-test"}
 		}
 	}`)
 	if err := os.WriteFile(filepath.Join(root, "gollm-test.json"), data, 0o600); err != nil {
@@ -130,8 +130,8 @@ func TestLoadConfigUsesAuthFileFormatsForAnthropicAndCodex(t *testing.T) {
 	if anthropic.Auth.Type != "api_key" || anthropic.Auth.Key != "anthropic-test" || anthropic.Model != "claude-test" {
 		t.Fatalf("anthropic config = %+v", anthropic)
 	}
-	codex := config.Provider("openai-codex", "")
-	if codex.Auth.Type != "oauth" || codex.Auth.Access != "codex-access" || codex.Auth.Refresh != "codex-refresh" || codex.Auth.Expires != 123 || codex.Auth.AccountID != "acct-test" || codex.Model != "gpt-test" {
-		t.Fatalf("codex config = %+v", codex)
+	chatgpt := config.Provider("openai", "")
+	if chatgpt.Auth.Type != "oauth" || chatgpt.Auth.Access != "chatgpt-access" || chatgpt.Auth.Refresh != "chatgpt-refresh" || chatgpt.Auth.Expires != 123 || chatgpt.Auth.ClientID != "client-test" || chatgpt.Model != "gpt-test" {
+		t.Fatalf("openai oauth config = %+v", chatgpt)
 	}
 }

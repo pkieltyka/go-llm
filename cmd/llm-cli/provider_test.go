@@ -9,8 +9,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -21,15 +21,14 @@ import (
 // read, so table rows exercise exactly the configured resolution path.
 func clearProviderEnv(t *testing.T) {
 	t.Helper()
-	for _, key := range []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENAI_CODEX_ACCESS_TOKEN", "OPENROUTER_API_KEY"} {
+	for _, key := range []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"} {
 		t.Setenv(key, "")
 	}
 }
 
 // TestNewProviderSelectionAndCredentials tables provider selection ×
 // credential resolution: explicit --api-key, env-var fallback, missing
-// credentials, the codex --api-key-as-access-token overload, and the
-// rejection rows. No live calls — only constructors run.
+// credentials, and the rejection rows. No live calls — only constructors run.
 func TestNewProviderSelectionAndCredentials(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -47,11 +46,8 @@ func TestNewProviderSelectionAndCredentials(t *testing.T) {
 		{name: "openrouter api key", cfg: providerConfig{name: "openrouter", apiKey: "test-key"}, wantName: "openrouter"},
 		{name: "openrouter env fallback", cfg: providerConfig{name: "openrouter"}, env: map[string]string{"OPENROUTER_API_KEY": "env-key"}, wantName: "openrouter"},
 		{name: "openrouter missing key", cfg: providerConfig{name: "openrouter"}, wantErr: llm.ErrAuth},
-		// The --api-key flag doubles as the OAuth access token for the codex
-		// subscription backend (flags.go documents the overload).
-		{name: "codex api key flag as access token", cfg: providerConfig{name: "openai-codex", apiKey: "oauth-access-token"}, wantName: "openai-codex"},
-		{name: "codex env access token", cfg: providerConfig{name: "openai-codex"}, env: map[string]string{"OPENAI_CODEX_ACCESS_TOKEN": "env-access-token"}, wantName: "openai-codex"},
-		{name: "codex missing credential", cfg: providerConfig{name: "openai-codex"}, wantErr: llm.ErrAuth},
+		{name: "auth file and api key are exclusive", cfg: providerConfig{name: "openai", apiKey: "k", authFile: "auth.json"}, wantErr: llm.ErrBadRequest},
+		{name: "removed openai-codex provider", cfg: providerConfig{name: "openai-codex", apiKey: "k"}, wantErr: llm.ErrBadRequest},
 		{name: "zai deferred", cfg: providerConfig{name: "zai", apiKey: "key"}, wantErr: llm.ErrUnsupported},
 		{name: "missing provider", cfg: providerConfig{}, wantErr: llm.ErrBadRequest},
 		{name: "unknown provider", cfg: providerConfig{name: "eliza"}, wantErr: llm.ErrBadRequest},
@@ -84,7 +80,7 @@ func TestNewProviderSelectionAndCredentials(t *testing.T) {
 func TestNewProviderOptionWiring(t *testing.T) {
 	clearProviderEnv(t)
 	var stderr bytes.Buffer
-	for _, name := range []string{"anthropic", "openai", "openai-codex", "openrouter"} {
+	for _, name := range []string{"anthropic", "openai", "openrouter"} {
 		t.Run(name, func(t *testing.T) {
 			p, err := newProvider(context.Background(), providerConfig{
 				name:    name,
@@ -104,249 +100,53 @@ func TestNewProviderOptionWiring(t *testing.T) {
 	}
 }
 
-// TestNewProviderFromAuthFile drives the documented auth-file workflow with
-// a fake pi-compatible OAuth credential file.
+// TestNewProviderFromAuthFile drives the documented auth-file workflow: a
+// pi-compatible auth.json serves every provider, and openai sends a stored
+// Sign in with ChatGPT access token as its bearer token.
 func TestNewProviderFromAuthFile(t *testing.T) {
 	clearProviderEnv(t)
+	var gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"object":"list","data":[]}`)
+	}))
+	defer server.Close()
+
 	path := filepath.Join(t.TempDir(), "auth.json")
+	expires := time.Now().Add(time.Hour).UnixMilli()
 	payload := `{
-		"providers": {
-			"openai-codex": {"type": "oauth", "access": "fake-access-token", "refresh": "fake-refresh-token", "accountId": "acct_1"},
-			"openrouter": {"type": "api", "key": "fake-openrouter-key"}
-		}
+		"anthropic": {"type": "api_key", "key": "fake-anthropic-key"},
+		"openai": {"type": "oauth", "access": "fake-chatgpt-access", "refresh": "fake-refresh", "clientId": "client_1", "expires": ` + strconv.FormatInt(expires, 10) + `},
+		"openrouter": {"type": "api_key", "key": "fake-openrouter-key"}
 	}`
 	if err := os.WriteFile(path, []byte(payload), 0o600); err != nil {
 		t.Fatalf("WriteFile returned error: %v", err)
 	}
-
-	auth, err := llm.LoadAuthFile(path)
-	if err != nil {
-		t.Fatalf("LoadAuthFile returned error: %v", err)
-	}
-
-	codexCred, ok := auth["openai-codex"]
-	if !ok || codexCred.Access != "fake-access-token" || codexCred.Refresh != "fake-refresh-token" || codexCred.AccountID != "acct_1" {
-		t.Fatalf("codex credential = %+v", codexCred)
-	}
-	p, err := newProvider(context.Background(), providerConfig{name: "openai-codex", authFile: path})
-	if err != nil {
-		t.Fatalf("newProvider(openai-codex) returned error: %v", err)
-	}
-	if p.Name() != "openai-codex" {
-		t.Fatalf("provider name = %q", p.Name())
-	}
-
-	routerCred, ok := auth["openrouter"]
-	if !ok || routerCred.Key != "fake-openrouter-key" {
-		t.Fatalf("openrouter credential = %+v", routerCred)
-	}
-	p, err = newProvider(context.Background(), providerConfig{name: "openrouter", apiKey: routerCred.Key})
-	if err != nil {
-		t.Fatalf("newProvider(openrouter) returned error: %v", err)
-	}
-	if p.Name() != "openrouter" {
-		t.Fatalf("provider name = %q", p.Name())
-	}
-}
-
-func TestCodexAuthPrecedenceConfiguresRequests(t *testing.T) {
-	clearProviderEnv(t)
-	authPath := filepath.Join(t.TempDir(), "auth.json")
-	if err := os.WriteFile(authPath, []byte(`{"providers":{"openai-codex":{"type":"oauth","access":"file-token","accountId":"file-account"}}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	tests := []struct {
-		name        string
-		authFile    string
-		envToken    string
-		apiKey      string
-		wantToken   string
-		wantAccount string
-	}{
-		{name: "auth file wins", authFile: authPath, envToken: "env-token", apiKey: "argv-token", wantToken: "file-token", wantAccount: "file-account"},
-		{name: "environment wins", envToken: "env-token", apiKey: "argv-token", wantToken: "env-token"},
-		{name: "api key flag supplies access token", apiKey: "argv-token", wantToken: "argv-token"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			clearProviderEnv(t)
-			t.Setenv("OPENAI_CODEX_ACCESS_TOKEN", tt.envToken)
-			var gotToken, gotAccount string
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				gotToken = r.Header.Get("Authorization")
-				gotAccount = r.Header.Get("chatgpt-account-id")
-				w.Header().Set("Content-Type", "text/event-stream")
-				_, _ = io.WriteString(w, "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-5.4-mini\",\"status\":\"in_progress\",\"output\":[]}}\n\n")
-				_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-5.4-mini\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0,\"total_tokens\":1}}}\n\n")
-			}))
-			defer server.Close()
-
-			p, err := newProvider(context.Background(), providerConfig{
-				name:     "openai-codex",
-				authFile: tt.authFile,
-				apiKey:   tt.apiKey,
-				baseURL:  server.URL,
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, err = llm.Collect(p.ChatStream(context.Background(), &llm.Request{
-				Model:    "gpt-5.4-mini",
-				Messages: []llm.Message{llm.UserText("test")},
-			}))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if gotToken != "Bearer "+tt.wantToken {
-				t.Fatalf("Authorization = %q, want Bearer %s", gotToken, tt.wantToken)
-			}
-			if gotAccount != tt.wantAccount {
-				t.Fatalf("chatgpt-account-id = %q, want %q", gotAccount, tt.wantAccount)
-			}
-		})
-	}
-}
-
-func TestCodexAuthFileIsOnlyLoadedWhenExplicit(t *testing.T) {
-	clearProviderEnv(t)
-	t.Setenv("OPENAI_CODEX_ACCESS_TOKEN", "env-token")
-	missing := filepath.Join(t.TempDir(), "missing.json")
-	if _, err := newProvider(context.Background(), providerConfig{name: "openai-codex", authFile: missing}); err == nil || !strings.Contains(err.Error(), "load auth file") {
-		t.Fatalf("explicit missing auth file error = %v", err)
-	}
-	if _, err := newProvider(context.Background(), providerConfig{name: "openai-codex"}); err != nil {
-		t.Fatalf("environment auth unexpectedly loaded a file: %v", err)
-	}
-}
-
-func TestAuthFileRejectedForOtherProviders(t *testing.T) {
-	_, err := newProvider(context.Background(), providerConfig{name: "openai", apiKey: "key", authFile: "/tmp/auth.json"})
-	if !errors.Is(err, llm.ErrBadRequest) || !strings.Contains(err.Error(), "only supported for openai-codex") {
-		t.Fatalf("err = %v, want scoped auth-file error", err)
-	}
-}
-
-func TestCodexAuthFilePersistencePreservesOAuthFormat(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "auth.json")
-	if err := os.WriteFile(path, []byte(`{"meta":{"keep":true},"providers":{"openai-codex":{"type":"oauth","access":"old","refresh":"old-refresh"},"openrouter":{"type":"api","key":"router-key"}}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	_, persist, err := resolveCodexAuth(providerConfig{authFile: path})
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := llm.AuthCredential{Type: "oauth", Access: "new", Refresh: "new-refresh", Expires: 123, AccountID: "acct"}
-	if err := persist(context.Background(), want); err != nil {
-		t.Fatal(err)
-	}
-	auth, err := llm.LoadAuthFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := auth["openai-codex"]; got != want {
-		t.Fatalf("persisted credential = %+v, want %+v", got, want)
-	}
-	if got := auth["openrouter"].Key; got != "router-key" {
-		t.Fatalf("unrelated credential key = %q", got)
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Contains(raw, []byte(`"accountId": "acct"`)) || bytes.Contains(raw, []byte(`"AccountID"`)) {
-		t.Fatalf("auth file is not pi-compatible JSON: %s", raw)
-	}
-}
-
-func TestCodexAuthFilePersistenceHonorsLockContention(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "auth.json")
-	original := `{"providers":{"openai-codex":{"type":"oauth","access":"old","refresh":"old-refresh"}}}`
-	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	lock, err := acquireAuthFileLock(context.Background(), path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	persist := codexAuthFilePersistence(path)
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
-	defer cancel()
-	err = persist(ctx, llm.AuthCredential{Type: "oauth", Access: "blocked", Refresh: "blocked-refresh"})
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("contended persistence error = %v, want context deadline", err)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != original {
-		t.Fatalf("contended persistence changed auth file: %s", data)
-	}
-	if err := lock.Release(); err != nil {
-		t.Fatal(err)
-	}
-	want := llm.AuthCredential{Type: "oauth", Access: "new", Refresh: "new-refresh"}
-	if err := persist(context.Background(), want); err != nil {
-		t.Fatal(err)
-	}
-	auth, err := llm.LoadAuthFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := auth["openai-codex"]; got != want {
-		t.Fatalf("credential after lock release = %#v", got)
-	}
-	if info, err := os.Stat(path + ".lock"); err != nil || info.Mode().Perm()&0o077 != 0 {
-		t.Fatalf("lock file mode/error = %v/%v", info, err)
-	}
-}
-
-func TestAuthFilePersistenceConcurrentUpdatesDoNotLoseEntries(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "auth.json")
-	if err := os.WriteFile(path, []byte(`{"meta":{"keep":true},"providers":{"openai-codex":{"type":"oauth","access":"old-codex"},"peer":{"type":"oauth","access":"old-peer"}}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	codex := llm.AuthCredential{Type: "oauth", Access: "new-codex", Refresh: "codex-refresh", AccountID: "codex-account"}
-	peer := llm.AuthCredential{Type: "oauth", Access: "new-peer", Refresh: "peer-refresh", AccountID: "peer-account"}
-	start := make(chan struct{})
-	errs := make(chan error, 2)
-	var wait sync.WaitGroup
-	for _, update := range []struct {
-		provider   string
-		credential llm.AuthCredential
-	}{
-		{provider: "openai-codex", credential: codex},
-		{provider: "peer", credential: peer},
-	} {
-		wait.Add(1)
-		go func() {
-			defer wait.Done()
-			<-start
-			errs <- authFileCredentialPersistence(path, update.provider)(context.Background(), update.credential)
-		}()
-	}
-	close(start)
-	wait.Wait()
-	close(errs)
-	for err := range errs {
-		if err != nil {
-			t.Fatal(err)
+	for _, name := range []string{"anthropic", "openai", "openrouter"} {
+		p, err := newProvider(context.Background(), providerConfig{name: name, authFile: path})
+		if err != nil || p.Name() != name {
+			t.Fatalf("newProvider(%s) = %v, %v", name, p, err)
 		}
 	}
-	auth, err := llm.LoadAuthFile(path)
+
+	p, err := newProvider(context.Background(), providerConfig{name: "openai", authFile: path, baseURL: server.URL + "/v1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if auth["openai-codex"] != codex || auth["peer"] != peer {
-		t.Fatalf("concurrent credentials = %#v", auth)
+	if _, err := p.Models(context.Background()); err != nil {
+		t.Fatalf("Models returned error: %v", err)
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
+	if gotAuth != "Bearer fake-chatgpt-access" {
+		t.Fatalf("Authorization = %q, want the stored ChatGPT access token", gotAuth)
 	}
-	if !bytes.Contains(data, []byte(`"keep": true`)) {
-		t.Fatalf("concurrent persistence lost wrapper sibling: %s", data)
+}
+
+func TestAuthFileIsOnlyReadWhenExplicit(t *testing.T) {
+	clearProviderEnv(t)
+	t.Setenv("OPENAI_API_KEY", "env-key")
+	if _, err := newProvider(context.Background(), providerConfig{name: "openai"}); err != nil {
+		t.Fatalf("env fallback without --auth-file returned error: %v", err)
 	}
 }
 

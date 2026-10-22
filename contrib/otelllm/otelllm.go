@@ -220,13 +220,6 @@ type call struct {
 	sawChunk   bool
 }
 
-func semconvProvider(name string) string {
-	if name == "openai-codex" {
-		return "openai"
-	}
-	return name
-}
-
 func (t *telemetry) start(ctx context.Context, req *llm.Request, stream bool) (context.Context, *call) {
 	model := ""
 	if req != nil {
@@ -234,7 +227,7 @@ func (t *telemetry) start(ctx context.Context, req *llm.Request, stream bool) (c
 	}
 	attrs := []attribute.KeyValue{
 		attribute.String(attrOperationName, operationChat),
-		attribute.String(attrProviderName, semconvProvider(t.providerName)),
+		attribute.String(attrProviderName, t.providerName),
 		attribute.String(attrGoLLMProvider, t.providerName),
 		attribute.String(attrRequestModel, model),
 		attribute.Bool(attrRequestStream, stream),
@@ -292,7 +285,7 @@ func (c *call) end(resp *llm.Response, err error, abandoned bool) {
 	elapsed := time.Since(c.start)
 	metricAttrs := []attribute.KeyValue{
 		attribute.String(attrOperationName, operationChat),
-		attribute.String(attrProviderName, semconvProvider(c.t.providerName)),
+		attribute.String(attrProviderName, c.t.providerName),
 		attribute.String(attrRequestModel, c.model),
 	}
 	if resp != nil && resp.Model != "" {

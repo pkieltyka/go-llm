@@ -284,6 +284,13 @@ func (r *fixtureRedactor) redactJSON(raw []byte) ([]byte, bool) {
 func (r *fixtureRedactor) redactJSONValue(field string, value any) any {
 	switch typed := value.(type) {
 	case map[string]any:
+		if field == "attribution" {
+			// usage.attribution.items (Sign in with ChatGPT) is keyed by
+			// output item IDs; mock the keys as the IDs are mocked elsewhere.
+			if items, ok := typed["items"].(map[string]any); ok {
+				typed["items"] = r.mockKeys(items)
+			}
+		}
 		keys := make([]string, 0, len(typed))
 		for key := range typed {
 			keys = append(keys, key)
@@ -319,6 +326,19 @@ func (r *fixtureRedactor) redactJSONValue(field string, value any) any {
 	default:
 		return value
 	}
+}
+
+func (r *fixtureRedactor) mockKeys(value map[string]any) map[string]any {
+	keys := make([]string, 0, len(value))
+	for key := range value {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	mocked := make(map[string]any, len(value))
+	for _, key := range keys {
+		mocked[r.mockValue("id", key)] = value[key]
+	}
+	return mocked
 }
 
 func jsonObjectType(value map[string]any) string {

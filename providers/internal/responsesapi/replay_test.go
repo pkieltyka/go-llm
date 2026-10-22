@@ -40,7 +40,7 @@ func replayAdapter() responsesapi.Adapter {
 }
 
 // TestReplayRecordedFixtures drives the shared Responses mapping directly:
-// each recorded openai-codex SSE stream (a genuine Responses wire stream) is
+// each recorded OpenAI Responses SSE stream is
 // decoded through StreamState.MapEvent and collected, and its terminal
 // response object is mapped through MapResponse — asserting both paths meet
 // the normalized invariants and agree with each other.
@@ -49,7 +49,7 @@ func TestReplayRecordedFixtures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RepoRoot returned error: %v", err)
 	}
-	fixture := filepath.Join(root, "internal", "e2e", "fixtures", "openai-codex", "live.json")
+	fixture := filepath.Join(root, "internal", "e2e", "fixtures", "openai", "live.json")
 	exchanges, err := e2e.LoadRecordedExchanges(fixture)
 	if err != nil {
 		t.Fatalf("LoadRecordedExchanges returned error: %v", err)
@@ -63,7 +63,7 @@ func TestReplayRecordedFixtures(t *testing.T) {
 		ReasoningMarkers: []string{`"type":"reasoning"`},
 	}
 	for i, exchange := range exchanges {
-		if exchange.Err != "" || exchange.Status == 0 {
+		if exchange.Err != "" || exchange.Status == 0 || !strings.Contains(exchange.URL, "/responses") {
 			continue
 		}
 		if exchange.Status >= 400 {
@@ -135,7 +135,7 @@ func replayStreamExchange(t *testing.T, exchange e2e.RecordedExchange, profile e
 	if len(terminalRaw) == 0 {
 		t.Fatalf("recorded stream has no terminal response event")
 	}
-	// The codex backend sends response.completed with an EMPTY output array;
+	// Some backends send response.completed with an EMPTY output array;
 	// rebuild the terminal output from the recorded output_item.done items so
 	// the blocking MapResponse path maps the same wire content.
 	terminalRaw = withOutputItems(t, terminalRaw, doneItems)

@@ -47,8 +47,10 @@ Copy `gollm-test.json.sample` to the gitignored `gollm-test.json` and fill
 only the providers available for this release check:
 
 - `anthropic`: API-key credential.
-- `openai`: API-key credential.
-- `openai-codex`: OAuth credential from a compatible ChatGPT/Codex login.
+- `openai`: API-key credential, or a Sign in with ChatGPT OAuth credential
+  (copy pi's `openai` entry from `~/.pi/agent/auth.json`, or mint one with
+  `openai.NewLoginFlow`). OAuth refreshes are written back to
+  `gollm-test.json` through an `authstore.File`.
 - `openrouter`: API-key credential.
 - `vllm`: keyless self-hosted entry with `base_url`; add `key` only when the
   server uses `--api-key`. `model` is an optional preference, not an exact ID.
@@ -154,7 +156,7 @@ with `-coverpkg` through its real facade/provider consumers.
 | `cmd/llm-cli` | 77% |
 | `providers/anthropic` | 78% |
 | `providers/openai` | 82% |
-| `providers/openaicodex` | 69% |
+| `authstore` | 80% |
 | `providers/openrouter` | 75% |
 | `providers/chatcompletions` | 77% |
 | `providers/vllm` | 84% |

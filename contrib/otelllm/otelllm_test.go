@@ -175,7 +175,7 @@ func TestChatSpanAttributesEventsAndMetrics(t *testing.T) {
 
 func TestStreamRecordsFirstChunkAndCollectedResponse(t *testing.T) {
 	h := newHarness(t)
-	p := llmtest.New(llmtest.WithName("openai-codex"))
+	p := llmtest.New(llmtest.WithName("openai"))
 	p.EnqueueStream(
 		llm.MessageStart{ID: "resp_1", Model: "gpt-x"},
 		llm.TextDelta{Index: 0, Text: "hel"},
@@ -187,8 +187,8 @@ func TestStreamRecordsFirstChunkAndCollectedResponse(t *testing.T) {
 	}
 	span := h.onlySpan(t)
 	attrs := attrMap(span.Attributes)
-	if attrs["gen_ai.provider.name"].AsString() != "openai" || attrs["go_llm.provider"].AsString() != "openai-codex" {
-		t.Fatalf("provider attrs = %v / %v, want openai / openai-codex", attrs["gen_ai.provider.name"].AsString(), attrs["go_llm.provider"].AsString())
+	if attrs["gen_ai.provider.name"].AsString() != "openai" || attrs["go_llm.provider"].AsString() != "openai" {
+		t.Fatalf("provider attrs = %v / %v, want openai / openai", attrs["gen_ai.provider.name"].AsString(), attrs["go_llm.provider"].AsString())
 	}
 	if !attrs["gen_ai.request.stream"].AsBool() || attrs["gen_ai.response.id"].AsString() != "resp_1" || attrs["gen_ai.usage.output_tokens"].AsInt64() != 2 {
 		t.Fatalf("stream attrs = %v", span.Attributes)

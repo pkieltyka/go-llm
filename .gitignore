@@ -1,5 +1,6 @@
 .specs_skill_state/
 gollm-test.json
+gollm-test.json.lock
 scripts/node_modules/
 
 bin/

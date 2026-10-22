@@ -2,9 +2,14 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"iter"
+	"slices"
 	"time"
 
+	sdk "github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/packages/param"
 	"github.com/openai/openai-go/v3/responses"
 	llm "github.com/pkieltyka/go-llm"
 	"github.com/pkieltyka/go-llm/providers/internal/providerutil"
@@ -61,19 +66,28 @@ func mapError(err error) error {
 	return responsesapi.Adapter{ProviderName: providerName}.MapError(err)
 }
 
-// Models lists OpenAI models available to the configured account.
+// Models lists the models available to the configured credential: the API's
+// {"data": [...]} list for API keys, or the {"models": [...]} catalog that
+// Sign in with ChatGPT returns, which also reports context windows, reasoning
+// ladders, and image input.
 func (p *Provider) Models(ctx context.Context) ([]llm.ModelInfo, error) {
 	ctx, cancel := p.contextWithTimeout(ctx)
 	defer cancel()
 
-	pager := p.client.Models.ListAutoPaging(ctx)
-	var models []llm.ModelInfo
-	for pager.Next() {
-		model := pager.Current()
-		info := llm.ModelInfo{
-			ID:  model.ID,
-			Raw: model,
-		}
+	var body []byte
+	if err := p.client.Get(ctx, "models", nil, &body); err != nil {
+		return nil, mapError(err)
+	}
+	var page struct {
+		Data   []sdk.Model       `json:"data"`
+		Models []json.RawMessage `json:"models"`
+	}
+	if err := json.Unmarshal(body, &page); err != nil {
+		return nil, fmt.Errorf("%w: OpenAI models response was not valid JSON", llm.ErrServer)
+	}
+	models := make([]llm.ModelInfo, 0, len(page.Data)+len(page.Models))
+	for _, model := range page.Data {
+		info := llm.ModelInfo{ID: model.ID, Raw: model}
 		if embedded, ok := llm.LookupModelInfo(providerName, model.ID); ok {
 			info.DisplayName = embedded.DisplayName
 			info.ContextWindow = embedded.ContextWindow
@@ -85,19 +99,85 @@ func (p *Provider) Models(ctx context.Context) ([]llm.ModelInfo, error) {
 		}
 		models = append(models, info)
 	}
-	if err := pager.Err(); err != nil {
-		return nil, mapError(err)
+	for _, raw := range page.Models {
+		if info, ok := chatGPTModelInfo(raw); ok {
+			models = append(models, info)
+		}
 	}
 	return models, nil
 }
 
-// Chat performs a blocking OpenAI Responses request.
+// chatGPTModelInfo maps one listed row of the Sign in with ChatGPT catalog.
+// Hidden rows (internal review and reserve models) are skipped.
+func chatGPTModelInfo(raw json.RawMessage) (llm.ModelInfo, bool) {
+	var row struct {
+		Slug                     string   `json:"slug"`
+		DisplayName              string   `json:"display_name"`
+		Visibility               string   `json:"visibility"`
+		ContextWindow            int      `json:"context_window"`
+		InputModalities          []string `json:"input_modalities"`
+		SupportsParallelTools    bool     `json:"supports_parallel_tool_calls"`
+		DefaultReasoningLevel    string   `json:"default_reasoning_level"`
+		SupportedReasoningLevels []struct {
+			Effort string `json:"effort"`
+		} `json:"supported_reasoning_levels"`
+	}
+	if err := json.Unmarshal(raw, &row); err != nil || row.Slug == "" || row.Visibility != "list" {
+		return llm.ModelInfo{}, false
+	}
+	info := llm.ModelInfo{
+		ID:            row.Slug,
+		DisplayName:   row.DisplayName,
+		ContextWindow: row.ContextWindow,
+		Raw:           raw,
+	}
+	if row.SupportedReasoningLevels != nil {
+		info.SupportedEfforts = []llm.Effort{}
+		for _, level := range row.SupportedReasoningLevels {
+			if effort := llm.Effort(level.Effort); knownEffort(effort) {
+				info.SupportedEfforts = append(info.SupportedEfforts, effort)
+			}
+		}
+		info.Capabilities = append(info.Capabilities, llm.CapabilityReasoning)
+	}
+	if effort := llm.Effort(row.DefaultReasoningLevel); knownEffort(effort) {
+		info.DefaultEffort = effort
+	}
+	if row.SupportsParallelTools {
+		info.Capabilities = append(info.Capabilities, llm.CapabilityParallelTools)
+	}
+	if slices.Contains(row.InputModalities, "image") {
+		info.Capabilities = append(info.Capabilities, llm.CapabilityImageInput)
+	}
+	return info, true
+}
+
+func knownEffort(effort llm.Effort) bool {
+	switch effort {
+	case llm.EffortNone, llm.EffortMinimal, llm.EffortLow, llm.EffortMedium, llm.EffortHigh, llm.EffortXHigh, llm.EffortMax:
+		return true
+	}
+	return false
+}
+
+// Chat performs a blocking OpenAI Responses request. With a stored Sign in
+// with ChatGPT credential it drains a stream instead, since that path
+// accepts only streaming requests.
 func (p *Provider) Chat(ctx context.Context, req *llm.Request) (*llm.Response, error) {
 	start := time.Now()
+	ctx, signIn, err := p.signInWithChatGPT(ctx)
+	if err != nil {
+		p.logFailure(ctx, req, start, err)
+		return nil, err
+	}
+	if signIn {
+		return llm.Collect(func(yield func(llm.Event, error) bool) { p.stream(ctx, req, true, yield) })
+	}
+
 	ctx, cancel := p.contextWithTimeout(ctx)
 	defer cancel()
 
-	params, err := p.adapter().BuildParams(req, false)
+	params, err := p.buildParams(req, false, false)
 	if err != nil {
 		p.logFailure(ctx, req, start, err)
 		return nil, err
@@ -121,61 +201,118 @@ func (p *Provider) Chat(ctx context.Context, req *llm.Request) (*llm.Response, e
 // ChatStream streams OpenAI Responses events as normalized go-llm events.
 func (p *Provider) ChatStream(ctx context.Context, req *llm.Request) iter.Seq2[llm.Event, error] {
 	return providerutil.SingleUse(providerName, func(yield func(llm.Event, error) bool) {
-		start := time.Now()
-		ctx, cancel := p.contextWithTimeout(ctx)
-		defer cancel()
+		ctx, signIn, err := p.signInWithChatGPT(ctx)
+		if err != nil {
+			p.logFailure(ctx, req, time.Now(), err)
+			yield(nil, err)
+			return
+		}
+		p.stream(ctx, req, signIn, yield)
+	})
+}
 
-		params, err := p.adapter().BuildParams(req, true)
+func (p *Provider) stream(ctx context.Context, req *llm.Request, signIn bool, yield func(llm.Event, error) bool) {
+	start := time.Now()
+	ctx, cancel := p.contextWithTimeout(ctx)
+	defer cancel()
+
+	params, err := p.buildParams(req, true, signIn)
+	if err != nil {
+		p.logFailure(ctx, req, start, err)
+		yield(nil, err)
+		return
+	}
+
+	streamCtx, cancelStream := context.WithCancel(ctx)
+	defer cancelStream()
+	stream := p.client.Responses.NewStreaming(streamCtx, params)
+	defer stream.Close()
+
+	state := p.adapter().NewStreamState(string(params.Model))
+	remote := providerutil.StreamContract(providerName, func(remoteYield func(llm.Event, error) bool) {
+		for stream.Next() {
+			events, err := state.MapEvent(stream.Current())
+			for _, event := range events {
+				if !remoteYield(event, nil) {
+					return
+				}
+			}
+			if err != nil {
+				remoteYield(nil, err)
+				return
+			}
+		}
+		for _, event := range state.Finish() {
+			if !remoteYield(event, nil) {
+				return
+			}
+		}
+		if err := stream.Err(); err != nil {
+			remoteYield(nil, p.adapter().MapError(err))
+			return
+		}
+		if err := ctx.Err(); err != nil {
+			remoteYield(nil, err)
+		}
+	})
+	for event, err := range remote {
 		if err != nil {
 			p.logFailure(ctx, req, start, err)
 			yield(nil, err)
 			return
 		}
-
-		stream := p.client.Responses.NewStreaming(ctx, params)
-		defer stream.Close()
-
-		state := p.adapter().NewStreamState(string(params.Model))
-		remote := providerutil.StreamContract(providerName, func(remoteYield func(llm.Event, error) bool) {
-			for stream.Next() {
-				events, err := state.MapEvent(stream.Current())
-				for _, event := range events {
-					if !remoteYield(event, nil) {
-						return
-					}
-				}
-				if err != nil {
-					remoteYield(nil, err)
-					return
-				}
-			}
-			for _, event := range state.Finish() {
-				if !remoteYield(event, nil) {
-					return
-				}
-			}
-			if err := stream.Err(); err != nil {
-				remoteYield(nil, p.adapter().MapError(err))
-				return
-			}
-			if err := ctx.Err(); err != nil {
-				remoteYield(nil, err)
-			}
-		})
-		for event, err := range remote {
-			if err != nil {
-				p.logFailure(ctx, req, start, err)
-				yield(nil, err)
-				return
-			}
-			if end, ok := providerutil.DerefEvent(event).(llm.MessageEnd); ok {
-				p.logStreamEnd(ctx, req, end, state.Model(), start)
-			}
-			if !yield(event, nil) {
-				return
-			}
+		end, ended := providerutil.DerefEvent(event).(llm.MessageEnd)
+		if ended {
+			p.logStreamEnd(ctx, req, end, state.Model(), start)
 		}
-	})
+		more := yield(event, nil)
+		if ended {
+			// Read past response.completed to EOF so the connection can be
+			// reused (and wire captures are complete); a server that holds
+			// the stream open is cut off after a short grace.
+			timer := time.AfterFunc(streamDrainGrace, cancelStream)
+			for stream.Next() {
+			}
+			timer.Stop()
+		}
+		if !more {
+			return
+		}
+	}
+}
+
+// streamDrainGrace bounds the post-terminal read; a variable for tests.
+var streamDrainGrace = time.Second
+
+// signInWithChatGPT reads the stored credential once per call and reports
+// whether it is a Sign in with ChatGPT token. The returned context carries
+// the read to the auth middleware, so the request shape and the token come
+// from the same credential.
+func (p *Provider) signInWithChatGPT(ctx context.Context) (context.Context, bool, error) {
+	if p.credentials == nil {
+		return ctx, false, nil
+	}
+	cred, ok, err := readCredential(ctx, p.credentials)
+	if err != nil {
+		return ctx, false, err
+	}
+	return context.WithValue(ctx, storedCredentialKey{}, storedCredential{cred: cred, ok: ok}), ok && cred.Type == "oauth", nil
+}
+
+// buildParams maps req for the Responses API. Sign in with ChatGPT rejects
+// sampling, output-limit, and prompt-cache retention fields, so they are
+// omitted on that path, as pi does.
+func (p *Provider) buildParams(req *llm.Request, stream, signIn bool) (responses.ResponseNewParams, error) {
+	params, err := p.adapter().BuildParams(req, stream)
+	if err != nil || !signIn {
+		return params, err
+	}
+	params.Temperature = param.Opt[float64]{}
+	params.TopP = param.Opt[float64]{}
+	params.MaxOutputTokens = param.Opt[int64]{}
+	params.PromptCacheRetention = ""
+	params.PromptCacheOptions = responses.ResponseNewParamsPromptCacheOptions{}
+	return params, nil
 }
 
 func (p *Provider) contextWithTimeout(ctx context.Context) (context.Context, context.CancelFunc) {

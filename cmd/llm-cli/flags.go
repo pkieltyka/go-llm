@@ -89,10 +89,13 @@ positional argument, piped stdin, or both. The response streams to stdout
 by default; --schema (like --json and --no-stream) forces the
 non-streaming path.
 
-OpenAI Codex auth precedence is --auth-file, then
-OPENAI_CODEX_ACCESS_TOKEN, then the compatibility --api-key flag.
-The --api-key value is exposed through shell history and process argv;
-prefer --auth-file or OPENAI_CODEX_ACCESS_TOKEN on shared systems.
+Credentials: --auth-file names a pi-compatible auth.json (for example
+~/.pi/agent/auth.json) holding an API key for any provider or a Sign in with
+ChatGPT OAuth credential for openai; OAuth refreshes are written back to it
+under a lock. Without it, providers read their usual environment variable
+(ANTHROPIC_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY). An --api-key value
+is exposed through shell history and process argv; prefer --auth-file or the
+environment on shared systems.
 
 Flags:
 `)
@@ -112,9 +115,9 @@ func modelsUsage(fs *flag.FlagSet) {
 
 List the models a provider exposes as a table (--json for machine output).
 
-OpenAI Codex auth precedence is --auth-file, then
-OPENAI_CODEX_ACCESS_TOKEN, then the compatibility --api-key flag.
-The --api-key value is exposed through shell history and process argv.
+Credentials work as for chat: --auth-file (pi-compatible auth.json, API
+keys or Sign in with ChatGPT OAuth for openai), else the provider's
+environment variable. An --api-key value is exposed through process argv.
 
 Flags:
 `)
@@ -126,10 +129,10 @@ Example:
 }
 
 func bindCommonFlags(fs *flag.FlagSet, provider, apiKey, authFile, baseURL *string, timeout *time.Duration, version *bool) {
-	fs.StringVar(provider, "p", "", "provider: anthropic|openai|openai-codex|openrouter")
-	fs.StringVar(provider, "provider", "", "provider: anthropic|openai|openai-codex|openrouter")
-	fs.StringVar(authFile, "auth-file", "", "explicit credential file (openai-codex; highest precedence)")
-	fs.StringVar(apiKey, "api-key", "", "provider API key (openai-codex compatibility: OAuth access token exposed via argv)")
+	fs.StringVar(provider, "p", "", "provider: anthropic|openai|openrouter")
+	fs.StringVar(provider, "provider", "", "provider: anthropic|openai|openrouter")
+	fs.StringVar(authFile, "auth-file", "", "pi-compatible auth.json credential store (API keys; Sign in with ChatGPT OAuth for openai)")
+	fs.StringVar(apiKey, "api-key", "", "provider API key (exposed via argv; prefer --auth-file or the environment)")
 	fs.StringVar(baseURL, "base-url", "", "provider base URL")
 	fs.DurationVar(timeout, "timeout", 0, "provider call timeout")
 	fs.BoolVar(version, "version", false, "print version")

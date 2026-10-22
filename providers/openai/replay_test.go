@@ -11,17 +11,14 @@ import (
 )
 
 // TestReplayRecordedFixtures drives the OpenAI Responses streaming path
-// offline against the recorded openai-codex corpus: the Codex backend speaks
-// the genuine Responses SSE wire shape, and no OpenAI-recorded corpus exists
-// yet (see docs/release.md — the OpenAI fixture is recorded once an OpenAI
-// API key is configured). Replayed responses map through the shared
-// responsesapi layer exactly as api.openai.com traffic would.
+// offline against the recorded OpenAI corpus. Replayed responses map through
+// the shared responsesapi layer exactly as api.openai.com traffic would.
 func TestReplayRecordedFixtures(t *testing.T) {
 	root, err := e2e.RepoRoot(".")
 	if err != nil {
 		t.Fatalf("RepoRoot returned error: %v", err)
 	}
-	fixture := filepath.Join(root, "internal", "e2e", "fixtures", "openai-codex", "live.json")
+	fixture := filepath.Join(root, "internal", "e2e", "fixtures", "openai", "live.json")
 	e2e.ReplayExchanges(t, fixture, e2e.ReplayProfile{
 		Provider: "openai",
 		New: func(t *testing.T, client *http.Client) llm.Provider {

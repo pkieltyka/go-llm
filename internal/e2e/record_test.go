@@ -59,7 +59,7 @@ func TestRedactCaptureRedactsHeadersBodiesAndURL(t *testing.T) {
 
 func TestRedactCaptureRedactsStableProviderIdentifiers(t *testing.T) {
 	capture := llm.WireCapture{
-		Provider: "openai-codex",
+		Provider: "openai",
 		Method:   http.MethodPost,
 		URL:      "https://api.example.test/v1/messages?request_id=req_live_123&prompt_cache_key=cache_live_123",
 		ResponseHeaders: http.Header{
@@ -690,5 +690,24 @@ func assertFixtureRedacted(t *testing.T, path string, data []byte) {
 	t.Helper()
 	if err := ValidateFixtureBytes(path, data); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRedactCaptureMocksAttributionItemKeys(t *testing.T) {
+	redacted := RedactCapture(llm.WireCapture{
+		Provider:     "openai",
+		Method:       http.MethodPost,
+		URL:          "https://api.example.test/v1/responses",
+		RequestBody:  []byte(`{"tools":[{"parameters":{"type":"array","items":{"type":"string"}}}]}`),
+		ResponseBody: []byte(`{"item_id":"msg_mocklive1234567890","usage":{"attribution":{"items":{"msg_mocklive1234567890":{"input_tokens":2}}}}}`),
+	})
+	if strings.Contains(redacted.ResponseBody, "msg_mocklive1234567890") {
+		t.Fatalf("attribution item key leaked: %s", redacted.ResponseBody)
+	}
+	if !strings.Contains(redacted.ResponseBody, `"item_id":"MOCK-MSG-1"`) || !strings.Contains(redacted.ResponseBody, `"items":{"MOCK-MSG-1":`) {
+		t.Fatalf("attribution key not mocked like the item ID: %s", redacted.ResponseBody)
+	}
+	if !strings.Contains(redacted.RequestBody, `"items":{"type":"string"}`) {
+		t.Fatalf("schema items object must be untouched: %s", redacted.RequestBody)
 	}
 }

@@ -131,6 +131,10 @@ visibly and the phase still completes — never fail a phase on missing keys.
     e2e suite vs OpenAI.
 
 - [x] **Phase 6: Subscription auth — `openai-codex` provider**
+  (superseded 2026-10-22: the provider, `WithOAuth`, and
+  `OAuthPersistenceFunc` were removed in favor of pi-style
+  `CredentialStore` + `WithCredentials` and Sign in with ChatGPT on
+  `providers/openai`; FS §17C)
   - Core (`auth.go`): OAuth consumption per ARCH §3.4 — `TokenSource`
     (per-provider refresh, single-flight, goroutine-safe),
     `WithOAuth(cred, persist)` option pattern: bearer from
@@ -307,15 +311,6 @@ tool_stream fixtures, `tool-choice` capability gating (FS §7),
 error-code tables, extension-part round-trip, and ZAI live e2e when a key
 is available.
 
-**Codex static fallback catalog.** `providers/openaicodex/provider.go`
-still hand-maintains a fallback model list (IDs, context windows, and
-`codexEfforts()`/`codex56Efforts()` ladders), the last curated model data
-after model metadata moved to upstream-only sources (2026-09-24, PRs
-#33/#37). Its ladders already diverge from the table's `openai/*` rows
-(e.g. low..high vs none..xhigh), though the Codex backend may legitimately
-differ from the OpenAI API. Decide whether to derive it from the embedded
-table or to exempt it explicitly in the spec.
-
 Response-cache middleware (exact-match; key = hash of provider name +
 canonically-serialized `Request` per FS §10A; replay streams via collected
 response): valuable for dev loops and resumable pipelines, near-zero hits
@@ -384,10 +379,11 @@ normalization invariant → FS §11):
   providers): zero unconditionally sets `cache_control` on the system
   block + last tool — a good opinionated default; ours would be opt-in
   atop the existing `CacheHint` machinery.
-- **Additional interactive OAuth login flows** (Codex device-code, built-in
-  CLI login UX, and providers other than Codex): the Codex subscription auth
-  path and browser PKCE implementation are in scope (phases 6/6A). Further
-  provider minting remains deferred. Design rules for future discovery-based
+- **Additional interactive OAuth login flows** (device-code, a built-in
+  CLI `login` command, and providers other than OpenAI): Sign in with
+  ChatGPT browser PKCE (`openai.NewLoginFlow` over the generic
+  `provideroauth.LoopbackFlow`) is in scope. pi also offers ChatGPT device
+  login; further provider minting remains deferred. Design rules for future discovery-based
   flows (recorded
   2026-07-22 with the credential-POST redirect hardening): one exported endpoint validator
   (https-or-loopback) applied to every endpoint at discovery-merge time,

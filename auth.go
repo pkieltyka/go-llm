@@ -20,8 +20,12 @@ type AuthCredential struct {
 	Refresh   string
 	Expires   int64
 	AccountID string
-	Model     string
-	BaseURL   string
+	// ClientID is the OAuth client issued to this credential, required to
+	// refresh it. Sign in with ChatGPT registers a client per login (pi
+	// "clientId"); flows with a fixed public client leave it empty.
+	ClientID string
+	Model    string
+	BaseURL  string
 }
 
 // String redacts credential material from formatted output.
@@ -35,14 +39,26 @@ func (AuthCredential) LogValue() slog.Value {
 	return slog.StringValue("llm: auth credential (redacted)")
 }
 
-// OAuthPersistenceFunc durably persists a renewed OAuth credential before it
-// becomes visible to provider requests. Implementations MUST honor ctx and
-// return only after persistence is durable; returning an error prevents the
-// provider from publishing the renewed credential. Refreshable credentials
-// require a non-nil callback. A context-aware no-op explicitly opts into
-// in-memory-only rotation, which can leave stored refresh tokens stale after a
-// restart.
-type OAuthPersistenceFunc func(context.Context, AuthCredential) error
+// CredentialStore is application-owned credential storage keyed by provider
+// ID (for example "openai", "anthropic"), one credential per provider, in the
+// shape of pi's auth.json. Providers configured with WithCredentials read it
+// on every request, so a credential changed by login, logout, or another
+// process takes effect without rebuilding the provider.
+//
+// Modify is the only write path: implementations serialize it per provider
+// ID (across processes where the backing store supports it, such as a locked
+// file), pass fn the current credential, and store fn's result when write is
+// true. ctx bounds only the wait for exclusive access; once fn runs, the
+// write completes, because an OAuth refresh may already have rotated the
+// provider's refresh token and discarding it would lose the login. Modify
+// returns the stored credential after the operation and whether one exists.
+// Read returns the current credential, possibly expired, for display and
+// for the optimistic check that precedes a locked refresh.
+type CredentialStore interface {
+	Read(ctx context.Context, providerID string) (AuthCredential, bool, error)
+	Modify(ctx context.Context, providerID string, fn func(current AuthCredential, ok bool) (next AuthCredential, write bool, err error)) (AuthCredential, bool, error)
+	Delete(ctx context.Context, providerID string) error
+}
 
 // LoginFlow is a single-use interactive provider login. Begin prepares the
 // provider authorization and returns a non-secret launch target. Complete
@@ -155,6 +171,7 @@ func (c *AuthCredential) UnmarshalJSON(data []byte) error {
 		Refresh   string      `json:"refresh"`
 		Expires   json.Number `json:"expires"`
 		AccountID string      `json:"accountId"`
+		ClientID  string      `json:"clientId"`
 		Model     string      `json:"model"`
 		BaseURL   string      `json:"base_url"`
 		BaseURL2  string      `json:"baseUrl"`
@@ -169,6 +186,7 @@ func (c *AuthCredential) UnmarshalJSON(data []byte) error {
 		Access:    in.Access,
 		Refresh:   in.Refresh,
 		AccountID: in.AccountID,
+		ClientID:  in.ClientID,
 		Model:     in.Model,
 		BaseURL:   in.BaseURL,
 	}
@@ -193,11 +211,10 @@ func (c *AuthCredential) UnmarshalJSON(data []byte) error {
 // in-process by go-llm code or its wrapped SDKs. A repository test scans
 // provider and CLI sources so the go-llm-read names cannot silently drift.
 var credentialEnvNames = []string{
-	"ANTHROPIC_API_KEY",         // providers/anthropic default API key
-	"OPENAI_API_KEY",            // providers/openai default API key
-	"OPENROUTER_API_KEY",        // providers/openrouter default API key
-	"OPENAI_CUSTOM_HEADERS",     // OpenAI-family ambient headers; may carry auth
-	"OPENAI_CODEX_ACCESS_TOKEN", // cmd/llm-cli Codex access token
+	"ANTHROPIC_API_KEY",     // providers/anthropic default API key
+	"OPENAI_API_KEY",        // providers/openai default API key
+	"OPENROUTER_API_KEY",    // providers/openrouter default API key
+	"OPENAI_CUSTOM_HEADERS", // OpenAI-family ambient headers; may carry auth
 	// openai-go's DefaultClientOptions reads these in-process. The adapters
 	// override them, but they are credentials present in the process.
 	"OPENAI_ADMIN_KEY",
@@ -205,12 +222,11 @@ var credentialEnvNames = []string{
 }
 
 // CredentialEnvNames returns the environment variables that can carry
-// credentials and are read in-process by go-llm providers, llm-cli, or the
+// credentials and are read in-process by go-llm providers or the
 // wrapped SDKs, in a stable order. Hosts that spawn subprocesses (for example
 // agent tool runners) use it to scrub those variables from child
 // environments. go-llm code reads ANTHROPIC_API_KEY, OPENAI_API_KEY,
-// OPENROUTER_API_KEY, OPENAI_CUSTOM_HEADERS, and (llm-cli only)
-// OPENAI_CODEX_ACCESS_TOKEN. The OpenAI SDK's environment defaults
+// OPENROUTER_API_KEY, and OPENAI_CUSTOM_HEADERS. The OpenAI SDK's environment defaults
 // additionally read OPENAI_ADMIN_KEY and OPENAI_WEBHOOK_SECRET, which the
 // adapters override rather than use. The Anthropic SDK's environment defaults
 // are disabled. Self-hosted presets (vLLM, Ollama, the generic

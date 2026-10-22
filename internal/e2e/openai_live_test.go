@@ -13,11 +13,15 @@ import (
 	"time"
 
 	llm "github.com/pkieltyka/go-llm"
+	"github.com/pkieltyka/go-llm/authstore"
 	openaiProvider "github.com/pkieltyka/go-llm/providers/openai"
 )
 
 const (
-	openAICheapModel      = "gpt-4.1-mini"
+	openAICheapModel = "gpt-4.1-mini"
+	// openAISignInModel is the cheap default under Sign in with ChatGPT,
+	// which serves only the subscription catalog's models.
+	openAISignInModel     = "gpt-5.6-luna"
 	openAIReasoningModel  = "gpt-5.1-mini"
 	openAIReasoningPrompt = "A store has three boxes. One is labeled apples, one oranges, and one mixed, " +
 		"but every label is wrong. You may inspect one fruit from one box. Determine the correct labels, then answer with only: solved."
@@ -37,17 +41,20 @@ func TestLiveOpenAI(t *testing.T) {
 	model := providerCfg.Model
 	if model == "" {
 		model = openAICheapModel
+		if providerCfg.Auth.Type == "oauth" {
+			model = openAISignInModel
+		}
 	}
 
 	captures := &CaptureLog{}
-	secrets := NewSecretSet(providerCfg.Auth.Key, os.Getenv("OPENAI_API_KEY"))
+	secrets := NewSecretSet(providerCfg.Auth.Key, os.Getenv("OPENAI_API_KEY"), providerCfg.Auth.Access, providerCfg.Auth.Refresh)
 	var scenarioReport ScenarioReport
 	if *record {
 		path := filepath.Join(root, "internal", "e2e", "fixtures", "openai", "live.json")
 		ScheduleFixtureRecording(t, path, captures, secrets, &scenarioReport, *recordAllowIncomplete)
 	}
 	opts := []openaiProvider.Option{
-		openaiProvider.WithAPIKey(providerCfg.Auth.Key),
+		openAILiveAuth(root, providerCfg),
 		openaiProvider.WithMaxRetries(0),
 		openaiProvider.WithWireCapture(captures.Capture),
 	}
@@ -62,7 +69,24 @@ func TestLiveOpenAI(t *testing.T) {
 	defer cancel()
 	ctx = RecordingContext(ctx, captures, secrets)
 	runners := openAILiveScenarioRunners(providerCfg.BaseURL)
+	if providerCfg.Auth.Type == "oauth" {
+		runners["prompt_cache"] = func(_ context.Context, t *testing.T, _ llm.Provider, _ string) {
+			t.Skip("Sign in with ChatGPT reports no prompt-cache reads: probed 2026-10-22 with gpt-5.6-luna and gpt-6-luna, " +
+				"3k-10k token prefixes in instructions or input, with and without prompt_cache_key; rerun with an API key for cache evidence")
+		}
+	}
 	scenarioReport = RunCapabilityScenarios(ctx, t, "openai", p, model, runners)
+}
+
+// openAILiveAuth authenticates the live OpenAI suites: a Sign in with ChatGPT
+// OAuth entry resolves through a file store over gollm-test.json, so a
+// refreshed token is written back under the store's lock before use; an API
+// key is passed directly.
+func openAILiveAuth(root string, providerCfg ProviderConfig) openaiProvider.Option {
+	if providerCfg.Auth.Type == "oauth" {
+		return openaiProvider.WithCredentials(authstore.NewFile(filepath.Join(root, "gollm-test.json")))
+	}
+	return openaiProvider.WithAPIKey(providerCfg.Auth.Key)
 }
 
 func openAILiveScenarioRunners(baseURL string) map[string]ScenarioRun {
@@ -150,8 +174,9 @@ func liveOpenAIReasoningResponse(ctx context.Context, t *testing.T, p llm.Provid
 	resp, err := CollectLiveStream(p.Name(), p.ChatStream(ctx, &llm.Request{
 		Model:     liveOpenAIReasoningModel(model),
 		MaxTokens: 768,
-		Effort:    llm.EffortLow,
-		Messages:  []llm.Message{llm.UserText(openAIReasoningPrompt)},
+		// Medium: at low effort small models may answer without a reasoning item.
+		Effort:   llm.EffortMedium,
+		Messages: []llm.Message{llm.UserText(openAIReasoningPrompt)},
 	}))
 	if err != nil {
 		t.Fatalf("reasoning stream returned error: %v", err)

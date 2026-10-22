@@ -17,6 +17,7 @@ import (
 
 	sdk "github.com/anthropics/anthropic-sdk-go"
 	llm "github.com/pkieltyka/go-llm"
+	"github.com/pkieltyka/go-llm/authstore"
 	"github.com/pkieltyka/go-llm/internal/testutil"
 	"github.com/pkieltyka/go-llm/providers/internal/providerutil"
 )
@@ -1752,5 +1753,14 @@ func TestAnthropicCacheRetentionOnWire(t *testing.T) {
 	}
 	if body := testutil.MustCompactJSON(t, long); strings.Count(body, `"ttl":"1h"`) != 2 {
 		t.Fatalf("CacheRetentionLong must request the 1h tier for both hints: %s", body)
+	}
+}
+
+func TestAnthropicWithCredentialsIsExclusiveWithAPIKey(t *testing.T) {
+	if _, err := New(WithCredentials(authstore.NewMemory(nil)), WithAPIKey("k")); !errors.Is(err, llm.ErrBadRequest) {
+		t.Fatalf("err = %v, want ErrBadRequest", err)
+	}
+	if _, err := New(WithCredentials(authstore.NewMemory(nil))); err != nil {
+		t.Fatalf("store-only construction = %v", err)
 	}
 }

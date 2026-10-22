@@ -55,12 +55,6 @@ var liveProviderProfiles = map[string]liveProviderProfile{
 	"openai": {
 		Exemptions: map[llm.Capability]string{llm.CapabilityPDFInput: pdfLiveExemption},
 	},
-	"openai-codex": {
-		Exemptions: map[llm.Capability]string{
-			llm.CapabilityPDFInput:      pdfLiveExemption,
-			llm.CapabilityPromptCaching: "the ChatGPT subscription backend accepts prompt_cache_key but cache admission and positive cached-token telemetry are nondeterministic; exact wire mapping and usage decoding are covered offline",
-		},
-	},
 	"openrouter": {
 		Exemptions: map[llm.Capability]string{
 			llm.Capability("openrouter/routing"): "routing selection is account and upstream availability dependent; request mapping is covered offline",

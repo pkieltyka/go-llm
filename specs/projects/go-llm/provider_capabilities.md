@@ -33,13 +33,12 @@ is intentionally layered:
 An offline `CapabilityExemption` is an explicit evidence gap, not a denial of
 the advertised capability. Conversely, fixture wire proof does not establish
 live availability, quota, cache admission/effectiveness, or reliability.
-OpenRouter cache-control and Codex prompt-cache-key mappings are deterministic
+OpenRouter cache-control and OpenAI prompt-cache-key mappings are deterministic
 offline evidence even though positive cache admission is nondeterministic
 live.
 
 | Provider | Model metadata source | Advisory capabilities currently populated |
 |---|---|---|
-| OpenAI Codex | Explicit authenticated catalog requested by `Models(ctx)` | Tools, tool choice, parallel tools, JSON schema, reasoning, image input, stop sequences, and prompt caching when explicitly advertised. Curated fallback rows remain unknown/empty. |
 | OpenRouter | One explicit `GET /models` call; `supported_parameters`, input modalities, and reasoning metadata | Tools, tool choice, parallel tools, JSON schema, reasoning, image input, and stop sequences when explicitly advertised. Supported/default effort and positive mandatory-reasoning claims populate separate advisory `ModelInfo` fields. |
 | Anthropic, OpenAI, vLLM, Ollama, generic Chat Completions | Their current model-list responses do not provide sufficiently precise fields for this mapping | Unknown/empty by design; no model-name inference is applied. |
 

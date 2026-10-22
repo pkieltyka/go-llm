@@ -56,3 +56,16 @@ func TestIsContextOverflowCorpus(t *testing.T) {
 		}
 	}
 }
+
+func TestSubscriptionUsageLimitsAreNotTransient(t *testing.T) {
+	for _, code := range []string{
+		"subscription_sharing_usage_limit_exceeded",
+		"subscription_sharing_workplace_individual_usage_limit_exceeded",
+		"usage_limit_reached",
+	} {
+		got := ErrorKind(429, code, "You've reached your usage limit.")
+		if !errors.Is(got, llm.ErrInsufficientCredits) || llm.Transient(got) {
+			t.Errorf("ErrorKind(429, %q) = %v, want non-transient ErrInsufficientCredits", code, got)
+		}
+	}
+}

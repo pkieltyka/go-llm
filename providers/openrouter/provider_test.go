@@ -13,6 +13,7 @@ import (
 	"time"
 
 	llm "github.com/pkieltyka/go-llm"
+	"github.com/pkieltyka/go-llm/authstore"
 	"github.com/pkieltyka/go-llm/internal/testutil"
 )
 
@@ -1029,5 +1030,11 @@ func TestOpenRouterCacheRetentionOnWire(t *testing.T) {
 	}
 	if body := build(llm.CacheRetentionLong); !strings.Contains(body, `"ttl":"1h"`) {
 		t.Fatalf("long did not request the 1h tier: %s", body)
+	}
+}
+
+func TestOpenRouterWithCredentialsIsExclusiveWithAPIKey(t *testing.T) {
+	if _, err := New(WithCredentials(authstore.NewMemory(nil)), WithAPIKey("k")); !errors.Is(err, llm.ErrBadRequest) {
+		t.Fatalf("err = %v, want ErrBadRequest", err)
 	}
 }

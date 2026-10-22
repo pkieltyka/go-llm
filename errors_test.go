@@ -78,7 +78,7 @@ func TestProviderErrorSafeSummaryValidatesProviderLabel(t *testing.T) {
 		provider string
 		want     string
 	}{
-		{name: "known adapter", provider: "openai-codex", want: "llm/openai-codex: 500 (llm: server error)"},
+		{name: "known adapter", provider: "openrouter", want: "llm/openrouter: 500 (llm: server error)"},
 		{name: "punctuation", provider: "openai\nsecret", want: "llm: 500 (llm: server error)"},
 		{name: "unicode", provider: "openai-☃", want: "llm: 500 (llm: server error)"},
 		{name: "too long", provider: strings.Repeat("a", 65), want: "llm: 500 (llm: server error)"},

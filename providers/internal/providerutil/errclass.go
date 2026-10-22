@@ -110,7 +110,11 @@ func heuristicErrorKind(code, message string) error {
 		return llm.ErrAuth
 	case strings.Contains(lowerCode, "rate") || strings.Contains(lowerMessage, "rate limit"):
 		return llm.ErrRateLimited
-	case strings.Contains(lowerCode, "credit") || strings.Contains(lowerCode, "quota") || strings.Contains(lowerCode, "billing"):
+	// Subscription usage limits (Sign in with ChatGPT
+	// subscription_sharing_*usage_limit_exceeded, Codex usage_limit_reached)
+	// reset on the provider's schedule, not within a retry backoff.
+	case strings.Contains(lowerCode, "credit") || strings.Contains(lowerCode, "quota") ||
+		strings.Contains(lowerCode, "billing") || strings.Contains(lowerCode, "usage_limit"):
 		return llm.ErrInsufficientCredits
 	case IsContextOverflow(code, message):
 		return llm.ErrContextTooLong

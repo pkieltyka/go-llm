@@ -21,9 +21,9 @@ func TestParseChatFlagsHelp(t *testing.T) {
 			"llm-cli models [flags]",
 			"forces the non-streaming path",
 			"-provider",
-			"OAuth access token exposed via argv",
+			"exposed via argv",
 			"-auth-file",
-			"OPENAI_CODEX_ACCESS_TOKEN",
+			"Sign in with",
 			"shell history and process argv",
 			"Examples:",
 			"llm-cli models -p openrouter",
@@ -75,7 +75,7 @@ func TestParseModelsFlagsHelp(t *testing.T) {
 		t.Fatalf("err = %v, want errHelp", err)
 	}
 	usage := stderr.String()
-	for _, want := range []string{"Usage: llm-cli models [flags]", "-provider", "OPENAI_CODEX_ACCESS_TOKEN", "process argv", "llm-cli models -p openrouter"} {
+	for _, want := range []string{"Usage: llm-cli models [flags]", "-provider", "Sign in with ChatGPT", "process argv", "llm-cli models -p openrouter"} {
 		if !strings.Contains(usage, want) {
 			t.Fatalf("models usage missing %q:\n%s", want, usage)
 		}

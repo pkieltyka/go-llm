@@ -1,5 +1,5 @@
 // Package providerutil hosts small helpers shared by all provider packages
-// and engines (anthropic, openai, openaicodex, openrouter, responsesapi,
+// and engines (anthropic, openai, openrouter, responsesapi,
 // chatcompletions): part/event deref normalization, the unified error-kind
 // classifier, observability wiring, strict-schema checks, and OpenAI SDK
 // ambient-header hygiene.

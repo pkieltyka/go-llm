@@ -12,7 +12,6 @@ import (
 	llm "github.com/pkieltyka/go-llm"
 	"github.com/pkieltyka/go-llm/providers/anthropic"
 	"github.com/pkieltyka/go-llm/providers/openai"
-	"github.com/pkieltyka/go-llm/providers/openaicodex"
 	"github.com/pkieltyka/go-llm/providers/openrouter"
 	"github.com/pkieltyka/go-llm/providers/vllm"
 )
@@ -28,10 +27,6 @@ func TestLiveRunnerManifests(t *testing.T) {
 	openAIProvider, err := openai.New(openai.WithAPIKey("manifest-test"))
 	if err != nil {
 		t.Fatalf("construct openai: %v", err)
-	}
-	codexProvider, err := openaicodex.New(openaicodex.WithOAuth(llm.AuthCredential{Type: "oauth", Access: "manifest-test"}, nil))
-	if err != nil {
-		t.Fatalf("construct openai-codex: %v", err)
 	}
 	openRouterProvider, err := openrouter.New(openrouter.WithAPIKey("manifest-test"))
 	if err != nil {
@@ -49,7 +44,6 @@ func TestLiveRunnerManifests(t *testing.T) {
 	}{
 		{"anthropic", anthropicProvider, anthropicLiveScenarioRunners("reasoning-model", "")},
 		{"openai", openAIProvider, openAILiveScenarioRunners("")},
-		{"openai-codex", codexProvider, openAICodexLiveScenarioRunners()},
 		{"openrouter", openRouterProvider, openRouterLiveScenarioRunners("reasoning-model", "cache-model", "parallel-model", "tools-model", "")},
 		{"vllm", vllmProvider, vllmLiveScenarioRunners(vllmProvider, "http://localhost:8000/v1")},
 	}

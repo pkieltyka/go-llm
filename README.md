@@ -16,15 +16,15 @@ where they exist and pulled in only by the provider package you import.
   `ChatStream` (`iter.Seq2` iterators), the same request/response model
   everywhere, per-provider escape hatches down to the raw SDK client.
 - **Providers**: Anthropic (API key), OpenAI
-  (Responses API), OpenAI Codex (ChatGPT Plus/Pro subscription OAuth),
-  OpenRouter, and self-hosted vLLM. First-party presets run the shared offline
+  (Responses API; API key or Sign in with ChatGPT), OpenRouter, and
+  self-hosted vLLM. First-party presets run the shared offline
   conformance suite, and credentialed presets have capability-driven live
   scenarios. `chatcompletions.New(baseURL)` covers any other
   OpenAI-compatible server (Ollama, llama.cpp, Groq, Together, ...).
-- **Subscription auth**: OpenAI Codex can mint browser PKCE credentials or
-  consume and auto-refresh compatible existing credentials.
-  `llm.LoadAuthFile` reads the documented credential union; minted and
-  renewed tokens are returned to your code to persist.
+- **Credentials, the pi way**: a `llm.CredentialStore` (in memory, or a
+  pi-compatible `auth.json` via `authstore.NewFile`) owns each provider's
+  credential. Sign in with ChatGPT tokens refresh inside the store's locked
+  `Modify`, so concurrent requests and processes refresh exactly once.
 - **Tools**: parallel calls, streamed arguments, and a defined contract for
   malformed tool calls — rescue what's rescuable, drop the rest *visibly*
   (`ToolCallDropped`), with an opt-in `llm.RetryDroppedToolCalls` middleware.
@@ -56,7 +56,7 @@ where they exist and pulled in only by the provider package you import.
   reported as unknown rather than understated.
 - **Capabilities**: provider-wide `Capabilities()` discovery with pre-flight
   request validation, plus advisory per-model capabilities from rich live
-  catalogs such as OpenRouter and Codex. Unsupported provider features fail
+  catalogs such as OpenRouter. Unsupported provider features fail
   fast with `ErrUnsupported`; incomplete model metadata never blocks a call.
 - **Conveniences**: `Session` (auto-managed history, session tools with
   `AddToolResults` + `Continue`, cumulative usage), `History`,
@@ -146,8 +146,7 @@ _, _ = summary, resp
 | Package | Auth | Notes |
 |---|---|---|
 | `providers/anthropic` | `ANTHROPIC_API_KEY` or `WithAPIKey` | Messages API |
-| `providers/openai` | `OPENAI_API_KEY` or `WithAPIKey` | Responses API — reasoning survives across tool-call turns |
-| `providers/openaicodex` | `WithOAuth` only (ChatGPT Plus/Pro) | Responses wire shape; explicit `Models` calls use cached authenticated discovery with a curated fallback |
+| `providers/openai` | `OPENAI_API_KEY`, `WithAPIKey`, or `WithCredentials` (API key or Sign in with ChatGPT) | Responses API — reasoning survives across tool-call turns |
 | `providers/openrouter` | `OPENROUTER_API_KEY` or `WithAPIKey` | Chat Completions; routing/plugins, explicit rich model discovery, and native per-request cost reporting |
 | `providers/vllm` | optional `WithAPIKey` (vLLM `--api-key`) | Self-hosted vLLM preset: host-first, era-aware, live-tested |
 | `providers/ollama` | none | Data-only local-Ollama preset over the engine below (community-verified) |
@@ -177,58 +176,53 @@ The supported selectors are `ReasoningSummaryAuto`,
 `ReasoningSummaryConcise`, and `ReasoningSummaryDetailed`. Leaving the field
 empty preserves the existing behavior (`summary: "auto"` when `Effort` is
 set); unknown values fail before a request is sent. OpenAI remains
-authoritative about which models accept each selector. This option is not
-available on the separate `openaicodex` subscription provider.
+authoritative about which models accept each selector.
 
-OpenAI Codex consumes credentials minted by compatible existing tools,
-refreshes them automatically, and hands renewals back to your code to
-persist; the root library never writes credential files itself:
+### Credentials
+
+Authentication mirrors [pi](https://github.com/earendil-works/pi). A
+`llm.CredentialStore` holds one credential per provider id, and
+`WithCredentials(store)` makes a provider read it on every request. A stored
+credential owns its provider (no environment fallback); with nothing stored,
+the provider's usual environment variable is used. `WithCredentials` is
+mutually exclusive with `WithAPIKey`/`WithAPIKeyFunc`.
 
 ```go
-auth, err := llm.LoadAuthFile("auth.json") // documented credential union
-if err != nil {
-	panic(err)
-}
-
-codex, err := openaicodex.New(openaicodex.WithOAuth(auth["openai-codex"], func(ctx context.Context, updated llm.AuthCredential) error {
-	return persistCredential(ctx, updated)
-}))
+store := authstore.NewFile(filepath.Join(home, ".pi/agent/auth.json"))
+p, err := openai.New(openai.WithCredentials(store))
 ```
 
-Codex can also mint the initial credential through its provider-owned browser
-PKCE flow. `Begin` returns a redacting loopback launch target; `Complete`
-waits for the automatic callback, while `Submit` accepts a copied complete
-callback URL/query if the browser cannot reach localhost. The host must store
-the returned credential before passing it to `WithOAuth`:
+`authstore.NewFile` reads and writes pi's `auth.json` format
+(`{"openai": {"type": "oauth", ...}, "anthropic": {"type": "api_key", ...}}`,
+bare or under a `"providers"` wrapper). `Modify` is the only write path: it
+holds pi's own lock on `<path>.lock` (so pi and go-llm processes exclude each
+other on a shared file), writes atomically with mode 0600, and preserves
+fields it does not own.
+`authstore.NewMemory` is the in-process equivalent.
+
+OpenAI also accepts a Sign in with ChatGPT OAuth credential, which calls the
+ordinary `api.openai.com` Responses API billed to a ChatGPT subscription. The
+provider refreshes it five minutes before expiry inside `Modify` (re-checking
+under the lock, so only one refresher wins), stores the rotated tokens before
+using them, and lets a started refresh finish even if the caller's request is
+cancelled. `openai.NewLoginFlow` mints the initial credential with a browser
+PKCE flow; the host stores it:
 
 ```go
-flow, err := openaicodex.NewLoginFlow()
+flow, err := openai.NewLoginFlow(openai.WithLoginDeviceID(deviceUUID))
 authorization, err := flow.Begin(ctx)
 showLoginURL(authorization.URL())
-credential, err := flow.Complete(ctx)
-err = persistCredential(ctx, credential)
+credential, err := flow.Complete(ctx) // or flow.Submit(ctx, pastedCallbackURL)
+_, _, err = store.Modify(ctx, "openai", func(llm.AuthCredential, bool) (llm.AuthCredential, bool, error) {
+	return credential, true, nil
+})
 ```
 
-The callback binds only `127.0.0.1`, uses the registered localhost path on
-port 1455 with port 1457 as its fallback, and never persists the credential.
-Live OAuth verification is still required because automated tests cannot
-complete an account login. Device authorization and a built-in CLI login UX
-remain deferred.
-
-Persistence callbacks must honor their context and return only after the
-rotated credential is durably stored; an error prevents the provider from
-publishing it. A credential containing a refresh token requires a non-nil
-callback; access-only credentials may pass `nil`. To deliberately keep
-rotations only in memory, pass an explicit context-aware no-op:
-
-```go
-discardRotation := func(ctx context.Context, _ llm.AuthCredential) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	return nil
-}
-```
+The callback binds only `127.0.0.1:1455`. A Sign in with ChatGPT token
+reaches only the subscription's models (`Models` lists them) and a
+streaming-only endpoint. So, as pi does, `Chat` drains a stream there, and
+`MaxTokens`, `Temperature`, `TopP` and prompt-cache retention are not sent.
+Anthropic and OpenRouter accept `api_key` credentials only.
 
 This can leave the stored refresh token stale after restart and should be a
 conscious application decision. Provider-specific request extensions live in
@@ -394,7 +388,7 @@ go install github.com/pkieltyka/go-llm/cmd/llm-cli@latest
 llm-cli -p openai -m gpt-5.5 "write a short haiku about Go"
 echo "long input" | llm-cli -p anthropic -m claude-opus-4-8 -s "summarize stdin"
 llm-cli -p openrouter -m openai/gpt-5.5 --usage --json "return a JSON status"
-llm-cli -p openai-codex --auth-file ~/.config/llm/auth.json -m gpt-5.4 "review this diff"
+llm-cli -p openai --auth-file ~/.pi/agent/auth.json -m gpt-5.5 "review this diff"
 
 llm-cli models -p openrouter          # list models (table or --json)
 
@@ -414,13 +408,12 @@ caller's `Request.Effort`.
 The last pair saves a conversation with one provider and continues it with
 another — the handoff described above, from the shell.
 
-For OpenAI Codex, authentication precedence is `--auth-file`, then
-`OPENAI_CODEX_ACCESS_TOKEN`, then compatibility `--api-key`. Prefer the first
-two forms: command-line API-key values are visible in process arguments and
-often shell history. Auth files are loaded only when explicitly requested.
-Refresh publication holds a bounded cross-process advisory lock across the
-full read/modify/atomic-write transaction so concurrent CLI processes do not
-lose one another's credential updates.
+`--auth-file` names a pi-compatible `auth.json` credential store used by
+every provider (API keys, or Sign in with ChatGPT OAuth for `openai`); OAuth
+refreshes are written back to it under its lock. Without it, providers read
+their usual environment variable. `--api-key` is exclusive with
+`--auth-file`; its value is visible in process arguments and often shell
+history, so prefer the file or the environment.
 
 ## Testing your code
 
@@ -485,7 +478,7 @@ ANTHROPIC_API_KEY=... go run ./examples/chat  # same program, real API
 | [`parse`](examples/parse) | `llm.Parse[T]` structured output into a Go struct |
 | [`history-replay`](examples/history-replay) | Serialize a conversation and continue it on another provider (a real Anthropic→OpenRouter handoff when both keys are set) |
 | [`observability`](examples/observability) | `UsageTracker`, logging, and cost via `llm.Wrap` middleware |
-| [`provider-selection`](examples/provider-selection) | Choosing a provider at runtime: env keys, an `LLM_AUTH_FILE` credential file (including codex OAuth), or the offline fake |
+| [`provider-selection`](examples/provider-selection) | Choosing a provider at runtime: env keys, an `LLM_AUTH_FILE` credential store (including Sign in with ChatGPT), or the offline fake |
 | [`testing`](examples/testing) | Unit-testing *your* code with `llmtest`: request assertions, streaming, error paths (`go test ./examples/testing/`) |
 
 Godoc examples in `example_test.go` run offline as part of the test suite.
