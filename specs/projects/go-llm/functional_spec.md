@@ -941,6 +941,22 @@ hatch.
 - Anthropic preserves hints on text nested inside tool results. OpenRouter
   emits cache-aware role-tool text blocks only when a nested hint exists;
   no-hint tool messages keep the traditional concatenated string wire form.
+- **`Request.CacheRetention`** is a request-wide policy, applied by every
+  engine before conversion without mutating the caller's request:
+  - `""`: hints and provider defaults are unchanged.
+  - `none`: removes every `CacheHint` (system, message parts, nested tool
+    results), and the OpenAI Responses and Codex `prompt_cache_key` is
+    omitted. Use it for one-off calls such as summarization; providers with
+    automatic caching may still cache internally. Session affinity is
+    unaffected: OpenRouter's `session_id` is routing (§9A), not a cache key.
+  - `short`: resets every hint to the provider's default lifetime
+    (five minutes on Anthropic).
+  - `long`: sets every hint to the long tier (Anthropic and
+    Anthropic-family OpenRouter: one hour).
+  - It does not toggle OpenAI's `prompt_cache_options`, which stay explicit
+    on `openai.Options` because model acceptance is server-defined.
+  - It needs no capability; unknown values fail validation with
+    `ErrBadRequest`.
 - Cache effectiveness is always observable via `Usage.CacheReadTokens` /
   `CacheWriteTokens`.
 
@@ -1163,6 +1179,52 @@ are covered (usage observed on `MessageEnd`). `Stats()` returns a
 snapshot suitable for feeding any metrics system. OpenTelemetry and
 metrics-backend *integrations* are deliberately not in core — the
 tracker, middleware seam, and wire capture are their raw material.
+
+**OpenTelemetry integration (`contrib/otelllm`).** This is a separate
+nested module, `github.com/pkieltyka/go-llm/contrib/otelllm`, with its own
+`go.mod`, so the root module never requires OpenTelemetry.
+`otelllm.Middleware(opts...)` is `llm.Wrap` middleware that uses the global
+providers by default, or `WithTracerProvider` and `WithMeterProvider`. Place
+it outermost.
+
+- **Spans.** One CLIENT span per `Chat`/`ChatStream`, named
+  `chat {model}`. The parent comes from the request context, and the span's
+  context is passed to the wrapped provider.
+- **Naming.** Attributes and metrics follow the OpenTelemetry GenAI
+  semantic conventions as published in semconv v1.41.0 (development
+  status), written as string constants so no semconv package is imported:
+  - request: `gen_ai.operation.name`, `gen_ai.provider.name` (with
+    `openai-codex` reported as `openai`), `gen_ai.request.model`,
+    `gen_ai.request.max_tokens`, `gen_ai.request.temperature`,
+    `gen_ai.request.top_p`, and `gen_ai.request.stream`;
+  - response: `gen_ai.response.id`, `gen_ai.response.model`,
+    `gen_ai.response.finish_reasons`, and
+    `gen_ai.response.time_to_first_chunk`;
+  - usage: `gen_ai.usage.input_tokens` (including cache reads and writes,
+    per the conventions), `gen_ai.usage.output_tokens`,
+    `gen_ai.usage.cache_read.input_tokens`,
+    `gen_ai.usage.cache_creation.input_tokens`, and
+    `gen_ai.usage.reasoning.output_tokens`;
+  - errors: `error.type`, carrying the `SafeErrorInfo` class or `_OTHER`.
+- **go-llm names.** Concepts the conventions lack use `go_llm.*`:
+  - the raw provider, effort, and tool count;
+  - cost in USD and its source;
+  - dropped tool calls;
+  - `go_llm.canceled` and `go_llm.stream.abandoned`;
+  - a `go_llm.first_chunk` event, and one `go_llm.block` event per content
+    block carrying only type, index, character count, and tool name.
+- **Metrics:** `gen_ai.client.operation.duration`,
+  `gen_ai.client.token.usage` (by `gen_ai.token.type`),
+  `gen_ai.client.operation.time_to_first_chunk` (streams only), and the
+  `go_llm.client.cost` counter. They use the convention-recommended bucket
+  boundaries.
+- **Content-free by construction.** No prompt, system, completion,
+  reasoning, tool-argument, or tool-result bytes are recorded, and error
+  status descriptions are `llm.SafeError` truncated to 500 bytes for
+  provider errors, and only the error class for any other error, so text
+  from caller middleware is never recorded. A canary test enforces this.
+- **Error status.** Caller cancellation and a consumer abandoning a stream
+  are not errors.
 Budget **enforcement** (halting/refusing calls once a token or cost cap
 is hit) is workload policy → `go-agent`; it composes as a few-line
 middleware over `UsageTracker.Stats()`, and Anthropic's server-side task

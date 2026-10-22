@@ -180,3 +180,89 @@ FS §10B and ARCH §10 keep integrations out of core.
 | Regex retry and overflow corpora as a consumer API | Typed sentinels are the API. The overflow corpus is used only inside adapters (plan 9). |
 | Grammar-constrained tools (OpenAI Lark/regex custom tools), strict prefer/require per tool | Candidate for a later plan once there is a consumer. Today `Tool.Strict` plus `StrictSchemaSupported` covers JSON schema. |
 | The `pi-messages` wire protocol | A reference for the possible inference gateway, not go-llm core. |
+
+## Implementation status (2026-10-22)
+
+**Part C: shipped** as `contrib/otelllm`, a nested module with its own
+`go.mod`.
+
+- **Naming source.** The OTel Go semconv packages carry the GenAI
+  vocabulary only up to v1.41.0, which ships in OTel v1.47.0; v1.42 and
+  v1.43 drop it. So the names are string constants following v1.41.0 GenAI
+  (development status), with no semconv import. The plan's "`gen_ai.*`
+  names where they exist" covered:
+  - request: operation, provider, model, max tokens, temperature, top-p,
+    and stream;
+  - response: id, model, finish reasons, and time to first chunk;
+  - usage: input (including cache, per the conventions), output, cache
+    read, cache creation, and reasoning tokens;
+  - `error.type`, and the client duration, token-usage, and
+    time-to-first-chunk metrics.
+
+  The `go_llm.*` names cover cost and its source, the raw provider,
+  effort, tool count, dropped calls, canceled, abandoned, and the
+  first-chunk and per-block events.
+- **Behavior.** `openai-codex` reports as `gen_ai.provider.name=openai`.
+  Cancellation and stream abandonment are not error status.
+- **Tests.** The tests use the SDK in-memory exporter and a manual reader:
+  attributes and metrics, streaming first-chunk, errors, cancellation, and
+  abandonment, parent/child context propagation, and a canary test that
+  content never appears in spans, events, status, or metrics.
+- **Build integration.** The Makefile gained `CONTRIB_MODULES`, and build,
+  test, vet, tidy, lint, and govulncheck all run inside the module.
+  docs/release.md describes bumping the contrib `require` and tagging
+  `contrib/otelllm/vX.Y.Z`.
+
+**Part B: shipped** as `Request.CacheRetention` (`""`, `none`, `short`,
+`long`).
+
+- One shared `providerutil.ApplyCacheRetention` runs before conversion in
+  the Anthropic, Responses, and chat-completions engines. It is
+  copy-on-write and reaches nested tool-result hints.
+- `none` also omits the Responses `prompt_cache_key`.
+- OpenAI `prompt_cache_options` is deliberately not auto-set by `long`: it
+  is documented for gpt-5.6 and later only, and server acceptance varies.
+- Wire tests cover Anthropic, OpenRouter, and Responses.
+
+**Part A: STOPPED at its gate.** The required live probes need a direct
+Anthropic API key (inline-tools beta) and an OpenAI key (`additional_tools`
+on gpt-5.6), and neither is configured: the `anthropic` entry is OAuth,
+and there is no `openai` entry.
+
+Implementing the ratified representation with only the fold fallback would
+fix a public API shape before the wire formats it must map to are seen,
+which is what the gate exists to prevent. Options for the maintainer:
+
+- **(a) Wait.** Supply API-key credentials, then run the probes and build
+  Part A.
+- **(b) Ship the representation, validation, and byte-deterministic fold
+  now.** Native mappings follow behind the probes, accepting that the
+  representation might need a revision.
+
+### Review of Parts C and B (2026-10-22)
+
+A clean-context adversarial review gave "approve with changes". It found
+one major and four minors, all fixed before commit:
+
+- **Major: a collector rejection became the stream's error.** The
+  `contrib/otelllm` stream wrapper made the collector's own rejection of an
+  event the call's error. The span showed Error, and usage was lost, even
+  though the consumer had seen a clean stream. The collector now supplies
+  only the response summary, and the error is exactly what the consumer
+  saw. A regression test covers it.
+- **Minors:**
+  - The contrib `go.mod` comment states that the `require` is a
+    placeholder below the real minimum.
+  - docs/release.md lists the gates that actually loop over contrib
+    modules, and adds a check that the module resolves without the
+    `replace`.
+  - Status descriptions are content-free for non-provider errors too:
+    the class only, so text authored by caller middleware is never
+    recorded. There is a canary test for this.
+  - The `ApplyCacheRetention` doc now matches its copy behavior.
+- **Nits:**
+  - Unmeasured usage is no longer recorded as zero.
+  - `error.type` appears on the duration metric only.
+  - `gen_ai.response.model` is omitted when unknown.
+  - FS §15 notes that OpenRouter session affinity is unaffected by
+    `none`.

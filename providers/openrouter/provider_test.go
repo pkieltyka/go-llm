@@ -1011,3 +1011,23 @@ func TestOpenRouterReplayDropsForeignModelReasoningDetails(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenRouterCacheRetentionOnWire(t *testing.T) {
+	p := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {})
+	build := func(retention llm.CacheRetention) string {
+		params, err := p.buildParams(&llm.Request{
+			Model: "anthropic/claude-haiku-4.5", CacheRetention: retention,
+			Messages: []llm.Message{llm.UserParts(llm.TextPart{Text: "hello", Cache: &llm.CacheHint{}})},
+		}, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return testutil.MustCompactJSON(t, params)
+	}
+	if body := build(llm.CacheRetentionNone); strings.Contains(body, "cache_control") {
+		t.Fatalf("none sent cache_control: %s", body)
+	}
+	if body := build(llm.CacheRetentionLong); !strings.Contains(body, `"ttl":"1h"`) {
+		t.Fatalf("long did not request the 1h tier: %s", body)
+	}
+}

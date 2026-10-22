@@ -181,3 +181,20 @@ git push origin "$VERSION"
 The commit object named by `VERIFIED_COMMIT` is therefore exactly the clean
 commit that passed the release gates; generated or tidy changes cannot remain
 only in the index or worktree when the tag is created.
+
+### Nested modules (`contrib/*`)
+
+Each entry in the Makefile's `CONTRIB_MODULES` is its own module. Build,
+test, vet, lint, `mod tidy -diff`, and govulncheck also run inside it;
+coverage floors, fuzzing, and live tests are root-module only. Format and
+patch checks cover it through git. During development a contrib module's
+`go.mod` points at the in-repo go-llm through `replace ... => ../..`, which
+consumers ignore. So, after tagging go-llm `$VERSION`:
+
+1. Bump the contrib module's `require github.com/pkieltyka/go-llm` to
+   `$VERSION`, keep the `replace`, run `go -C contrib/otelllm mod tidy`, and
+   commit. Verify that it resolves without the replace:
+   `go -C contrib/otelllm mod edit -dropreplace github.com/pkieltyka/go-llm`,
+   then `go -C contrib/otelllm build ./...`, then restore the replace.
+2. Tag the nested module with its path prefix, for example
+   `contrib/otelllm/$VERSION`, then push that tag.

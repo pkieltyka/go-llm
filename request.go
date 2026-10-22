@@ -2,18 +2,21 @@ package llm
 
 // Request is the provider-neutral shape for a chat completion.
 type Request struct {
-	Model           string
-	Messages        []Message
-	System          string
-	SystemCache     *CacheHint
-	MaxTokens       int
-	Temperature     *float64
-	TopP            *float64
-	StopSequences   []string
-	Tools           []Tool
-	ToolChoice      ToolChoice
-	ResponseFormat  *ResponseFormat
-	Effort          Effort
+	Model          string
+	Messages       []Message
+	System         string
+	SystemCache    *CacheHint
+	MaxTokens      int
+	Temperature    *float64
+	TopP           *float64
+	StopSequences  []string
+	Tools          []Tool
+	ToolChoice     ToolChoice
+	ResponseFormat *ResponseFormat
+	Effort         Effort
+	// CacheRetention overrides prompt-cache lifetimes for the whole request;
+	// empty keeps each CacheHint and the provider defaults (FS §15).
+	CacheRetention  CacheRetention
 	SessionID       string
 	ProviderOptions ProviderOptions
 }
@@ -72,6 +75,29 @@ const (
 	FormatJSONSchema ResponseFormatType = "json_schema"
 	// FormatJSONMode requests syntactically valid JSON without a schema.
 	FormatJSONMode ResponseFormatType = "json_mode"
+)
+
+// CacheRetention is a request-wide prompt-cache policy (FS §15).
+type CacheRetention string
+
+const (
+	// CacheRetentionDefault (empty) keeps every CacheHint as written and the
+	// provider's caching defaults.
+	CacheRetentionDefault CacheRetention = ""
+	// CacheRetentionNone writes nothing to the cache: every CacheHint
+	// (system, message parts, nested tool results) is removed, and the
+	// OpenAI Responses prompt_cache_key is omitted. Use it for one-off calls,
+	// such as summarization, that should not evict or pollute a session's
+	// cache. Providers with automatic caching may still cache internally.
+	CacheRetentionNone CacheRetention = "none"
+	// CacheRetentionShort forces every CacheHint to the provider's default
+	// short lifetime (five minutes on Anthropic).
+	CacheRetentionShort CacheRetention = "short"
+	// CacheRetentionLong forces every CacheHint to the provider's long
+	// lifetime (one hour on Anthropic and Anthropic-family OpenRouter
+	// models). OpenAI's automatic caching is unchanged; its explicit
+	// prompt_cache_options stay on openai.Options.
+	CacheRetentionLong CacheRetention = "long"
 )
 
 // Effort controls provider reasoning/thinking effort.

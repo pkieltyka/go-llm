@@ -58,6 +58,7 @@ func (a Adapter) validateRequest(req *llm.Request, stream bool) error {
 }
 
 func (a Adapter) buildParamsAfterValidation(req *llm.Request) (responses.ResponseNewParams, error) {
+	req = providerutil.ApplyCacheRetention(req)
 	input, err := a.buildInput(providerutil.ReplayableHistory(req.Messages, req.Model))
 	if err != nil {
 		return responses.ResponseNewParams{}, err
@@ -86,7 +87,7 @@ func (a Adapter) buildParamsAfterValidation(req *llm.Request) (responses.Respons
 	// prompt_cache_key is Responses-surface-only by design: strict
 	// OpenAI-compatible gateways reject unknown fields with 400, so never
 	// add it to the Chat Completions engine without a provider-kind gate.
-	if req.SessionID != "" {
+	if req.SessionID != "" && req.CacheRetention != llm.CacheRetentionNone {
 		params.PromptCacheKey = sdk.String(normalizePromptCacheKey(req.SessionID))
 	}
 	if len(req.Tools) > 0 {

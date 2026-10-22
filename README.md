@@ -62,7 +62,9 @@ where they exist and pulled in only by the provider package you import.
   `AddToolResults` + `Continue`, cumulative usage), `History`,
   `PromptTemplate`, `llm.Ptr` for optional scalar fields, middleware via
   `llm.Wrap`, and observability built in but silent by default (`slog`
-  logging, `UsageTracker`, wire capture via `WithWireCapture`). Sensitive
+  logging, `UsageTracker`, wire capture via `WithWireCapture`), plus an
+  optional, content-free OpenTelemetry middleware in the separate
+  `contrib/otelllm` module (GenAI semantic conventions). Sensitive
   headers are always redacted; captured URLs and bodies remain
   application-sensitive data. Built-in failure logs use safe provider-error
   summaries and never emit provider-controlled bodies or metadata.
@@ -350,6 +352,10 @@ for event, err := range p.ChatStream(ctx, req) {
 }
 resp, _ := c.Finish(nil)
 ```
+
+`Request.CacheRetention` (`none`, `short`, `long`) overrides every cache hint
+on a request. Use `none` for one-off calls, such as summarization, that
+shouldn't pollute a session's prompt cache.
 
 For error handling across providers, `llm.ErrorClass`, `llm.Transient`, and
 the log-safe `llm.SafeErrorInfo` classify through the typed sentinel chain.

@@ -367,3 +367,19 @@ func TestBuildParamsDropsForeignModelReasoning(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildParamsCacheRetentionNoneOmitsPromptCacheKey(t *testing.T) {
+	adapter := replayAdapter()
+	for _, tt := range []struct {
+		retention llm.CacheRetention
+		want      bool
+	}{{"", true}, {llm.CacheRetentionShort, true}, {llm.CacheRetentionNone, false}} {
+		params, err := adapter.BuildParams(&llm.Request{Model: "m", SessionID: "sess-1", CacheRetention: tt.retention, Messages: []llm.Message{llm.UserText("hi")}}, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Contains(marshalWire(t, params), "prompt_cache_key"); got != tt.want {
+			t.Errorf("retention %q: prompt_cache_key present = %v, want %v", tt.retention, got, tt.want)
+		}
+	}
+}

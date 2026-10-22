@@ -42,6 +42,7 @@ func validateRequest(req *llm.Request, stream bool) error {
 }
 
 func (p *Provider) buildParamsAfterValidation(req *llm.Request) (sdk.MessageNewParams, []sdkoption.RequestOption, error) {
+	req = providerutil.ApplyCacheRetention(req)
 	options, err := requestOptions(req)
 	if err != nil {
 		return sdk.MessageNewParams{}, nil, err

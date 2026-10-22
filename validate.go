@@ -30,6 +30,11 @@ func ValidateRequest(caps []Capability, req *Request) error {
 	if err := validateEffort(capSet, req.Effort); err != nil {
 		return err
 	}
+	switch req.CacheRetention {
+	case CacheRetentionDefault, CacheRetentionNone, CacheRetentionShort, CacheRetentionLong:
+	default:
+		return fmt.Errorf("%w: unknown cache retention %q", ErrBadRequest, req.CacheRetention)
+	}
 	if len(req.StopSequences) > 0 && !capSet.has(CapabilityStopSequences) {
 		return unsupported(CapabilityStopSequences)
 	}

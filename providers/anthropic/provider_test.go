@@ -1730,3 +1730,27 @@ func TestAnthropicNoArgumentToolSendsInputSchema(t *testing.T) {
 			`[{"input_schema":{"properties":{},"type":"object"},"name":"now","strict":false,"type":"custom"}]`)
 	}
 }
+
+func TestAnthropicCacheRetentionOnWire(t *testing.T) {
+	p := &Provider{defaultMaxTokens: 99}
+	req := func(retention llm.CacheRetention) *llm.Request {
+		return &llm.Request{
+			Model: "claude-test", System: "sys", SystemCache: &llm.CacheHint{}, CacheRetention: retention,
+			Messages: []llm.Message{llm.UserParts(llm.TextPart{Text: "hello", Cache: &llm.CacheHint{}})},
+		}
+	}
+	none, _, err := p.buildParams(req(llm.CacheRetentionNone))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body := testutil.MustCompactJSON(t, none); strings.Contains(body, "cache_control") {
+		t.Fatalf("CacheRetentionNone sent cache_control: %s", body)
+	}
+	long, _, err := p.buildParams(req(llm.CacheRetentionLong))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body := testutil.MustCompactJSON(t, long); strings.Count(body, `"ttl":"1h"`) != 2 {
+		t.Fatalf("CacheRetentionLong must request the 1h tier for both hints: %s", body)
+	}
+}

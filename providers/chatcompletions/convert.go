@@ -30,6 +30,7 @@ func (p *Provider) BuildParams(req *llm.Request, stream bool) (sdk.ChatCompletio
 	if err := llm.ValidateProviderOptions(p.Name(), req); err != nil {
 		return sdk.ChatCompletionNewParams{}, err
 	}
+	req = providerutil.ApplyCacheRetention(req)
 	messages, err := p.buildMessages(req)
 	if err != nil {
 		return sdk.ChatCompletionNewParams{}, err
