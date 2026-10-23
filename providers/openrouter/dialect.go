@@ -215,9 +215,7 @@ func (dialect) MapUsage(model string, raw chatcompletions.RawUsage, table llm.Pr
 	if out.TotalTokens == 0 {
 		out.TotalTokens = out.InputTokens + out.CacheReadTokens + out.OutputTokens
 	}
-	if raw.Cost != nil {
-		// OpenRouter reports billing-grade cost natively (usage.cost).
-		cost := *raw.Cost
+	if cost, ok := reportedCost(raw); ok {
 		out.CostUSD = &cost
 		out.CostSource = llm.CostSourceNative
 		return out
@@ -226,6 +224,54 @@ func (dialect) MapUsage(model string, raw chatcompletions.RawUsage, table llm.Pr
 		return llm.EstimateCostWithTable(table, providerName, model, out)
 	}
 	return llm.EstimateCostForModel(providerName, model, out)
+}
+
+// reportedCost is the billed cost from OpenRouter's usage accounting.
+// usage.cost is what OpenRouter charged. With a BYOK key that is only
+// OpenRouter's fee, and the inference itself is billed upstream as
+// cost_details.upstream_inference_cost (or, when that is null or absent, its
+// prompt and completion parts), so the two are summed. A missing is_byok
+// means a plain key; malformed or incomplete accounting reports nothing,
+// leaving the price-table estimate (as pi does).
+func reportedCost(raw chatcompletions.RawUsage) (float64, bool) {
+	if raw.Cost == nil || !validCost(*raw.Cost) {
+		return 0, false
+	}
+	flag, present := raw.Raw["is_byok"]
+	byok, ok := flag.(bool)
+	if present && !ok {
+		return 0, false
+	}
+	if !byok {
+		return *raw.Cost, true
+	}
+	details, _ := raw.Raw["cost_details"].(map[string]any)
+	if details == nil {
+		return 0, false
+	}
+	var upstream float64
+	switch value := details["upstream_inference_cost"].(type) {
+	case float64:
+		upstream = value
+	case nil:
+		prompt, promptOK := details["upstream_inference_prompt_cost"].(float64)
+		completion, completionOK := details["upstream_inference_completions_cost"].(float64)
+		if !promptOK || !completionOK || !validCost(prompt) || !validCost(completion) {
+			return 0, false
+		}
+		upstream = prompt + completion
+	default:
+		return 0, false
+	}
+	if !validCost(upstream) {
+		return 0, false
+	}
+	return *raw.Cost + upstream, true
+}
+
+// validCost reports whether a reported cost is a finite, non-negative amount.
+func validCost(value float64) bool {
+	return value >= 0 && !math.IsNaN(value) && !math.IsInf(value, 0)
 }
 
 func (dialect) Models(ctx context.Context, p *chatcompletions.Provider) ([]llm.ModelInfo, error) {

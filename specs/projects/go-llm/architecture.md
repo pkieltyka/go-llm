@@ -1042,7 +1042,8 @@ boundary) so the taxonomy can't drift between code paths.
 ## 5. Usage & Cost
 
 - Adapters populate token fields from native usage (mapping in spec §6/§11).
-- `CostUSD` resolution order: provider-reported (OpenRouter `usage.cost`) →
+- `CostUSD` resolution order: provider-reported (OpenRouter `usage.cost`,
+  plus the upstream inference cost under BYOK; FS cost sourcing) →
   `PriceTable` estimate → nil.
 - `PriceTable` is `map[string]ModelPricing` keyed `"provider/model-id"`,
   with prefix fallback (`"anthropic/claude-opus-4"` matches dated variants)

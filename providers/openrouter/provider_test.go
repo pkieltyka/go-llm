@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"reflect"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	llm "github.com/pkieltyka/go-llm"
 	"github.com/pkieltyka/go-llm/authstore"
 	"github.com/pkieltyka/go-llm/internal/testutil"
+	"github.com/pkieltyka/go-llm/providers/chatcompletions"
 )
 
 func TestOpenRouterBuildRequestGolden(t *testing.T) {
@@ -1035,5 +1037,45 @@ func TestOpenRouterCacheRetentionOnWire(t *testing.T) {
 func TestOpenRouterWithCredentialsIsExclusiveWithAPIKey(t *testing.T) {
 	if _, err := New(WithCredentials(authstore.NewMemory(nil)), WithAPIKey("k")); !errors.Is(err, llm.ErrBadRequest) {
 		t.Fatalf("err = %v, want ErrBadRequest", err)
+	}
+}
+
+// With a BYOK key usage.cost is only OpenRouter's fee; the billed total adds
+// the upstream inference cost. Incomplete BYOK accounting falls back to the
+// price-table estimate (pi #9980).
+func TestOpenRouterReportedCost(t *testing.T) {
+	table := llm.PriceTable{"openrouter/openai/gpt-test": {InputPerMTok: 1_000_000, OutputPerMTok: 1_000_000}}
+	const estimate = 6.0 // 4 input + 2 output tokens at $1 each
+	for name, tc := range map[string]struct {
+		accounting string
+		cost       float64
+		source     string
+	}{
+		"not byok":                    {`"cost":0.5,"is_byok":false`, 0.5, llm.CostSourceNative},
+		"byok flag absent":            {`"cost":0.5`, 0.5, llm.CostSourceNative},
+		"byok upstream total":         {`"cost":0.05,"is_byok":true,"cost_details":{"upstream_inference_cost":1}`, 1.05, llm.CostSourceNative},
+		"byok upstream parts":         {`"cost":0.05,"is_byok":true,"cost_details":{"upstream_inference_cost":null,"upstream_inference_prompt_cost":0.25,"upstream_inference_completions_cost":0.75}`, 1.05, llm.CostSourceNative},
+		"byok without details":        {`"cost":0.05,"is_byok":true`, estimate, llm.CostSourceEstimated},
+		"byok with incomplete parts":  {`"cost":0.05,"is_byok":true,"cost_details":{"upstream_inference_cost":null,"upstream_inference_prompt_cost":0.25}`, estimate, llm.CostSourceEstimated},
+		"byok with negative upstream": {`"cost":0.05,"is_byok":true,"cost_details":{"upstream_inference_cost":-1}`, estimate, llm.CostSourceEstimated},
+		"negative cost":               {`"cost":-1,"is_byok":false`, estimate, llm.CostSourceEstimated},
+		"not byok with cost details":  {`"cost":0.5,"is_byok":false,"cost_details":{"upstream_inference_cost":0.4}`, 0.5, llm.CostSourceNative},
+		"byok upstream key absent":    {`"cost":0.05,"is_byok":true,"cost_details":{"upstream_inference_prompt_cost":0.25,"upstream_inference_completions_cost":0.75}`, 1.05, llm.CostSourceNative},
+		"byok upstream not a number":  {`"cost":0.05,"is_byok":true,"cost_details":{"upstream_inference_cost":"1"}`, estimate, llm.CostSourceEstimated},
+		"malformed byok flag":         {`"cost":0.5,"is_byok":"true"`, estimate, llm.CostSourceEstimated},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var raw chatcompletions.RawUsage
+			if err := json.Unmarshal([]byte(`{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6,`+tc.accounting+`}`), &raw); err != nil {
+				t.Fatal(err)
+			}
+			usage := dialect{}.MapUsage("openai/gpt-test", raw, table)
+			if usage.CostUSD == nil {
+				t.Fatalf("cost = nil, want %v (%q)", tc.cost, tc.source)
+			}
+			if math.Abs(*usage.CostUSD-tc.cost) > 1e-9 || usage.CostSource != tc.source {
+				t.Fatalf("cost = %v (%q), want %v (%q)", *usage.CostUSD, usage.CostSource, tc.cost, tc.source)
+			}
+		})
 	}
 }

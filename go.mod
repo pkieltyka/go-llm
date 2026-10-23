@@ -6,7 +6,7 @@ toolchain go1.27.0
 
 require (
 	github.com/anthropics/anthropic-sdk-go v1.84.0
-	github.com/openai/openai-go/v3 v3.85.1
+	github.com/openai/openai-go/v3 v3.86.0
 )
 
 require (

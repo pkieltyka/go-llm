@@ -1908,6 +1908,62 @@ func TestAnthropicSystemMessagePlacement(t *testing.T) {
 	}
 }
 
+// A held system message waits past an assistant turn that converts to no
+// blocks (another provider's reasoning, or a blank reply), so it never lands
+// before a user message (pi #11091).
+func TestAnthropicHoldsSystemPastDroppedAssistant(t *testing.T) {
+	history := []llm.Message{
+		llm.UserText("hi"),
+		{Role: llm.RoleSystem, Parts: []llm.Part{llm.Text("updated guidance")}},
+		llm.AssistantParts(llm.ReasoningPart{Text: "foreign", Provider: "openai"}),
+		llm.UserText("again"),
+	}
+	roles := func(history []llm.Message) []string {
+		t.Helper()
+		messages, err := buildMessages(history)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, msg := range messages {
+			out = append(out, string(msg.Role))
+		}
+		return out
+	}
+	if got, want := roles(history), []string{"user", "user", "system"}; !slices.Equal(got, want) {
+		t.Fatalf("no later assistant: roles = %v, want %v", got, want)
+	}
+	later := append(slices.Clone(history), llm.AssistantText("answer"), llm.UserText("third"))
+	if got, want := roles(later), []string{"user", "user", "system", "assistant", "user"}; !slices.Equal(got, want) {
+		t.Fatalf("later assistant: roles = %v, want %v", got, want)
+	}
+	blank := slices.Clone(history)
+	blank[2] = llm.AssistantText(" \n")
+	if got, want := roles(blank), []string{"user", "user", "system"}; !slices.Equal(got, want) {
+		t.Fatalf("blank reply: roles = %v, want %v", got, want)
+	}
+	// Past a sent assistant turn, a system message no longer fails when
+	// the turn after it is dropped: it waits for the next user message.
+	afterSent := []llm.Message{
+		llm.UserText("hi"),
+		llm.AssistantText("hello"),
+		{Role: llm.RoleSystem, Parts: []llm.Part{llm.Text("updated guidance")}},
+		llm.AssistantParts(llm.ReasoningPart{Text: "foreign", Provider: "openai"}),
+		llm.UserText("again"),
+	}
+	if got, want := roles(afterSent), []string{"user", "assistant", "user", "system"}; !slices.Equal(got, want) {
+		t.Fatalf("after a sent turn: roles = %v, want %v", got, want)
+	}
+	// Blank text is dropped from a kept assistant turn too.
+	mixed, err := buildMessages([]llm.Message{llm.UserText("hi"), llm.AssistantParts(llm.Text(""), llm.Text("answer"))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := testutil.MustCompactJSON(t, mixed[1]); got != `{"content":[{"text":"answer","type":"text"}],"role":"assistant"}` {
+		t.Fatalf("assistant with blank text = %s", got)
+	}
+}
+
 func TestAnthropicSendsPointerPositionalParts(t *testing.T) {
 	req := positionalRequest("claude-haiku-5-5")
 	parts := req.Messages[2].Parts

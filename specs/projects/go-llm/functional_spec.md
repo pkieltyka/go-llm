@@ -457,7 +457,10 @@ that (pi's transcript model, `SystemMessage` with `sections`, `toolsAdded`,
   - Anthropic accepts a system message only after a user message (or an
     assistant turn ending in a server tool result), and a `tool_use` must be
     followed by its `tool_result`. So system messages are held until just
-    before the next assistant turn and adjacent ones merge, as pi does. A
+    before the next assistant turn that is sent (one with nothing to send,
+    such as another provider's reasoning only, is skipped) and adjacent
+    ones merge, as pi does. Blank assistant text is dropped, since
+    Anthropic rejects empty text blocks. A
     system message that would directly follow an assistant turn (a
     prefill, or consecutive assistant turns) fails locally with
     `ErrBadRequest`.
@@ -757,7 +760,13 @@ natively, so this is where cross-adapter drift is prevented):
 Cost sourcing:
 
 1. **Provider-reported** (OpenRouter reports `usage.cost` in USD on every
-   response) — used verbatim, `CostSource: "native"`.
+   response) — `CostSource: "native"`. With a BYOK key (`usage.is_byok`)
+   `usage.cost` is only OpenRouter's fee, so the billed total adds
+   `cost_details.upstream_inference_cost`, or its prompt and completion
+   parts when that is null or absent. A missing `is_byok` means a plain
+   key. A negative or non-finite cost, a malformed `is_byok`, or BYOK
+   accounting without a valid upstream cost is not reported and falls
+   through to the estimate.
 2. **Estimated** (`CostSource: "estimated"`) — an optional, user-overridable price table
    (per provider/model: USD per MTok input/output/cache-read/cache-write).
    Pricing may include ascending input-occupancy tiers. The highest threshold

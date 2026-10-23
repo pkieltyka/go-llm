@@ -155,7 +155,7 @@ type Usage struct {
 // CostUSD provenance values for Usage.CostSource.
 const (
 	// CostSourceNative marks a cost reported by the provider itself
-	// (billing-grade, e.g. OpenRouter usage.cost).
+	// (billing-grade, e.g. OpenRouter's billed total).
 	CostSourceNative = "native"
 	// CostSourceEstimated marks a cost computed from a price table
 	// (best-effort estimate, not billing data).

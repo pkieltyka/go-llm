@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	sdk "github.com/anthropics/anthropic-sdk-go"
@@ -188,8 +189,9 @@ func applyOptions(options *Options, params *sdk.MessageNewParams) {
 // as role "system". Anthropic accepts one only after a user message (or an
 // assistant turn ending in a server tool result), and a tool_use must be
 // followed directly by its tool_result, so system messages are held back
-// until just before the next assistant turn, as pi does, and adjacent ones
-// are merged.
+// until just before the next assistant turn that is sent, as pi does, and
+// adjacent ones are merged. Blank assistant text is dropped, since Anthropic
+// rejects empty text blocks.
 func buildMessages(messages []llm.Message) ([]sdk.MessageParam, error) {
 	out := make([]sdk.MessageParam, 0, len(messages))
 	var pending []sdk.ContentBlockParamUnion
@@ -213,21 +215,28 @@ func buildMessages(messages []llm.Message) ([]sdk.MessageParam, error) {
 			pending = append(pending, blocks...)
 			continue
 		}
+		parts, blank := msg.Parts, false
 		if msg.Role == llm.RoleAssistant {
-			if err := flush(); err != nil {
-				return nil, err
-			}
+			parts, blank = withoutBlankText(parts)
 		}
-		blocks, filtered, err := buildContentBlocksDetailed(msg.Parts)
+		blocks, filtered, err := buildContentBlocksDetailed(parts)
 		if err != nil {
 			return nil, err
 		}
+		filtered = filtered || blank
 		role, err := messageRole(msg.Role)
 		if err != nil {
 			return nil, err
 		}
-		if msg.Role == llm.RoleAssistant && len(blocks) == 0 && filtered {
-			continue
+		if msg.Role == llm.RoleAssistant {
+			// A dropped assistant turn is not sent, so held system
+			// messages wait for the next one that is (pi #11091).
+			if len(blocks) == 0 && filtered {
+				continue
+			}
+			if err := flush(); err != nil {
+				return nil, err
+			}
 		}
 		out = append(out, sdk.MessageParam{Role: role, Content: blocks})
 	}
@@ -235,6 +244,27 @@ func buildMessages(messages []llm.Message) ([]sdk.MessageParam, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+// withoutBlankText drops whitespace-only text parts (another provider's
+// empty reply, say) and reports whether it dropped any.
+func withoutBlankText(parts []llm.Part) ([]llm.Part, bool) {
+	var out []llm.Part
+	for i, part := range parts {
+		if text, ok := providerutil.DerefPart(part).(llm.TextPart); ok && strings.TrimSpace(text.Text) == "" {
+			if out == nil {
+				out = append(make([]llm.Part, 0, len(parts)), parts[:i]...)
+			}
+			continue
+		}
+		if out != nil {
+			out = append(out, part)
+		}
+	}
+	if out == nil {
+		return parts, false
+	}
+	return out, true
 }
 
 // systemMessageBlocks converts a system message sent in place: text as is,
