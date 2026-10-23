@@ -3,7 +3,7 @@ PNPM ?= pnpm
 GOLANGCI_LINT_VERSION ?= v2.14.0
 GOVULNCHECK_VERSION ?= v1.5.0
 GO_MIN_VERSION ?= 1.26.0
-MODEL_SOURCE_DIR ?= scripts/model-sources/2026-08-26
+MODEL_SOURCE_DIR ?= scripts/model-sources/2026-10-23
 MODEL_ARGS ?=
 PATCH_BASE ?= HEAD
 # Nested modules with their own go.mod (integrations kept out of the root

@@ -1,17 +1,17 @@
 {
   "schema_version": 1,
   "generator": "go-llm-model-snapshot/v1",
-  "generated_at": "2026-10-22T20:56:49.508Z",
+  "generated_at": "2026-10-23T13:27:36.033Z",
   "sources": [
     {
       "id": "models.dev",
       "url": "https://models.dev/api.json",
-      "sha256": "fb43d87ae4f5d28f2467baedce982615c7ed30cd492e05ca27c0cc4cbbc6fa0b"
+      "sha256": "1a6a85fbf2d7a79673ecb94933f16091534a8e6824ac7a231c202ab02cbd68b8"
     },
     {
       "id": "openrouter",
       "url": "https://openrouter.ai/api/v1/models",
-      "sha256": "108fd0607d2196ee3bee21b5928de33114b7c1714874508526b5af7d478dcab3"
+      "sha256": "c83085e039f3f311fb4acf721971680db8dfc46200b7a867fbd04c145258b9c0"
     },
     {
       "id": "overrides",
@@ -2365,9 +2365,9 @@
       "context_window": 1048576,
       "max_output_tokens": 131072,
       "pricing": {
-        "input_per_mtok": 0.04444,
-        "output_per_mtok": 0.13332,
-        "cache_read_per_mtok": 0.0014140000000000001
+        "input_per_mtok": 0.047080000000000004,
+        "output_per_mtok": 0.14124,
+        "cache_read_per_mtok": 0.001498
       },
       "supported_efforts": [
         "none",
@@ -2403,9 +2403,9 @@
       "context_window": 1048576,
       "max_output_tokens": 384000,
       "pricing": {
-        "input_per_mtok": 0.442656,
-        "output_per_mtok": 0.885312,
-        "cache_read_per_mtok": 0.036888
+        "input_per_mtok": 0.892272,
+        "output_per_mtok": 1.784544,
+        "cache_read_per_mtok": 0.07435599999999999
       },
       "supported_efforts": [
         "none",
@@ -3124,9 +3124,9 @@
       "context_window": 262144,
       "max_output_tokens": 235929,
       "pricing": {
-        "input_per_mtok": 0.0765,
-        "output_per_mtok": 0.255,
-        "cache_read_per_mtok": 0.042499999999999996
+        "input_per_mtok": 0.09,
+        "output_per_mtok": 0.3,
+        "cache_read_per_mtok": 0.049999999999999996
       },
       "canonical_id": "google/gemma-4-26b-a4b-it"
     },
@@ -3780,7 +3780,7 @@
       "provider": "openrouter",
       "id": "minimax/minimax-m3.1-flash",
       "display_name": "MiniMax: MiniMax M3.1 Flash",
-      "context_window": 1000000,
+      "context_window": 1048576,
       "max_output_tokens": 524288,
       "pricing": {
         "input_per_mtok": 0.15,
@@ -4109,8 +4109,8 @@
       "context_window": 256000,
       "max_output_tokens": 16384,
       "pricing": {
-        "input_per_mtok": 0.09375,
-        "output_per_mtok": 0.25
+        "input_per_mtok": 0.075,
+        "output_per_mtok": 0.19999999999999998
       },
       "canonical_id": "mistralai/mistral-small-3.2-24b-instruct"
     },
@@ -4236,7 +4236,7 @@
       "pricing": {
         "input_per_mtok": 0.6712,
         "output_per_mtok": 3.35,
-        "cache_read_per_mtok": 0.18
+        "cache_read_per_mtok": 0.15
       },
       "canonical_id": "moonshotai/kimi-k2.7-code"
     },
@@ -6797,8 +6797,8 @@
       "context_window": 262144,
       "max_output_tokens": 65536,
       "pricing": {
-        "input_per_mtok": 0.26,
-        "output_per_mtok": 2.08
+        "input_per_mtok": 0.39999999999999997,
+        "output_per_mtok": 3.1999999999999997
       },
       "canonical_id": "qwen/qwen3.5-122b-a10b"
     },
@@ -6846,11 +6846,10 @@
       "id": "qwen/qwen3.5-9b",
       "display_name": "Qwen: Qwen3.5-9B",
       "context_window": 262144,
-      "max_output_tokens": 65536,
+      "max_output_tokens": 235929,
       "pricing": {
-        "input_per_mtok": 0.08,
-        "output_per_mtok": 0.13,
-        "cache_read_per_mtok": 0.04
+        "input_per_mtok": 0.16999999999999998,
+        "output_per_mtok": 0.25
       },
       "canonical_id": "qwen/qwen3.5-9b"
     },
@@ -7076,11 +7075,11 @@
       "id": "qwen/qwen3.8-27b",
       "display_name": "Qwen: Qwen3.8 27B",
       "context_window": 1000000,
-      "max_output_tokens": 65536,
+      "max_output_tokens": 235929,
       "pricing": {
-        "input_per_mtok": 0.04,
-        "output_per_mtok": 1.35,
-        "cache_read_per_mtok": 0.018
+        "input_per_mtok": 0.19999999999999998,
+        "output_per_mtok": 2.5,
+        "cache_read_per_mtok": 0.09
       },
       "supported_efforts": [
         "none",
@@ -7474,9 +7473,9 @@
       "context_window": 262144,
       "max_output_tokens": 128000,
       "pricing": {
-        "input_per_mtok": 0.0825,
-        "output_per_mtok": 0.33,
-        "cache_read_per_mtok": 0.020625
+        "input_per_mtok": 0.13199999999999998,
+        "output_per_mtok": 0.5279999999999999,
+        "cache_read_per_mtok": 0.032999999999999995
       },
       "supported_efforts": [
         "none",
@@ -7510,9 +7509,9 @@
       "context_window": 1048576,
       "max_output_tokens": 64000,
       "pricing": {
-        "input_per_mtok": 0.7505999999999999,
-        "output_per_mtok": 2.2509,
-        "cache_read_per_mtok": 0.0378
+        "input_per_mtok": 0.834,
+        "output_per_mtok": 2.501,
+        "cache_read_per_mtok": 0.041999999999999996
       },
       "supported_efforts": [
         "none",
@@ -8181,11 +8180,11 @@
       "id": "z-ai/glm-5.3",
       "display_name": "Z.ai: GLM 5.3",
       "context_window": 1048576,
-      "max_output_tokens": 262144,
+      "max_output_tokens": 943718,
       "pricing": {
-        "input_per_mtok": 0.7,
-        "output_per_mtok": 2.2,
-        "cache_read_per_mtok": 0.13
+        "input_per_mtok": 0.079,
+        "output_per_mtok": 1.4,
+        "cache_read_per_mtok": 0.078
       },
       "supported_efforts": [
         "low",
@@ -8388,9 +8387,9 @@
       "context_window": 1048576,
       "max_output_tokens": 943718,
       "pricing": {
-        "input_per_mtok": 0.07,
-        "output_per_mtok": 0.5,
-        "cache_read_per_mtok": 0.008
+        "input_per_mtok": 0.045,
+        "output_per_mtok": 0.6,
+        "cache_read_per_mtok": 0.006
       },
       "supported_efforts": [
         "none",
@@ -8407,9 +8406,9 @@
       "context_window": 1048576,
       "max_output_tokens": 393216,
       "pricing": {
-        "input_per_mtok": 0.1307,
-        "output_per_mtok": 8,
-        "cache_read_per_mtok": 0.13
+        "input_per_mtok": 0.20592000000000002,
+        "output_per_mtok": 0.61776,
+        "cache_read_per_mtok": 0.006552
       },
       "supported_efforts": [
         "none",
@@ -8424,11 +8423,11 @@
       "id": "~deepseek/deepseek-v4-flash-latest",
       "display_name": "DeepSeek: DeepSeek V4 Flash Latest",
       "context_window": 1048576,
-      "max_output_tokens": 943718,
+      "max_output_tokens": 131072,
       "pricing": {
-        "input_per_mtok": 0.0422,
-        "output_per_mtok": 0.1729,
-        "cache_read_per_mtok": 0.0275
+        "input_per_mtok": 0.047080000000000004,
+        "output_per_mtok": 0.14124,
+        "cache_read_per_mtok": 0.001498
       },
       "supported_efforts": [
         "none",
@@ -8493,7 +8492,7 @@
       "max_output_tokens": 943718,
       "pricing": {
         "input_per_mtok": 0.238,
-        "output_per_mtok": 24,
+        "output_per_mtok": 16,
         "cache_read_per_mtok": 0.228
       },
       "supported_efforts": [
