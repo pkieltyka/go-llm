@@ -146,6 +146,25 @@ func TestErrorClassCoversEveryExportedSentinel(t *testing.T) {
 	}
 }
 
+func TestErrorClassesListsEveryClassInPrecedenceOrder(t *testing.T) {
+	classes := ErrorClasses()
+	if len(classes) != len(errorClasses) {
+		t.Fatalf("ErrorClasses() has %d classes, want %d", len(classes), len(errorClasses))
+	}
+	for i, class := range errorClasses {
+		if classes[i] != class.err {
+			t.Fatalf("ErrorClasses()[%d] = %v, want %v", i, classes[i], class.err)
+		}
+	}
+	if classes[0] != context.Canceled || classes[len(classes)-1] != ErrServer {
+		t.Fatalf("ErrorClasses() order = %v", classes)
+	}
+	classes[0] = nil
+	if ErrorClasses()[0] != context.Canceled {
+		t.Fatal("ErrorClasses must return a copy")
+	}
+}
+
 func TestErrorClassPrecedence(t *testing.T) {
 	cases := []struct {
 		err  error

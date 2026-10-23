@@ -1164,6 +1164,8 @@ message matching):
   `ErrUnsupported`, `ErrInsufficientCredits`, `ErrRateLimited`,
   `ErrOverloaded`, `ErrTimeout`, `ErrAuth`, `ErrPermission`, `ErrNotFound`,
   login sentinels), then the generic `ErrBadRequest` and `ErrServer`.
+  `llm.ErrorClasses()` returns that full list in precedence order, so a
+  wrapper that snapshots an error can keep every class the original matched.
 - `llm.SafeErrorInfo(err)` returns a serializable `llm.ErrorInfo{Class,
   Provider, HTTPStatus, RetryAfter}` following the `SafeSummary` policy: it
   never contains `Code`, `Message`, `Metadata`, or `RawBody`. `Class` uses

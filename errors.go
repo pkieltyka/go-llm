@@ -172,6 +172,20 @@ func ErrorClass(err error) error {
 	return nil
 }
 
+// ErrorClasses returns every class ErrorClass can return, in its precedence
+// order: context.Canceled, context.DeadlineExceeded, then the package
+// sentinels, ending with the generic ErrBadRequest and ErrServer. A wrapper
+// that snapshots an error can test each with errors.Is to keep every
+// classification the original matched, including new sentinels as go-llm
+// adds them. The returned slice is a copy.
+func ErrorClasses() []error {
+	classes := make([]error, len(errorClasses))
+	for i, class := range errorClasses {
+		classes[i] = class.err
+	}
+	return classes
+}
+
 // ErrorInfo is a serializable, log-safe description of an error, suitable
 // for events, metrics labels, and durable records. It never carries
 // provider-controlled detail (ProviderError Code, Message, Metadata, or
