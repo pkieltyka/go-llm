@@ -2,7 +2,7 @@
 
 This checklist is version-neutral. Replace `$VERSION` with the intended tag.
 The supported interval starts at Go 1.26.0. Release verification requires the
-pinned `.go-version` (currently 1.27.0) or newer. CI exercises the minimum,
+pinned `.go-version` (currently 1.27.3) or newer. CI exercises the minimum,
 the pin, and the current stable toolchain.
 
 ## Credential-Free, Network-Dependent Gates

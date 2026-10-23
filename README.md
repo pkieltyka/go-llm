@@ -85,7 +85,7 @@ go get github.com/pkieltyka/go-llm
 ```
 
 Go 1.26 is the minimum version for users of the module. Development and releases
-use Go 1.27.0 or newer, while CI retains a Go 1.26 compatibility lane. Provider SDK
+use Go 1.27.3 or newer, while CI retains a Go 1.26 compatibility lane. Provider SDK
 dependencies are pulled only when importing provider packages.
 
 ## Quick start
