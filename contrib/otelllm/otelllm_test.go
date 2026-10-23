@@ -395,3 +395,46 @@ func TestAbandonedStreamRecordsNoZeroUsageAndTokensLackErrorType(t *testing.T) {
 		}
 	}
 }
+
+// Pointer events are valid stream events: the first one still records the
+// first-chunk telemetry, and the consumer receives it as sent.
+func TestPointerEventsRecordFirstChunk(t *testing.T) {
+	h := newHarness(t)
+	text := &llm.TextDelta{Index: 0, Text: "hello"}
+	p := rawStreamProvider{Provider: llmtest.New(llmtest.WithName("custom")), events: []llm.Event{
+		&llm.MessageStart{ID: "r"},
+		text,
+		&llm.MessageEnd{StopReason: llm.StopReasonEndTurn},
+	}}
+	var sawPointer bool
+	for event, err := range llm.Wrap(p, h.mw).ChatStream(context.Background(), &llm.Request{Model: "m"}) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		sawPointer = sawPointer || event == llm.Event(text)
+	}
+	if !sawPointer {
+		t.Fatal("the consumer did not receive the pointer event as sent")
+	}
+	if _, ok := attrMap(h.onlySpan(t).Attributes)["gen_ai.response.time_to_first_chunk"]; !ok {
+		t.Fatal("first chunk not recorded for a pointer TextDelta")
+	}
+}
+
+// Ranging a wrapped stream again never sends another request.
+func TestWrappedStreamStaysSingleUse(t *testing.T) {
+	h := newHarness(t)
+	p := llmtest.New()
+	p.EnqueueStream(llm.MessageStart{}, llm.TextDelta{Text: "a"}, llm.MessageEnd{StopReason: llm.StopReasonEndTurn})
+	p.EnqueueStream(llm.MessageStart{}, llm.TextDelta{Text: "b"}, llm.MessageEnd{StopReason: llm.StopReasonEndTurn})
+	seq := llm.Wrap(p, h.mw).ChatStream(context.Background(), &llm.Request{Model: "m"})
+	if _, err := llm.Collect(seq); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := llm.Collect(seq); !errors.Is(err, llm.ErrBadRequest) {
+		t.Fatalf("second range = %v, want ErrBadRequest", err)
+	}
+	if n := len(p.Requests()); n != 1 {
+		t.Fatalf("provider requests = %d, want 1", n)
+	}
+}

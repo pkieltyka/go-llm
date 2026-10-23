@@ -182,7 +182,7 @@ func handoffProvider(ctx context.Context, t *testing.T, root string, cfg Config,
 			t.Fatalf("invalid openai handoff configuration: %v", err)
 		}
 		opts := []openai.Option{
-			openAILiveAuth(root, providerCfg),
+			openAILiveAuth(root, providerCfg, secrets),
 			openai.WithMaxRetries(0),
 		}
 		if providerCfg.BaseURL != "" {
@@ -192,7 +192,7 @@ func handoffProvider(ctx context.Context, t *testing.T, root string, cfg Config,
 		if err != nil {
 			t.Fatalf("openai.New returned error: %v", err)
 		}
-		return p, orDefault(providerCfg.Model, openAICheapModel), true
+		return p, openAIDefaultModel(providerCfg), true
 	case "vllm":
 		providerCfg := cfg.Provider("vllm", "")
 		if err := ValidateLiveProviderConfig(name, providerCfg); err != nil {

@@ -18,10 +18,6 @@ import (
 )
 
 const (
-	openAICheapModel = "gpt-4.1-mini"
-	// openAISignInModel is the cheap default under Sign in with ChatGPT,
-	// which serves only the subscription catalog's models.
-	openAISignInModel    = "gpt-5.6-luna"
 	openAIReasoningModel = "gpt-5.1-mini"
 	// openAIPositionalModel takes system messages and tool changes in place
 	// with an API key; the Sign in with ChatGPT default already does.
@@ -41,13 +37,7 @@ func TestLiveOpenAI(t *testing.T) {
 	}
 	providerCfg := cfg.Provider("openai", "OPENAI_API_KEY")
 	requireLiveProviderConfig(t, "openai", providerCfg)
-	model := providerCfg.Model
-	if model == "" {
-		model = openAICheapModel
-		if providerCfg.Auth.Type == "oauth" {
-			model = openAISignInModel
-		}
-	}
+	model := openAIDefaultModel(providerCfg)
 
 	captures := &CaptureLog{}
 	secrets := NewSecretSet(providerCfg.Auth.Key, os.Getenv("OPENAI_API_KEY"), providerCfg.Auth.Access, providerCfg.Auth.Refresh)
@@ -57,7 +47,7 @@ func TestLiveOpenAI(t *testing.T) {
 		ScheduleFixtureRecording(t, path, captures, secrets, &scenarioReport, *recordAllowIncomplete)
 	}
 	opts := []openaiProvider.Option{
-		openAILiveAuth(root, providerCfg),
+		openAILiveAuth(root, providerCfg, secrets),
 		openaiProvider.WithMaxRetries(0),
 		openaiProvider.WithWireCapture(captures.Capture),
 	}
@@ -84,11 +74,12 @@ func TestLiveOpenAI(t *testing.T) {
 
 // openAILiveAuth authenticates the live OpenAI suites: a Sign in with ChatGPT
 // OAuth entry resolves through a file store over gollm-test.json, so a
-// refreshed token is written back under the store's lock before use; an API
-// key is passed directly.
-func openAILiveAuth(root string, providerCfg ProviderConfig) openaiProvider.Option {
+// refreshed token is written back under the store's lock before use, and
+// every credential the store hands out joins secrets for fixture redaction;
+// an API key is passed directly.
+func openAILiveAuth(root string, providerCfg ProviderConfig, secrets *SecretSet) openaiProvider.Option {
 	if providerCfg.Auth.Type == "oauth" {
-		return openaiProvider.WithCredentials(authstore.NewFile(filepath.Join(root, "gollm-test.json")))
+		return openaiProvider.WithCredentials(RecordingCredentialStore(authstore.NewFile(filepath.Join(root, "gollm-test.json")), secrets))
 	}
 	return openaiProvider.WithAPIKey(providerCfg.Auth.Key)
 }

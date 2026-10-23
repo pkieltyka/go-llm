@@ -135,3 +135,20 @@ func TestLoadConfigUsesAuthFileFormatsForAnthropicAndOpenAIOAuth(t *testing.T) {
 		t.Fatalf("openai oauth config = %+v", chatgpt)
 	}
 }
+
+// The main and handoff OpenAI suites share one default: the override, else
+// the subscription model for Sign in with ChatGPT, else the cheap API model.
+func TestOpenAIDefaultModel(t *testing.T) {
+	for name, tc := range map[string]struct {
+		cfg  ProviderConfig
+		want string
+	}{
+		"api key":  {ProviderConfig{Auth: llm.AuthCredential{Type: "api_key", Key: "k"}}, openAICheapModel},
+		"oauth":    {ProviderConfig{Auth: llm.AuthCredential{Type: "oauth", Access: "a"}}, openAISignInModel},
+		"override": {ProviderConfig{Auth: llm.AuthCredential{Type: "oauth", Access: "a"}, Model: "gpt-6-luna"}, "gpt-6-luna"},
+	} {
+		if got := openAIDefaultModel(tc.cfg); got != tc.want {
+			t.Errorf("%s: default = %q, want %q", name, got, tc.want)
+		}
+	}
+}

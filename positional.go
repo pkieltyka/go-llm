@@ -249,8 +249,10 @@ func validateTranscript(caps capabilitySet, req *Request) ([]Tool, error) {
 			default:
 				return nil, fmt.Errorf("%w: system messages cannot carry %T", ErrBadRequest, p)
 			}
+			// Each delta applies before the next is checked, as replay
+			// applies them (§7A).
+			state.apply([]Part{part}, false)
 		}
-		state.apply(msg.Parts, false)
 	}
 	return state.tools, nil
 }

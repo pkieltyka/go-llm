@@ -234,3 +234,18 @@ func TestModelTableCarriesPositionalBehavior(t *testing.T) {
 		t.Errorf("aggregator rows must not inherit behavior: %+v", info.Behavior)
 	}
 }
+
+// Each delta is checked against the state the earlier parts of its own
+// message produce, as replay applies them (§7A).
+func TestValidateRequestAppliesDeltasInOrder(t *testing.T) {
+	caps := []Capability{CapabilityTools}
+	request := func(parts ...Part) *Request {
+		return &Request{Model: "m", Tools: []Tool{tool("a")}, Messages: []Message{UserText("u"), system(parts...)}}
+	}
+	if err := ValidateRequest(caps, request(ToolsDeltaPart{Added: []Tool{tool("b")}}, ToolsDeltaPart{Removed: []string{"b"}})); err != nil {
+		t.Fatalf("adding then removing a tool in one message: %v", err)
+	}
+	if err := ValidateRequest(caps, request(ToolsDeltaPart{Removed: []string{"a"}}, ToolsDeltaPart{Removed: []string{"a"}})); !errors.Is(err, ErrBadRequest) {
+		t.Fatalf("removing a tool twice in one message = %v, want ErrBadRequest", err)
+	}
+}

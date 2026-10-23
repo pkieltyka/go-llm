@@ -151,3 +151,23 @@ func RepoRoot(start string) (string, error) {
 		dir = parent
 	}
 }
+
+const (
+	openAICheapModel = "gpt-4.1-mini"
+	// openAISignInModel is the cheap default under Sign in with ChatGPT,
+	// which serves only the subscription catalog's models.
+	openAISignInModel = "gpt-5.6-luna"
+)
+
+// openAIDefaultModel is the model the live OpenAI suites use: the
+// configured override, else the cheap default for the credential type.
+func openAIDefaultModel(cfg ProviderConfig) string {
+	switch {
+	case cfg.Model != "":
+		return cfg.Model
+	case cfg.Auth.Type == "oauth":
+		return openAISignInModel
+	default:
+		return openAICheapModel
+	}
+}

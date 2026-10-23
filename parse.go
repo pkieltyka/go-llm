@@ -363,12 +363,32 @@ func cloneTools(tools []Tool) []Tool {
 	return out
 }
 
+// cloneSchemaValue deep-copies raw and JSON-shaped schema values; other
+// values (typed schema structs, pointers) are shared.
 func cloneSchemaValue(value any) any {
 	switch v := value.(type) {
 	case json.RawMessage:
 		return append(json.RawMessage(nil), v...)
 	case []byte:
 		return append([]byte(nil), v...)
+	case map[string]any:
+		if v == nil {
+			return v
+		}
+		out := make(map[string]any, len(v))
+		for key, item := range v {
+			out[key] = cloneSchemaValue(item)
+		}
+		return out
+	case []any:
+		if v == nil {
+			return v
+		}
+		out := make([]any, len(v))
+		for i, item := range v {
+			out[i] = cloneSchemaValue(item)
+		}
+		return out
 	default:
 		return value
 	}

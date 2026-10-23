@@ -142,6 +142,9 @@ func (f *File) locked(ctx context.Context, fn func(*authDocument) (bool, error))
 		return err
 	}
 	defer func() { _ = lock.Release() }()
+	if err := contextErr(ctx); err != nil {
+		return err // cancelled while taking the lock: fn never starts
+	}
 
 	doc, err := f.load()
 	if err != nil {
@@ -158,11 +161,42 @@ func (f *File) locked(ctx context.Context, fn func(*authDocument) (bool, error))
 	if err := lock.Check(); err != nil {
 		return err
 	}
-	target := f.path
-	if resolved, err := filepath.EvalSymlinks(f.path); err == nil {
-		target = resolved // keep a dotfile symlink pointing at the store
+	target, err := writeTarget(f.path)
+	if err != nil {
+		return err
 	}
 	return writeAtomic(target, data)
+}
+
+// maxSymlinkHops bounds symlink resolution, like the kernel's ELOOP limit.
+const maxSymlinkHops = 40
+
+// writeTarget resolves path through symlinks so a write replaces the
+// target, keeping a dotfile symlink pointing at the store. The final target
+// may not exist yet (first login through a dangling link); the link is
+// followed anyway instead of being replaced by a regular file.
+func writeTarget(path string) (string, error) {
+	for range maxSymlinkHops {
+		resolved, err := filepath.EvalSymlinks(path)
+		if err == nil {
+			return resolved, nil
+		}
+		info, lerr := os.Lstat(path)
+		if lerr != nil || info.Mode()&os.ModeSymlink == 0 {
+			// Nothing at path yet, or an error EvalSymlinks will
+			// report again on the write: write the path itself.
+			return path, nil
+		}
+		next, err := os.Readlink(path)
+		if err != nil {
+			return "", err
+		}
+		if !filepath.IsAbs(next) {
+			next = filepath.Join(filepath.Dir(path), next)
+		}
+		path = next
+	}
+	return "", fmt.Errorf("authstore: %s: too many levels of symbolic links", path)
 }
 
 type authDocument struct {

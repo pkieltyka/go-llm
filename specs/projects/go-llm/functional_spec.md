@@ -666,7 +666,10 @@ A single, minimal interceptor seam:
   machinery).
 - Applied by **composition**, not provider support:
   `llm.Wrap(provider, mw...)` returns a decorated `Provider`. Adapters know
-  nothing about middleware.
+  nothing about middleware. The stream a wrapped provider returns is
+  single-use itself (§4.1), so middleware that defers its work, and the
+  call to `next`, into the iterator never re-sends a request when a caller
+  ranges the stream again.
 - Use cases: tracing, redaction, request mutation, custom policies. Shipped
   built-ins on this seam: the observability trio (§17B),
   `RetryDroppedToolCalls` (§7), and `ContextGuard` (§13A); third-party
@@ -956,8 +959,10 @@ asks (ARCH §10: no silent clamping).
     re-measure. This is the go-agent compaction trigger: the primitive
     lives here and the policy in go-agent.
   - With `ClampMaxTokens`, it lowers an explicit `MaxTokens` on a copy of
-    the request, to fit the window and to a known `MaxOutputTokens`. It
-    never sets an unset `MaxTokens`: raising a provider's default can change
+    the request, to fit the window and to a known `MaxOutputTokens`. When
+    an inexact estimate leaves no room in the window, the request passes
+    through (the server decides) but the `MaxOutputTokens` clamp still
+    applies. It never sets an unset `MaxTokens`: raising a provider's default can change
     behavior (Anthropic's SDK requires streaming for large non-streaming
     budgets).
   - For `ChatStream`, the check runs when the stream is iterated.

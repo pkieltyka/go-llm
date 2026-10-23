@@ -217,3 +217,50 @@ func TestSignInWithChatGPTChatReadsTheStoreOnce(t *testing.T) {
 		t.Fatalf("store reads = %d, want 1", store.reads)
 	}
 }
+
+// slowStore is a credential store whose Read waits for its context to end,
+// like a file store waiting out another process's write.
+type slowStore struct {
+	llm.CredentialStore
+	deadline chan bool
+}
+
+func (s slowStore) Read(ctx context.Context, providerID string) (llm.AuthCredential, bool, error) {
+	_, ok := ctx.Deadline()
+	s.deadline <- ok
+	select {
+	case <-ctx.Done():
+		return llm.AuthCredential{}, false, ctx.Err()
+	case <-time.After(5 * time.Second):
+		return llm.AuthCredential{}, false, nil
+	}
+}
+
+// WithTimeout bounds the first credential read as well as the request.
+func TestTimeoutCoversCredentialRead(t *testing.T) {
+	store := slowStore{CredentialStore: authstore.NewMemory(nil), deadline: make(chan bool, 1)}
+	p, err := New(WithCredentials(store), WithBaseURL("http://127.0.0.1:1/v1"), WithMaxRetries(0), WithTimeout(10*time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := map[string]func() error{
+		"Chat": func() error {
+			_, err := p.Chat(context.Background(), &llm.Request{Model: "gpt-test", Messages: []llm.Message{llm.UserText("hi")}})
+			return err
+		},
+		"ChatStream": func() error {
+			_, err := llm.Collect(p.ChatStream(context.Background(), &llm.Request{Model: "gpt-test", Messages: []llm.Message{llm.UserText("hi")}}))
+			return err
+		},
+	}
+	for name, call := range calls {
+		start := time.Now()
+		err := call()
+		if !<-store.deadline {
+			t.Errorf("%s: the credential read had no deadline", name)
+		}
+		if err == nil || time.Since(start) > 2*time.Second {
+			t.Errorf("%s = %v after %v, want a prompt timeout", name, err, time.Since(start))
+		}
+	}
+}

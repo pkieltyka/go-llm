@@ -37,6 +37,10 @@ func NewMemory(initial llm.AuthFile) *Memory {
 
 func (m *Memory) String() string { return "authstore: memory (redacted)" }
 
+// GoString redacts the stored credentials from Go-syntax formatted output,
+// which would otherwise print the private map field by field.
+func (m *Memory) GoString() string { return "authstore.Memory{redacted}" }
+
 // Read returns the stored credential for providerID.
 func (m *Memory) Read(ctx context.Context, providerID string) (llm.AuthCredential, bool, error) {
 	if err := contextErr(ctx); err != nil {
@@ -99,13 +103,22 @@ func (m *Memory) acquire(ctx context.Context, providerID string) (func(), error)
 	return acquireChannel(ctx, lock)
 }
 
-// acquireChannel takes a one-slot semaphore, honoring ctx while waiting.
+// acquireChannel takes a one-slot semaphore, honoring ctx while waiting. An
+// already-cancelled ctx never acquires: select picks randomly between ready
+// cases, so cancellation is checked before and after.
 func acquireChannel(ctx context.Context, lock chan struct{}) (func(), error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	select {
 	case lock <- struct{}{}:
+		if err := ctx.Err(); err != nil {
+			<-lock
+			return nil, err
+		}
 		return func() { <-lock }, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()

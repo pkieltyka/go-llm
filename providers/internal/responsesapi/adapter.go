@@ -332,6 +332,11 @@ func (a Adapter) systemItems(msg llm.Message, inPlace *inPlaceTools) ([]response
 				}
 			}
 			if len(p.Added) > 0 {
+				// A later delta re-adding a tool cancels its pending
+				// removal notice: deltas apply in order (§7A).
+				removed = slices.DeleteFunc(removed, func(name string) bool {
+					return slices.ContainsFunc(p.Added, func(tool llm.Tool) bool { return tool.Name == name })
+				})
 				declared, err := inPlace.declare(p.Added, a.ProviderName)
 				if err != nil {
 					return nil, err

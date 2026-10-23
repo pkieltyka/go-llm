@@ -171,6 +171,10 @@ func knownEffort(effort llm.Effort) bool {
 // accepts only streaming requests.
 func (p *Provider) Chat(ctx context.Context, req *llm.Request) (*llm.Response, error) {
 	start := time.Now()
+	// The timeout covers the credential read too: a file store may wait
+	// out another process's write under its lock.
+	ctx, cancel := p.contextWithTimeout(ctx)
+	defer cancel()
 	ctx, signIn, err := p.signInWithChatGPT(ctx)
 	if err != nil {
 		p.logFailure(ctx, req, start, err)
@@ -179,9 +183,6 @@ func (p *Provider) Chat(ctx context.Context, req *llm.Request) (*llm.Response, e
 	if signIn {
 		return llm.Collect(func(yield func(llm.Event, error) bool) { p.stream(ctx, req, true, yield) })
 	}
-
-	ctx, cancel := p.contextWithTimeout(ctx)
-	defer cancel()
 
 	params, err := p.buildParams(req, false, false)
 	if err != nil {
@@ -207,6 +208,8 @@ func (p *Provider) Chat(ctx context.Context, req *llm.Request) (*llm.Response, e
 // ChatStream streams OpenAI Responses events as normalized go-llm events.
 func (p *Provider) ChatStream(ctx context.Context, req *llm.Request) iter.Seq2[llm.Event, error] {
 	return providerutil.SingleUse(providerName, func(yield func(llm.Event, error) bool) {
+		ctx, cancel := p.contextWithTimeout(ctx)
+		defer cancel()
 		ctx, signIn, err := p.signInWithChatGPT(ctx)
 		if err != nil {
 			p.logFailure(ctx, req, time.Now(), err)
@@ -217,10 +220,10 @@ func (p *Provider) ChatStream(ctx context.Context, req *llm.Request) iter.Seq2[l
 	})
 }
 
+// stream runs one streaming request; the caller has applied the provider
+// timeout to ctx.
 func (p *Provider) stream(ctx context.Context, req *llm.Request, signIn bool, yield func(llm.Event, error) bool) {
 	start := time.Now()
-	ctx, cancel := p.contextWithTimeout(ctx)
-	defer cancel()
 
 	params, err := p.buildParams(req, true, signIn)
 	if err != nil {

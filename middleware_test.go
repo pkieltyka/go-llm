@@ -5,6 +5,7 @@ import (
 	"errors"
 	"iter"
 	"strings"
+	"sync"
 	"testing"
 
 	llm "github.com/pkieltyka/go-llm"
@@ -289,5 +290,54 @@ func TestRetryDroppedToolCallsUsageTrackerOrdering(t *testing.T) {
 	stats := tracker.Stats()
 	if stats.Calls != 2 || stats.Usage.TotalTokens != 7 {
 		t.Fatalf("stats = %+v, want 2 calls and 7 total tokens", stats)
+	}
+}
+
+// A middleware that defers next into its iterator, like ContextGuard, must
+// not turn a second range, sequential or concurrent, into another request.
+func TestWrappedStreamStaysSingleUse(t *testing.T) {
+	lazy := llm.Middleware{Stream: func(next llm.StreamFunc) llm.StreamFunc {
+		return func(ctx context.Context, req *llm.Request) iter.Seq2[llm.Event, error] {
+			return func(yield func(llm.Event, error) bool) {
+				for event, err := range next(ctx, req) {
+					if !yield(event, err) {
+						return
+					}
+				}
+			}
+		}
+	}}
+	for name, mw := range map[string]llm.Middleware{
+		"lazy":          lazy,
+		"context guard": llm.ContextGuard(llm.GuardConfig{Window: 10000}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := llmtest.New()
+			for range 8 {
+				p.EnqueueStream(llm.MessageStart{}, llm.TextDelta{Text: "ok"}, llm.MessageEnd{StopReason: llm.StopReasonEndTurn})
+			}
+			seq := llm.Wrap(p, mw).ChatStream(context.Background(), &llm.Request{Model: "m", Messages: []llm.Message{llm.UserText("hi")}})
+			var wg sync.WaitGroup
+			var mu sync.Mutex
+			var rejected int
+			for range 4 {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					if _, err := llm.Collect(seq); errors.Is(err, llm.ErrBadRequest) {
+						mu.Lock()
+						rejected++
+						mu.Unlock()
+					}
+				}()
+			}
+			wg.Wait()
+			if _, err := llm.Collect(seq); !errors.Is(err, llm.ErrBadRequest) {
+				t.Fatalf("later range = %v, want ErrBadRequest", err)
+			}
+			if n := len(p.Requests()); n != 1 || rejected != 3 {
+				t.Fatalf("provider requests = %d, rejected ranges = %d; want 1 and 3", n, rejected)
+			}
+		})
 	}
 }

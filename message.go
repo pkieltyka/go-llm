@@ -186,10 +186,14 @@ func AssistantParts(parts ...Part) Message {
 // CloneParts returns a deep copy of parts. Pointer parts are normalized to
 // their value form (a typed nil pointer part becomes a nil element); byte
 // payloads (image and file data, tool-call
-// arguments, reasoning raw payloads, unknown-part data), cache hints, and
-// nested tool-result content are copied. Provider extension parts are shared
-// by reference because their concrete types live outside this package (the
-// same rule History.Messages documents). An empty or nil slice returns nil.
+// arguments, reasoning raw payloads, unknown-part data), cache hints,
+// nested tool-result content, and the tools a ToolsDeltaPart adds are
+// copied. A tool's InputSchema is copied when it is raw JSON or JSON-shaped
+// (map[string]any and []any, recursively); any other schema value, such as
+// a pointer to a schema struct, is shared, so treat it as immutable.
+// Provider extension parts are shared by reference because their concrete
+// types live outside this package (the same rule History.Messages
+// documents). An empty or nil slice returns nil.
 func CloneParts(parts []Part) []Part {
 	return cloneParts(parts)
 }
@@ -266,7 +270,7 @@ func clonePart(part Part) Part {
 		p.Cache = cloneCacheHint(p.Cache)
 		return p
 	case ToolsDeltaPart:
-		p.Added = append([]Tool(nil), p.Added...)
+		p.Added = cloneTools(p.Added)
 		p.Removed = append([]string(nil), p.Removed...)
 		p.Cache = cloneCacheHint(p.Cache)
 		return p

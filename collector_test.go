@@ -5,6 +5,8 @@ import (
 	"errors"
 	"iter"
 	"reflect"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -240,5 +242,37 @@ func TestResponseCloneDeepCopies(t *testing.T) {
 	}
 	if bare := (&Response{}).Clone(); bare.Parts != nil || bare.DroppedToolCalls != nil {
 		t.Fatal("Clone turned a nil slice into an empty one")
+	}
+}
+
+// Collecting a long stream copies its text a linear number of times: four
+// times the deltas must cost about four times the bytes, not sixteen.
+func TestCollectorTextIsLinear(t *testing.T) {
+	allocated := func(n int) uint64 {
+		events := make([]Event, 0, n+2)
+		events = append(events, MessageStart{})
+		for range n {
+			events = append(events, TextDelta{Text: strings.Repeat("x", 32)}, ReasoningDelta{Index: 1, Text: strings.Repeat("y", 32)})
+		}
+		events = append(events, MessageEnd{StopReason: StopReasonEndTurn})
+		var before, after runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+		var c Collector
+		for _, event := range events {
+			if err := c.Add(event); err != nil {
+				t.Fatal(err)
+			}
+		}
+		resp, err := c.Finish(nil)
+		runtime.ReadMemStats(&after)
+		if err != nil || len(resp.Text()) != 32*n {
+			t.Fatalf("collected %d bytes, err %v", len(resp.Text()), err)
+		}
+		return after.TotalAlloc - before.TotalAlloc
+	}
+	small, large := allocated(1000), allocated(4000)
+	if large > 8*small {
+		t.Fatalf("allocations grew %d -> %d bytes for 4x the deltas; want linear", small, large)
 	}
 }

@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"iter"
-	"sync"
 )
 
 // Session is a thin, not-goroutine-safe conversation convenience wrapper.
@@ -128,18 +127,7 @@ func (s *Session) Continue(ctx context.Context) (*Response, error) {
 // turns or cross-truncate history on a failed call.
 func (s *Session) ChatStream(ctx context.Context, parts ...Part) iter.Seq2[Event, error] {
 	pendingParts := cloneParts(parts)
-	var consumedMu sync.Mutex
-	consumed := false
-	return func(yield func(Event, error) bool) {
-		consumedMu.Lock()
-		if consumed {
-			consumedMu.Unlock()
-			yield(nil, fmt.Errorf("%w: session stream already consumed", ErrBadRequest))
-			return
-		}
-		consumed = true
-		consumedMu.Unlock()
-
+	return singleUse("session", func(yield func(Event, error) bool) {
 		if s == nil || s.provider == nil {
 			yield(nil, fmt.Errorf("%w: nil session provider", ErrBadRequest))
 			return
@@ -178,7 +166,7 @@ func (s *Session) ChatStream(ctx context.Context, parts ...Part) iter.Seq2[Event
 		resp, _ := collector.Finish(nil)
 		s.appendResponse(resp)
 		committed = true
-	}
+	})
 }
 
 // AddToolResults appends grouped tool results to the session history.

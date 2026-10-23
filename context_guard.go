@@ -174,9 +174,13 @@ func (g *contextGuard) check(ctx context.Context, req *Request) (*Request, error
 		requested = info.MaxOutputTokens
 	}
 	fit, err := FitMaxTokens(count.Tokens, window, requested, g.cfg.Margin)
-	if err != nil || fit == req.MaxTokens {
+	if err != nil {
 		// An estimate that leaves no room is not grounds to fail or to
-		// shrink the budget to nothing; the server decides.
+		// shrink the budget to nothing; the server decides. The model's
+		// output limit is known independently, so it still applies.
+		fit = requested
+	}
+	if fit == req.MaxTokens {
 		return req, nil
 	}
 	clamped := *req

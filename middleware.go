@@ -2,7 +2,9 @@ package llm
 
 import (
 	"context"
+	"fmt"
 	"iter"
+	"sync"
 )
 
 // ChatFunc is the function shape middleware uses to decorate Chat.
@@ -81,6 +83,27 @@ func (p *wrappedProvider) Chat(ctx context.Context, req *Request) (*Response, er
 	return p.chat(ctx, req)
 }
 
+// ChatStream returns a single-use stream (§4.1) whatever the middleware
+// does: a middleware that defers its work, and next, into the iterator would
+// otherwise send another request on every range.
 func (p *wrappedProvider) ChatStream(ctx context.Context, req *Request) iter.Seq2[Event, error] {
-	return p.stream(ctx, req)
+	return singleUse(p.provider.Name(), p.stream(ctx, req))
+}
+
+// singleUse delegates the first range to seq; every later range, concurrent
+// or not, yields exactly one ErrBadRequest instead of ranging seq again.
+func singleUse(name string, seq iter.Seq2[Event, error]) iter.Seq2[Event, error] {
+	var mu sync.Mutex
+	consumed := false
+	return func(yield func(Event, error) bool) {
+		mu.Lock()
+		if consumed {
+			mu.Unlock()
+			yield(nil, fmt.Errorf("%w: %s stream already consumed", ErrBadRequest, name))
+			return
+		}
+		consumed = true
+		mu.Unlock()
+		seq(yield)
+	}
 }

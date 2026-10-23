@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -72,13 +73,21 @@ func TestStoreReadModifyDelete(t *testing.T) {
 func TestStoreModifySerializesConcurrentWriters(t *testing.T) {
 	for name, newStore := range stores(t) {
 		t.Run(name, func(t *testing.T) {
+			// Memory writers share one store; File writers each get their
+			// own value, modelling separate processes on one file.
+			shared := newStore()
+			writer := func() llm.CredentialStore {
+				if name == "memory" {
+					return shared
+				}
+				return newStore()
+			}
 			var wg sync.WaitGroup
 			for range 20 {
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					// A new store value per writer models separate processes for File.
-					_, _, err := newStore().Modify(context.Background(), "counter", func(current llm.AuthCredential, _ bool) (llm.AuthCredential, bool, error) {
+					_, _, err := writer().Modify(context.Background(), "counter", func(current llm.AuthCredential, _ bool) (llm.AuthCredential, bool, error) {
 						n, _ := strconv.Atoi(current.Key)
 						return llm.AuthCredential{Type: "api_key", Key: strconv.Itoa(n + 1)}, true, nil
 					})
@@ -88,10 +97,7 @@ func TestStoreModifySerializesConcurrentWriters(t *testing.T) {
 				}()
 			}
 			wg.Wait()
-			if name == "memory" {
-				return // each writer had its own memory store
-			}
-			cred, _, err := newStore().Read(context.Background(), "counter")
+			cred, _, err := writer().Read(context.Background(), "counter")
 			if err != nil || cred.Key != "20" {
 				t.Fatalf("counter = %q, %v; want 20 (no lost updates)", cred.Key, err)
 			}
@@ -290,5 +296,72 @@ func TestFileModifyHonorsContextWhileAnotherHolderHasTheLock(t *testing.T) {
 		return llm.AuthCredential{}, false, nil
 	}); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("contended Modify = %v, want DeadlineExceeded", err)
+	}
+}
+
+// Formatting the public store handle never reveals credential material,
+// whatever the verb (%#v would otherwise walk the private map).
+func TestMemoryFormattingRedactsCredentials(t *testing.T) {
+	canaries := llm.AuthCredential{
+		Type: "oauth", Key: "canary-key", Access: "canary-access", Refresh: "canary-refresh",
+		AccountID: "canary-account", ClientID: "canary-client",
+	}
+	store := authstore.NewMemory(llm.AuthFile{"openai": canaries})
+	for _, verb := range []string{"%v", "%+v", "%#v", "%s"} {
+		out := fmt.Sprintf(verb, store)
+		for _, secret := range []string{"canary-key", "canary-access", "canary-refresh", "canary-account", "canary-client"} {
+			if strings.Contains(out, secret) {
+				t.Fatalf("%s formatting leaked %s: %s", verb, secret, out)
+			}
+		}
+	}
+}
+
+// An already-cancelled context never starts fn or deletes: select between a
+// free lock and ctx.Done would otherwise pick either at random.
+func TestCancelledContextNeverModifies(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for name, newStore := range stores(t) {
+		t.Run(name, func(t *testing.T) {
+			store := newStore()
+			if _, _, err := store.Modify(context.Background(), "p", func(llm.AuthCredential, bool) (llm.AuthCredential, bool, error) {
+				return llm.AuthCredential{Type: "api_key", Key: "k"}, true, nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			for range 200 {
+				_, _, err := store.Modify(ctx, "p", func(llm.AuthCredential, bool) (llm.AuthCredential, bool, error) {
+					t.Fatal("fn ran under a cancelled context")
+					return llm.AuthCredential{}, false, nil
+				})
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("Modify = %v, want context.Canceled", err)
+				}
+				if err := store.Delete(ctx, "p"); !errors.Is(err, context.Canceled) {
+					t.Fatalf("Delete = %v, want context.Canceled", err)
+				}
+			}
+			if _, ok, err := store.Read(context.Background(), "p"); !ok || err != nil {
+				t.Fatalf("credential gone after cancelled calls: %v %v", ok, err)
+			}
+		})
+	}
+}
+
+// A nil context means no deadline, as for Memory: File never panics on it.
+func TestNilContextIsBackground(t *testing.T) {
+	for name, newStore := range stores(t) {
+		t.Run(name, func(t *testing.T) {
+			store := newStore()
+			if _, _, err := store.Modify(nil, "p", func(llm.AuthCredential, bool) (llm.AuthCredential, bool, error) { //nolint:staticcheck
+				return llm.AuthCredential{Type: "api_key", Key: "k"}, true, nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Delete(nil, "p"); err != nil { //nolint:staticcheck
+				t.Fatal(err)
+			}
+		})
 	}
 }

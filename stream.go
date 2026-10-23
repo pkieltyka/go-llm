@@ -365,6 +365,34 @@ func derefEvent(event Event) Event {
 	}
 }
 
+// textBlock and reasoningBlock accumulate a streamed block's text in a
+// builder, so collecting a long stream copies its text a linear, not
+// quadratic, number of times. blockPart turns them into the TextPart and
+// ReasoningPart they stand for.
+type textBlock struct{ text *strings.Builder }
+
+func (textBlock) part() {}
+
+type reasoningBlock struct {
+	text     *strings.Builder
+	raw      json.RawMessage
+	provider string
+}
+
+func (reasoningBlock) part() {}
+
+// blockPart returns the part an accumulating block stands for. The text is
+// the builder's current contents, which later writes never change.
+func blockPart(part Part) Part {
+	switch block := part.(type) {
+	case textBlock:
+		return Text(block.text.String())
+	case reasoningBlock:
+		return ReasoningPart{Text: block.text.String(), Raw: block.raw, Provider: block.provider}
+	}
+	return part
+}
+
 func appendTextDelta(blocks map[int]Part, index int, text string) error {
 	if text == "" {
 		return nil
@@ -374,15 +402,16 @@ func appendTextDelta(blocks map[int]Part, index int, text string) error {
 	}
 	part, ok := blocks[index]
 	if !ok {
-		blocks[index] = Text(text)
+		block := textBlock{text: &strings.Builder{}}
+		block.text.WriteString(text)
+		blocks[index] = block
 		return nil
 	}
-	textPart, ok := part.(TextPart)
+	block, ok := part.(textBlock)
 	if !ok {
-		return fmt.Errorf("%w: stream index %d changed from %T to TextDelta", ErrBadRequest, index, part)
+		return fmt.Errorf("%w: stream index %d changed from %T to TextDelta", ErrBadRequest, index, blockPart(part))
 	}
-	textPart.Text += text
-	blocks[index] = textPart
+	block.text.WriteString(text)
 	return nil
 }
 
@@ -398,25 +427,27 @@ func appendReasoningDelta(blocks map[int]Part, event ReasoningDelta) error {
 	}
 	part, ok := blocks[event.Index]
 	if !ok {
-		blocks[event.Index] = ReasoningPart{
-			Text:     event.Text,
-			Raw:      append(json.RawMessage(nil), event.Raw...),
-			Provider: event.Provider,
+		block := reasoningBlock{
+			text:     &strings.Builder{},
+			raw:      append(json.RawMessage(nil), event.Raw...),
+			provider: event.Provider,
 		}
+		block.text.WriteString(event.Text)
+		blocks[event.Index] = block
 		return nil
 	}
-	reasoningPart, ok := part.(ReasoningPart)
+	block, ok := part.(reasoningBlock)
 	if !ok {
-		return fmt.Errorf("%w: stream index %d changed from %T to ReasoningDelta", ErrBadRequest, event.Index, part)
+		return fmt.Errorf("%w: stream index %d changed from %T to ReasoningDelta", ErrBadRequest, event.Index, blockPart(part))
 	}
-	reasoningPart.Text += event.Text
+	block.text.WriteString(event.Text)
 	if len(event.Raw) != 0 {
-		reasoningPart.Raw = append(json.RawMessage(nil), event.Raw...)
+		block.raw = append(json.RawMessage(nil), event.Raw...)
 	}
 	if event.Provider != "" {
-		reasoningPart.Provider = event.Provider
+		block.provider = event.Provider
 	}
-	blocks[event.Index] = reasoningPart
+	blocks[event.Index] = block
 	return nil
 }
 
@@ -425,7 +456,7 @@ func startToolCall(blocks map[int]Part, event ToolCallStart) error {
 		return fmt.Errorf("%w: negative stream index %d", ErrBadRequest, event.Index)
 	}
 	if part, ok := blocks[event.Index]; ok {
-		return fmt.Errorf("%w: stream index %d already started as %T", ErrBadRequest, event.Index, part)
+		return fmt.Errorf("%w: stream index %d already started as %T", ErrBadRequest, event.Index, blockPart(part))
 	}
 	blocks[event.Index] = ToolCallPart{ID: event.ID, Name: event.Name}
 	return nil
@@ -438,7 +469,7 @@ func appendToolCallDelta(blocks map[int]Part, event ToolCallDelta) error {
 	}
 	call, ok := part.(ToolCallPart)
 	if !ok {
-		return fmt.Errorf("%w: stream index %d is %T, not ToolCallPart", ErrBadRequest, event.Index, part)
+		return fmt.Errorf("%w: stream index %d is %T, not ToolCallPart", ErrBadRequest, event.Index, blockPart(part))
 	}
 	call.Args = append(call.Args, event.ArgsFragment...)
 	blocks[event.Index] = call
@@ -461,7 +492,7 @@ func changeToolCallID(blocks map[int]Part, activeTools map[int]struct{}, event T
 	}
 	call, ok := part.(ToolCallPart)
 	if !ok {
-		return fmt.Errorf("%w: stream index %d is %T, not ToolCallPart", ErrBadRequest, event.Index, part)
+		return fmt.Errorf("%w: stream index %d is %T, not ToolCallPart", ErrBadRequest, event.Index, blockPart(part))
 	}
 	if call.ID != event.OldID {
 		return fmt.Errorf("%w: tool call ID change at index %d expected %q, got %q", ErrBadRequest, event.Index, call.ID, event.OldID)
@@ -477,7 +508,7 @@ func endToolCall(blocks map[int]Part, index int) error {
 		return fmt.Errorf("%w: tool call end before start for index %d", ErrBadRequest, index)
 	}
 	if _, ok := part.(ToolCallPart); !ok {
-		return fmt.Errorf("%w: stream index %d is %T, not ToolCallPart", ErrBadRequest, index, part)
+		return fmt.Errorf("%w: stream index %d is %T, not ToolCallPart", ErrBadRequest, index, blockPart(part))
 	}
 	return nil
 }
@@ -491,7 +522,7 @@ func finalizeCollectedResponse(resp *Response, blocks map[int]Part) *Response {
 
 	resp.Parts = make([]Part, 0, len(indexes))
 	for _, index := range indexes {
-		resp.Parts = append(resp.Parts, clonePart(blocks[index]))
+		resp.Parts = append(resp.Parts, clonePart(blockPart(blocks[index])))
 	}
 	sort.Slice(resp.DroppedToolCalls, func(i, j int) bool {
 		left, right := resp.DroppedToolCalls[i], resp.DroppedToolCalls[j]

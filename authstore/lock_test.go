@@ -198,3 +198,29 @@ func TestFileWritesThroughSymlink(t *testing.T) {
 		t.Fatalf("target not updated: %+v %v %v", cred, ok, err)
 	}
 }
+
+// The first write through a dangling symlink creates its target and keeps
+// the link (a dotfile pointing at a not-yet-created store).
+func TestFileWritesThroughDanglingSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "store", "real.json")
+	middle := filepath.Join(dir, "middle.json")
+	link := filepath.Join(dir, "auth.json")
+	if err := os.Symlink(filepath.Join("store", "real.json"), middle); err != nil {
+		t.Skip("symlinks unavailable:", err)
+	}
+	if err := os.Symlink(middle, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeKey(context.Background(), NewFile(link)); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{link, middle} {
+		if info, err := os.Lstat(path); err != nil || info.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("%s replaced by a regular file: %v %v", path, info, err)
+		}
+	}
+	if cred, ok, err := NewFile(target).Read(context.Background(), "p"); err != nil || !ok || cred.Key != "k" {
+		t.Fatalf("target not created: %+v %v %v", cred, ok, err)
+	}
+}

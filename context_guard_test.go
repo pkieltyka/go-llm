@@ -226,3 +226,20 @@ func TestContextGuardCounterErrorFallsBackToEstimate(t *testing.T) {
 		t.Fatalf("report = %+v, want an inexact estimate after the counter error", report)
 	}
 }
+
+// An inexact estimate past the window passes the request through, but the
+// model's known output limit still clamps MaxTokens.
+func TestContextGuardClampKeepsOutputLimitWhenEstimateOverflows(t *testing.T) {
+	p := llmtest.New(llmtest.WithModels(llm.ModelInfo{ID: "m", ContextWindow: 1000, MaxOutputTokens: 64}))
+	p.EnqueueResponse(okResponse())
+	req := &llm.Request{Model: "m", MaxTokens: 500, Messages: []llm.Message{llm.UserText(strings.Repeat("x", 4000))}}
+	if est := llm.EstimateRequestTokens(req); est <= 1000 {
+		t.Fatalf("estimate %d does not overflow the window; the test needs a larger prompt", est)
+	}
+	if _, err := llm.Wrap(p, llm.ContextGuard(llm.GuardConfig{ClampMaxTokens: true})).Chat(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.Requests()[0].MaxTokens; got != 64 {
+		t.Fatalf("MaxTokens = %d, want the model's 64 output limit", got)
+	}
+}

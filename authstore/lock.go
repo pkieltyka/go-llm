@@ -48,12 +48,18 @@ type fileLock struct {
 var errLockCompromised = errors.New("authstore: lock was taken over by another process; nothing was written")
 
 func acquireFileLock(ctx context.Context, lockPath string) (*fileLock, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
 		return nil, err
 	}
 	deadline := time.NewTimer(maxFileLockWait)
 	defer deadline.Stop()
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		lock, err := tryFileLock(lockPath)
 		if err != nil {
 			return nil, fmt.Errorf("authstore: lock %s: %w", lockPath, err)

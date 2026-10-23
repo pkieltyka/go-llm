@@ -258,9 +258,14 @@ func (t *telemetry) start(ctx context.Context, req *llm.Request, stream bool) (c
 }
 
 // observe records the first content chunk of a stream. Content is never read
-// beyond its presence.
+// beyond its presence. Pointer events count too: the consumer still receives
+// the event as sent.
 func (c *call) observe(event llm.Event) {
 	if c.sawChunk {
+		return
+	}
+	event, err := llm.NormalizeEvent(event)
+	if err != nil {
 		return
 	}
 	switch e := event.(type) {

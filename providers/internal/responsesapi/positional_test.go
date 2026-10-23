@@ -134,3 +134,36 @@ func TestResponsesPositionalEdgeCases(t *testing.T) {
 		t.Fatalf("BuildInput with an unfolded tools delta = %v", err)
 	}
 }
+
+// Deltas in one message apply in order: re-adding a tool a part after
+// removing it cancels the removal notice, and later notices never list it.
+func TestResponsesReAddInSameMessageCancelsRemoval(t *testing.T) {
+	tool := func(name string) llm.Tool { return llm.Tool{Name: name, InputSchema: map[string]any{"type": "object"}} }
+	req := &llm.Request{
+		Model: "gpt-5.6-luna",
+		Tools: []llm.Tool{tool("a")},
+		Messages: []llm.Message{
+			llm.UserText("hello"),
+			llm.AssistantText("hi"),
+			{Role: llm.RoleSystem, Parts: []llm.Part{
+				llm.ToolsDeltaPart{Removed: []string{"a"}},
+				llm.ToolsDeltaPart{Added: []llm.Tool{tool("a")}},
+			}},
+			llm.UserText("again"),
+			llm.AssistantText("ok"),
+			{Role: llm.RoleSystem, Parts: []llm.Part{llm.ToolsDeltaPart{Added: []llm.Tool{tool("b")}}}},
+			llm.UserText("more"),
+		},
+		ToolChoice: llm.ToolChoice{Mode: llm.ToolChoiceTool, Name: "a"},
+	}
+	params, err := positionalAdapter().BuildParams(req, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, _ := inputSummary(t, testutil.MustCompactJSON(t, params))
+	for _, item := range items {
+		if strings.Contains(item, "no longer available") || strings.Contains(item, "Still unavailable") {
+			t.Fatalf("wire marks the re-added tool unavailable: %q", items)
+		}
+	}
+}

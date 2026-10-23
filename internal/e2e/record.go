@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -209,6 +210,43 @@ func (s *SecretSet) Add(values ...string) {
 
 func (s *SecretSet) AddCredential(cred llm.AuthCredential) {
 	s.Add(cred.Key, cred.Access, cred.Refresh, cred.AccountID)
+}
+
+// RecordingCredentialStore wraps store so every credential read from it or
+// written through it (a refresh rotating the tokens) joins secrets before
+// the provider uses it, keeping rotated values out of recorded fixtures.
+func RecordingCredentialStore(store llm.CredentialStore, secrets *SecretSet) llm.CredentialStore {
+	return recordingStore{CredentialStore: store, secrets: secrets}
+}
+
+type recordingStore struct {
+	llm.CredentialStore
+	secrets *SecretSet
+}
+
+func (s recordingStore) Read(ctx context.Context, providerID string) (llm.AuthCredential, bool, error) {
+	cred, ok, err := s.CredentialStore.Read(ctx, providerID)
+	if ok {
+		s.secrets.AddCredential(cred)
+	}
+	return cred, ok, err
+}
+
+func (s recordingStore) Modify(ctx context.Context, providerID string, fn func(llm.AuthCredential, bool) (llm.AuthCredential, bool, error)) (llm.AuthCredential, bool, error) {
+	cred, ok, err := s.CredentialStore.Modify(ctx, providerID, func(current llm.AuthCredential, exists bool) (llm.AuthCredential, bool, error) {
+		if exists {
+			s.secrets.AddCredential(current)
+		}
+		next, write, err := fn(current, exists)
+		if write {
+			s.secrets.AddCredential(next)
+		}
+		return next, write, err
+	})
+	if ok {
+		s.secrets.AddCredential(cred)
+	}
+	return cred, ok, err
 }
 
 func (s *SecretSet) Values() []string {
