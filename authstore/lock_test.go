@@ -224,3 +224,114 @@ func TestFileWritesThroughDanglingSymlink(t *testing.T) {
 		t.Fatalf("target not created: %+v %v %v", cred, ok, err)
 	}
 }
+
+// A relative link under a symlinked directory resolves ".." against the
+// real directory, as the kernel does: the first write lands on the link's
+// real target, keeps the link, and reads back.
+func TestFileDanglingSymlinkResolvesDotDotPhysically(t *testing.T) {
+	for name, tc := range map[string]struct {
+		setup        func(t *testing.T, dir string)
+		link, target string
+	}{
+		"symlinked parent": {
+			// dotfiles/pi linked in as pi, pi/auth.json -> ../auth.json
+			setup: func(t *testing.T, dir string) {
+				mustMkdir(t, filepath.Join(dir, "dotfiles", "pi"))
+				mustSymlink(t, filepath.Join(dir, "dotfiles", "pi"), filepath.Join(dir, "pi"))
+				mustSymlink(t, "../auth.json", filepath.Join(dir, "pi", "auth.json"))
+			},
+			link: "pi/auth.json", target: "dotfiles/auth.json",
+		},
+		"dot-dot in the link value": {
+			setup: func(t *testing.T, dir string) {
+				mustMkdir(t, filepath.Join(dir, "real", "child"))
+				mustSymlink(t, filepath.Join(dir, "real", "child"), filepath.Join(dir, "alias"))
+				mustSymlink(t, "alias/../target.json", filepath.Join(dir, "auth.json"))
+			},
+			link: "auth.json", target: "real/target.json",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			tc.setup(t, dir)
+			link := filepath.Join(dir, tc.link)
+			store := NewFile(link)
+			if err := writeKey(context.Background(), store); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(filepath.Join(dir, tc.target)); err != nil {
+				t.Fatalf("real target not written: %v", err)
+			}
+			if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+				t.Fatalf("link replaced: %v %v", info, err)
+			}
+			if cred, ok, err := store.Read(context.Background(), "p"); err != nil || !ok || cred.Key != "k" {
+				t.Fatalf("read back through the link: %+v %v %v", cred, ok, err)
+			}
+		})
+	}
+}
+
+// ".." after a missing element has no real directory to climb from: the
+// write fails, as the kernel's lookup would, instead of landing where a read
+// through the link cannot find it.
+func TestFileDotDotAfterMissingElementFails(t *testing.T) {
+	dir := t.TempDir()
+	link := filepath.Join(dir, "auth.json")
+	if err := os.Symlink("missing/../real.json", link); err != nil {
+		t.Skip("symlinks unavailable:", err)
+	}
+	if err := writeKey(context.Background(), NewFile(link)); err == nil {
+		t.Fatal("write through missing/.. succeeded")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "real.json")); err == nil {
+		t.Fatal("a file was written at the lexically cleaned path")
+	}
+}
+
+// A relative store path with no directory (llm-cli --auth-file auth.json)
+// is written as given on first login.
+func TestFileRelativePathFirstWrite(t *testing.T) {
+	t.Chdir(t.TempDir())
+	store := NewFile("auth.json")
+	if err := writeKey(context.Background(), store); err != nil {
+		t.Fatal(err)
+	}
+	if cred, ok, err := store.Read(context.Background(), "p"); err != nil || !ok || cred.Key != "k" {
+		t.Fatalf("read back: %+v %v %v", cred, ok, err)
+	}
+}
+
+func mustMkdir(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mustSymlink(t *testing.T, value, link string) {
+	t.Helper()
+	if err := os.Symlink(value, link); err != nil {
+		t.Skip("symlinks unavailable:", err)
+	}
+}
+
+// A symlink loop fails the write and leaves the links alone.
+func TestFileSymlinkLoopFailsWithoutWriting(t *testing.T) {
+	dir := t.TempDir()
+	a, b := filepath.Join(dir, "a.json"), filepath.Join(dir, "b.json")
+	if err := os.Symlink("b.json", a); err != nil {
+		t.Skip("symlinks unavailable:", err)
+	}
+	if err := os.Symlink("a.json", b); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeKey(context.Background(), NewFile(a)); err == nil {
+		t.Fatal("write through a symlink loop succeeded")
+	}
+	for _, path := range []string{a, b} {
+		if info, err := os.Lstat(path); err != nil || info.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("%s replaced: %v %v", path, info, err)
+		}
+	}
+}

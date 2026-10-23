@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	llm "github.com/pkieltyka/go-llm"
 )
@@ -174,29 +175,80 @@ const maxSymlinkHops = 40
 // writeTarget resolves path through symlinks so a write replaces the
 // target, keeping a dotfile symlink pointing at the store. The final target
 // may not exist yet (first login through a dangling link); the link is
-// followed anyway instead of being replaced by a regular file.
+// followed anyway instead of being replaced by a regular file. A relative
+// link resolves against the link's physical directory, as the kernel does,
+// so ".." after a symlinked directory is not collapsed lexically.
 func writeTarget(path string) (string, error) {
 	for range maxSymlinkHops {
-		resolved, err := filepath.EvalSymlinks(path)
-		if err == nil {
+		if resolved, err := filepath.EvalSymlinks(path); err == nil {
 			return resolved, nil
 		}
-		info, lerr := os.Lstat(path)
-		if lerr != nil || info.Mode()&os.ModeSymlink == 0 {
-			// Nothing at path yet, or an error EvalSymlinks will
-			// report again on the write: write the path itself.
-			return path, nil
+		info, err := os.Lstat(path)
+		if err != nil || info.Mode()&os.ModeSymlink == 0 {
+			// Nothing at path yet, or an error the write will report
+			// again: write the path itself, through its real directory.
+			return physicalPath(path)
 		}
 		next, err := os.Readlink(path)
 		if err != nil {
 			return "", err
 		}
 		if !filepath.IsAbs(next) {
-			next = filepath.Join(filepath.Dir(path), next)
+			// Joined without cleaning: the next EvalSymlinks or Lstat
+			// resolves its ".." elements against real directories.
+			dir, _ := rawSplit(path)
+			parent, err := physicalPath(dir)
+			if err != nil {
+				return "", err
+			}
+			next = parent + string(filepath.Separator) + next
 		}
 		path = next
 	}
 	return "", fmt.Errorf("authstore: %s: too many levels of symbolic links", path)
+}
+
+// physicalPath resolves the symlinks in path's existing prefix and appends
+// the missing rest, which holds no symlinks to follow. A "." or ".." after a
+// missing element is an error, as in the kernel, rather than a lexical
+// clean that would write where no later read through path can look.
+func physicalPath(path string) (string, error) {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved, nil
+	}
+	dir, base := rawSplit(path)
+	if base == "" || dir == path {
+		return path, nil // ".", a root, or a bare volume
+	}
+	if base == "." || base == ".." {
+		return "", fmt.Errorf("authstore: %s: %w", path, fs.ErrNotExist)
+	}
+	parent, err := physicalPath(dir)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(parent, base), nil
+}
+
+// rawSplit splits path into its directory and final element without lexical
+// cleaning, which would collapse "dir/.." before dir's symlinks are resolved.
+// A path without a separator has directory ".".
+func rawSplit(path string) (dir, base string) {
+	volume := filepath.VolumeName(path)
+	rest := strings.TrimRightFunc(path[len(volume):], func(r rune) bool { return os.IsPathSeparator(uint8(r)) })
+	i := len(rest) - 1
+	for i >= 0 && !os.IsPathSeparator(rest[i]) {
+		i--
+	}
+	switch {
+	case i < 0 && volume != "":
+		return volume, rest
+	case i < 0:
+		return ".", rest
+	case i == 0:
+		return volume + rest[:1], rest[1:]
+	}
+	return volume + rest[:i], rest[i+1:]
 }
 
 type authDocument struct {
