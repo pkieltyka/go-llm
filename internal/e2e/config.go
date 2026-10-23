@@ -47,22 +47,28 @@ func ValidateLiveProviderConfig(provider string, pc ProviderConfig) error {
 		default:
 			return fmt.Errorf("anthropic credential has unsupported type %q", pc.Auth.Type)
 		}
-	case "openai", "openrouter":
+	case "openai":
+		switch pc.Auth.Type {
+		case "", "api_key":
+			if pc.Auth.Key == "" {
+				return fmt.Errorf("%w: openai API key or Sign in with ChatGPT OAuth credential", errLiveCredentialsMissing)
+			}
+		case "oauth":
+			if pc.Auth.Access == "" && pc.Auth.Refresh == "" {
+				return errors.New("openai OAuth credential is configured without tokens")
+			}
+			if pc.Auth.Refresh != "" && pc.Auth.ClientID == "" {
+				return errors.New("openai OAuth credential has no clientId; sign in with ChatGPT again")
+			}
+		default:
+			return fmt.Errorf("openai credential has unsupported type %q", pc.Auth.Type)
+		}
+	case "openrouter":
 		if pc.Auth.Type != "" && pc.Auth.Type != "api_key" {
 			return fmt.Errorf("%s credential has unsupported type %q", provider, pc.Auth.Type)
 		}
 		if pc.Auth.Key == "" {
 			return fmt.Errorf("%w: %s API key", errLiveCredentialsMissing, provider)
-		}
-	case "openai-codex":
-		if pc.Auth.Type == "" && pc.Auth.Access == "" && pc.Auth.Refresh == "" && pc.Auth.AccountID == "" {
-			return fmt.Errorf("%w: openai-codex OAuth credential", errLiveCredentialsMissing)
-		}
-		if pc.Auth.Type != "oauth" {
-			return fmt.Errorf("openai-codex credential must use oauth, got %q", pc.Auth.Type)
-		}
-		if pc.Auth.Access == "" {
-			return errors.New("openai-codex OAuth credential is configured without an access token")
 		}
 	case "vllm":
 		if pc.BaseURL == "" {
@@ -143,5 +149,25 @@ func RepoRoot(start string) (string, error) {
 			return "", os.ErrNotExist
 		}
 		dir = parent
+	}
+}
+
+const (
+	openAICheapModel = "gpt-4.1-mini"
+	// openAISignInModel is the cheap default under Sign in with ChatGPT,
+	// which serves only the subscription catalog's models.
+	openAISignInModel = "gpt-5.6-luna"
+)
+
+// openAIDefaultModel is the model the live OpenAI suites use: the
+// configured override, else the cheap default for the credential type.
+func openAIDefaultModel(cfg ProviderConfig) string {
+	switch {
+	case cfg.Model != "":
+		return cfg.Model
+	case cfg.Auth.Type == "oauth":
+		return openAISignInModel
+	default:
+		return openAICheapModel
 	}
 }

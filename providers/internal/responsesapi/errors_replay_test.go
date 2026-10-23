@@ -148,3 +148,20 @@ func TestStreamRefusalDoneWithoutDeltas(t *testing.T) {
 		t.Fatalf("refusal response = text %q stop %q", resp.Text(), resp.StopReason)
 	}
 }
+
+func TestMapHTTPResponseErrorMessageFromBody(t *testing.T) {
+	adapter := replayAdapter()
+	for _, tc := range []struct{ body, want string }{
+		{`{"detail":"Stream must be set to true"}`, "Stream must be set to true"},
+		{`{"detail":{"code":"usage_limit_reached","message":"limit"}}`, "limit"},
+		{"upstream unavailable", "upstream unavailable"},
+		{"<html><body>502 Bad Gateway</body></html>", "Bad Gateway"},
+		{strings.Repeat("x", 600), "Bad Gateway"},
+	} {
+		resp := &http.Response{StatusCode: http.StatusBadGateway, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(tc.body))}
+		var providerErr *llm.ProviderError
+		if err := adapter.MapHTTPResponseError(resp); !errors.As(err, &providerErr) || providerErr.Message != tc.want {
+			t.Errorf("body %.40q: message = %q, want %q", tc.body, providerErr.Message, tc.want)
+		}
+	}
+}

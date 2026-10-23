@@ -278,6 +278,7 @@ func sumUsage(total, next Usage, state *usageCostAggregation) Usage {
 	total.TotalTokens += next.TotalTokens
 	total.CacheReadTokens += next.CacheReadTokens
 	total.CacheWriteTokens += next.CacheWriteTokens
+	total.CacheWrite1hTokens += next.CacheWrite1hTokens
 	total.ReasoningTokens += next.ReasoningTokens
 	if next.CostUSD != nil {
 		sum := *next.CostUSD

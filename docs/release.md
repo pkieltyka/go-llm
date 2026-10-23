@@ -2,7 +2,7 @@
 
 This checklist is version-neutral. Replace `$VERSION` with the intended tag.
 The supported interval starts at Go 1.26.0. Release verification requires the
-pinned `.go-version` (currently 1.27.0) or newer. CI exercises the minimum,
+pinned `.go-version` (currently 1.27.3) or newer. CI exercises the minimum,
 the pin, and the current stable toolchain.
 
 ## Credential-Free, Network-Dependent Gates
@@ -47,8 +47,10 @@ Copy `gollm-test.json.sample` to the gitignored `gollm-test.json` and fill
 only the providers available for this release check:
 
 - `anthropic`: API-key credential.
-- `openai`: API-key credential.
-- `openai-codex`: OAuth credential from a compatible ChatGPT/Codex login.
+- `openai`: API-key credential, or a Sign in with ChatGPT OAuth credential
+  (copy pi's `openai` entry from `~/.pi/agent/auth.json`, or mint one with
+  `openai.NewLoginFlow`). OAuth refreshes are written back to
+  `gollm-test.json` through an `authstore.File`.
 - `openrouter`: API-key credential.
 - `vllm`: keyless self-hosted entry with `base_url`; add `key` only when the
   server uses `--api-key`. `model` is an optional preference, not an exact ID.
@@ -112,10 +114,14 @@ must ship with matching redaction tests before its recordings are accepted.
 Refresh only when model sources or overrides change:
 
 ```sh
-make models MODEL_ARGS='--generated-at 2026-08-27T00:50:40.624Z --capture-dir scripts/model-sources/2026-08-26'
+make models
 pnpm --dir scripts test
-make check-models-reproducible
+make check-models-json
 ```
+
+The default CI gate checks that `models.json` is valid JSON; it does not
+require matching captured source files or dates. `check-models-reproducible`
+is an optional audit for snapshots with matching captured sources.
 
 The script validates the models.dev object-map and OpenRouter `data[]`
 sources, provider presence and minimum counts, positive limits, nonnegative
@@ -150,7 +156,7 @@ with `-coverpkg` through its real facade/provider consumers.
 | `cmd/llm-cli` | 77% |
 | `providers/anthropic` | 78% |
 | `providers/openai` | 82% |
-| `providers/openaicodex` | 69% |
+| `authstore` | 80% |
 | `providers/openrouter` | 75% |
 | `providers/chatcompletions` | 77% |
 | `providers/vllm` | 84% |
@@ -177,3 +183,20 @@ git push origin "$VERSION"
 The commit object named by `VERIFIED_COMMIT` is therefore exactly the clean
 commit that passed the release gates; generated or tidy changes cannot remain
 only in the index or worktree when the tag is created.
+
+### Nested modules (`contrib/*`)
+
+Each entry in the Makefile's `CONTRIB_MODULES` is its own module. Build,
+test, vet, lint, `mod tidy -diff`, and govulncheck also run inside it;
+coverage floors, fuzzing, and live tests are root-module only. Format and
+patch checks cover it through git. During development a contrib module's
+`go.mod` points at the in-repo go-llm through `replace ... => ../..`, which
+consumers ignore. So, after tagging go-llm `$VERSION`:
+
+1. Bump the contrib module's `require github.com/pkieltyka/go-llm` to
+   `$VERSION`, keep the `replace`, run `go -C contrib/otelllm mod tidy`, and
+   commit. Verify that it resolves without the replace:
+   `go -C contrib/otelllm mod edit -dropreplace github.com/pkieltyka/go-llm`,
+   then `go -C contrib/otelllm build ./...`, then restore the replace.
+2. Tag the nested module with its path prefix, for example
+   `contrib/otelllm/$VERSION`, then push that tag.

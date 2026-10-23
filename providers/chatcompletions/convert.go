@@ -30,6 +30,11 @@ func (p *Provider) BuildParams(req *llm.Request, stream bool) (sdk.ChatCompletio
 	if err := llm.ValidateProviderOptions(p.Name(), req); err != nil {
 		return sdk.ChatCompletionNewParams{}, err
 	}
+	// Chat-completions servers vary in whether they accept system messages
+	// after the conversation starts (many chat templates reject them), so
+	// positional changes are always folded, as pi does by default.
+	req = llm.FoldPositional(req, llm.PositionalSupport{})
+	req = providerutil.ApplyCacheRetention(req)
 	messages, err := p.buildMessages(req)
 	if err != nil {
 		return sdk.ChatCompletionNewParams{}, err
@@ -108,7 +113,7 @@ func (p *Provider) buildMessages(req *llm.Request) ([]sdk.ChatCompletionMessageP
 		msg := jsonObject{"role": "system", "content": []any{textBlock(req.System, req.SystemCache)}}
 		messages = append(messages, sdkparam.Override[sdk.ChatCompletionMessageParamUnion](msg))
 	}
-	for _, message := range req.Messages {
+	for _, message := range providerutil.ReplayableHistory(req.Messages, req.Model) {
 		if message.Role == llm.RoleTool {
 			toolMessages, err := p.buildToolMessages(message)
 			if err != nil {
@@ -130,7 +135,7 @@ func (p *Provider) buildMessages(req *llm.Request) ([]sdk.ChatCompletionMessageP
 
 func (p *Provider) buildMessage(message llm.Message) (jsonObject, bool, error) {
 	switch message.Role {
-	case llm.RoleUser, llm.RoleSystem:
+	case llm.RoleUser:
 		var content []any
 		for _, part := range message.Parts {
 			blocks, err := p.inputBlocks(part)

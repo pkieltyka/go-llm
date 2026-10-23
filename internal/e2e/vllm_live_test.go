@@ -233,12 +233,10 @@ func liveVLLMReasoningReplayScenario(ctx context.Context, t *testing.T, p llm.Pr
 	if part := vllmReasoningPart(first); part == nil {
 		t.Fatalf("reasoning replay needs a reasoning part: parts=%d stop_reason=%s", len(first.Parts), first.StopReason)
 	}
-	replayModel := first.Model
-	if replayModel == "" {
-		replayModel = model
-	}
+	// Replay under the requested model while the assistant message carries
+	// the served model (FS §18 model-aware replay).
 	resp, err := p.Chat(ctx, &llm.Request{
-		Model:     replayModel,
+		Model:     model,
 		MaxTokens: 128,
 		Effort:    llm.EffortNone,
 		Messages: []llm.Message{
@@ -260,12 +258,16 @@ func liveVLLMReasoningReplayScenario(ctx context.Context, t *testing.T, p llm.Pr
 	}
 }
 
+// liveVLLMReasoningResponse uses EffortMedium because the accepted
+// reasoning_effort ladder is chat-template specific: Qwen3.8-Flash-Next
+// rejects "high" (400: supported types are xhigh, medium, and low), while
+// medium is the portable middle of every ladder seen live.
 func liveVLLMReasoningResponse(ctx context.Context, t *testing.T, p llm.Provider, model string) *llm.Response {
 	t.Helper()
 	resp, err := CollectLiveStream(p.Name(), p.ChatStream(ctx, &llm.Request{
 		Model:     model,
 		MaxTokens: 2048,
-		Effort:    llm.EffortHigh,
+		Effort:    llm.EffortMedium,
 		Messages:  []llm.Message{llm.UserText(anthropicReasoningPrompt)},
 	}))
 	if err != nil {
@@ -332,6 +334,14 @@ func liveVLLMTokenizeScenario(ctx context.Context, t *testing.T, p *vllmProvider
 	if result.Count <= 0 {
 		t.Fatalf("tokenize count = %d, want > 0", result.Count)
 	}
+	// llm.CountTokens must reach the TokenCounter through llm.Wrap and agree
+	// exactly with Tokenize.
+	counted, err := llm.CountTokens(ctx, llm.Wrap(p, llm.Middleware{}), req)
+	if err != nil || !counted.Exact || counted.Tokens != int64(result.Count) {
+		t.Fatalf("CountTokens through Wrap = %+v, %v; want exact %d", counted, err, result.Count)
+	}
+	estimate := llm.EstimateRequestTokens(req)
+	t.Logf("estimate=%d exact=%d ratio=%.2f", estimate, result.Count, float64(estimate)/float64(result.Count))
 	if result.MaxModelLen <= 0 {
 		t.Fatalf("tokenize max_model_len = %d, want > 0", result.MaxModelLen)
 	}

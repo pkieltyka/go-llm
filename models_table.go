@@ -48,14 +48,22 @@ const (
 )
 
 type modelTableRow struct {
-	Provider         string             `json:"provider"`
-	ID               string             `json:"id"`
-	CanonicalID      string             `json:"canonical_id,omitempty"`
-	DisplayName      string             `json:"display_name,omitempty"`
-	ContextWindow    *int               `json:"context_window,omitempty"`
-	MaxOutputTokens  *int               `json:"max_output_tokens,omitempty"`
-	Pricing          *modelTablePricing `json:"pricing,omitempty"`
-	SupportedEfforts []string           `json:"supported_efforts,omitempty"`
+	Provider         string              `json:"provider"`
+	ID               string              `json:"id"`
+	CanonicalID      string              `json:"canonical_id,omitempty"`
+	DisplayName      string              `json:"display_name,omitempty"`
+	ContextWindow    *int                `json:"context_window,omitempty"`
+	MaxOutputTokens  *int                `json:"max_output_tokens,omitempty"`
+	Pricing          *modelTablePricing  `json:"pricing,omitempty"`
+	SupportedEfforts []string            `json:"supported_efforts,omitempty"`
+	Behavior         *modelTableBehavior `json:"behavior,omitempty"`
+}
+
+// modelTableBehavior is a row's per-model behavior, written by the
+// generator's rules (scripts/model-behavior.ts).
+type modelTableBehavior struct {
+	PositionalInstructions bool `json:"positional_instructions,omitempty"`
+	PositionalTools        bool `json:"positional_tools,omitempty"`
 }
 
 type modelTablePricing struct {
@@ -68,10 +76,10 @@ type modelTablePricing struct {
 
 type modelTableTier struct {
 	InputTokensAbove  *int64   `json:"input_tokens_above"`
-	InputPerMTok      *float64 `json:"input_per_mtok"`
-	OutputPerMTok     *float64 `json:"output_per_mtok"`
-	CacheReadPerMTok  *float64 `json:"cache_read_per_mtok"`
-	CacheWritePerMTok *float64 `json:"cache_write_per_mtok"`
+	InputPerMTok      *float64 `json:"input_per_mtok,omitempty"`
+	OutputPerMTok     *float64 `json:"output_per_mtok,omitempty"`
+	CacheReadPerMTok  *float64 `json:"cache_read_per_mtok,omitempty"`
+	CacheWritePerMTok *float64 `json:"cache_write_per_mtok,omitempty"`
 }
 
 // PriceTableDate returns the generated_at stamp from the embedded model table.
@@ -213,8 +221,8 @@ func validateModelTablePricing(key string, pricing *modelTablePricing) error {
 			"cache_read_per_mtok":  tier.CacheReadPerMTok,
 			"cache_write_per_mtok": tier.CacheWritePerMTok,
 		} {
-			if rate == nil || !validPrice(*rate) {
-				return fmt.Errorf("model table %s pricing tier %d %s must be present, finite, and non-negative", key, index, name)
+			if rate != nil && !validPrice(*rate) {
+				return fmt.Errorf("model table %s pricing tier %d %s must be finite and non-negative", key, index, name)
 			}
 		}
 		previousThreshold = *tier.InputTokensAbove
@@ -344,7 +352,7 @@ func (t parsedModelTable) withCanonicalFallback(info ModelInfo) ModelInfo {
 		info.MaxOutputTokens = canonical.MaxOutputTokens
 	}
 	if info.Pricing == nil && canonical.Pricing != nil {
-		info.Pricing = cloneModelPricing(canonical.Pricing)
+		info.Pricing = canonical.Pricing.Clone()
 	}
 	if info.SupportedEfforts == nil && canonical.SupportedEfforts != nil {
 		info.SupportedEfforts = cloneEfforts(canonical.SupportedEfforts)
@@ -382,6 +390,9 @@ func (row modelTableRow) modelInfo() ModelInfo {
 	if row.Pricing != nil {
 		info.Pricing = row.Pricing.modelPricing()
 	}
+	if b := row.Behavior; b != nil {
+		info.Behavior = ModelBehavior{PositionalInstructions: b.PositionalInstructions, PositionalTools: b.PositionalTools}
+	}
 	if row.SupportedEfforts != nil {
 		info.SupportedEfforts = make([]Effort, len(row.SupportedEfforts))
 		for i, effort := range row.SupportedEfforts {
@@ -393,7 +404,7 @@ func (row modelTableRow) modelInfo() ModelInfo {
 
 func cloneModelInfo(info ModelInfo) ModelInfo {
 	if info.Pricing != nil {
-		info.Pricing = cloneModelPricing(info.Pricing)
+		info.Pricing = info.Pricing.Clone()
 	}
 	if info.SupportedEfforts != nil {
 		info.SupportedEfforts = cloneEfforts(info.SupportedEfforts)
@@ -429,25 +440,16 @@ func (pricing *modelTablePricing) modelPricing() *ModelPricing {
 				OutputPerMTok:     valueOrZero(tier.OutputPerMTok),
 				CacheReadPerMTok:  valueOrZero(tier.CacheReadPerMTok),
 				CacheWritePerMTok: valueOrZero(tier.CacheWritePerMTok),
+				Availability: &ModelPricingAvailability{
+					InputPerMTok:      tier.InputPerMTok != nil,
+					OutputPerMTok:     tier.OutputPerMTok != nil,
+					CacheReadPerMTok:  tier.CacheReadPerMTok != nil,
+					CacheWritePerMTok: tier.CacheWritePerMTok != nil,
+				},
 			}
 		}
 	}
 	return out
-}
-
-func cloneModelPricing(pricing *ModelPricing) *ModelPricing {
-	if pricing == nil {
-		return nil
-	}
-	cloned := *pricing
-	if pricing.Availability != nil {
-		availability := *pricing.Availability
-		cloned.Availability = &availability
-	}
-	if len(pricing.Tiers) > 0 {
-		cloned.Tiers = append([]ModelPricingTier(nil), pricing.Tiers...)
-	}
-	return &cloned
 }
 
 func cloneEfforts(efforts []Effort) []Effort {

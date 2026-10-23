@@ -14,13 +14,12 @@ import (
 
 func TestDoWithAuthRetryUsesAlreadyRefreshedCredential(t *testing.T) {
 	var refreshCalls int
-	source := mustNewSource(t,
-		llm.AuthCredential{Type: "oauth", Access: "old", Refresh: "refresh"},
+	source := newTestResolver(t,
+		llm.AuthCredential{Type: "oauth", Access: "old", Expires: inAnHour(), Refresh: "refresh"},
 		func(context.Context, llm.AuthCredential) (llm.AuthCredential, error) {
 			refreshCalls++
-			return llm.AuthCredential{Type: "oauth", Access: "new"}, nil
+			return llm.AuthCredential{Type: "oauth", Access: "new", Expires: inAnHour()}, nil
 		},
-		noOpPersistence,
 	)
 
 	var authHeaders []string
@@ -59,14 +58,13 @@ func TestDoWithAuthRetryUsesAlreadyRefreshedCredential(t *testing.T) {
 	}
 }
 
-func TestDoWithAuthRetryReturnsRefreshError(t *testing.T) {
+func TestDoWithAuthRetryReturnsTokenError(t *testing.T) {
 	refreshErr := errors.New("refresh failed")
-	source := mustNewSource(t,
-		llm.AuthCredential{Type: "oauth", Access: "old", Refresh: "refresh"},
+	source := newTestResolver(t,
+		llm.AuthCredential{Type: "oauth", Access: "old", Expires: inAnHour(), Refresh: "refresh"},
 		func(context.Context, llm.AuthCredential) (llm.AuthCredential, error) {
 			return llm.AuthCredential{}, refreshErr
 		},
-		noOpPersistence,
 	)
 	req := mustRequest(t, "")
 	resp, err := DoWithAuthRetry(req, func(r *http.Request) (*http.Response, error) {
@@ -83,13 +81,12 @@ func TestDoWithAuthRetryReturnsRefreshError(t *testing.T) {
 func TestDoWithAuthRetryBoundsAttemptsPerCredentialEpoch(t *testing.T) {
 	const maxRetries = 2
 	var refreshCalls int
-	source := mustNewSource(t,
-		llm.AuthCredential{Type: "oauth", Access: "old", Refresh: "refresh"},
+	source := newTestResolver(t,
+		llm.AuthCredential{Type: "oauth", Access: "old", Expires: inAnHour(), Refresh: "refresh"},
 		func(context.Context, llm.AuthCredential) (llm.AuthCredential, error) {
 			refreshCalls++
-			return llm.AuthCredential{Type: "oauth", Access: "new", Refresh: "refresh"}, nil
+			return llm.AuthCredential{Type: "oauth", Access: "new", Expires: inAnHour(), Refresh: "refresh"}, nil
 		},
-		noOpPersistence,
 	)
 
 	var calls int

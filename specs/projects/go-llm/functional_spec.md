@@ -24,8 +24,7 @@ verified with Go 1.26.6 or newer. Streaming uses standard iterators (`iter`).
 | Provider | Implementation | Notes |
 |---|---|---|
 | Anthropic | Wraps official `anthropic-sdk-go` | Messages API |
-| OpenAI | Wraps official `openai-go` (direct) | **Responses API** — OpenAI's recommended surface for new projects; enables reasoning continuity + content (see provider_capabilities.md) |
-| OpenAI Codex | `providers/openaicodex` — shares the Responses mapping with `providers/openai` | **ChatGPT Plus/Pro subscription** via OAuth — `chatgpt.com/backend-api/codex` (§17C) |
+| OpenAI | Wraps official `openai-go` (direct) | **Responses API** — OpenAI's recommended surface for new projects; enables reasoning continuity + content (see provider_capabilities.md). Authenticates with an API key or **Sign in with ChatGPT** OAuth (a ChatGPT subscription using the API, §17C) |
 | OpenRouter | Shared OpenAI-compatible adapter (via `openai-go`), preset base URL + auth + typed extensions | `https://openrouter.ai/api/v1` |
 | vLLM | `providers/vllm` — current-stable v0.26.0 preset over the public `chatcompletions` engine; **host-first construction** (self-hosted: `http://host:8000/v1`, key optional via `--api-key` bearer) | Live-tested. Includes fuzzy model resolution and concrete-provider `/tokenize`, `/detokenize`, and `/tokenizer_info` extensions. Full upstream research: `vllm_research.md` |
 | Ollama | `providers/ollama` — data-only preset over the public `chatcompletions` engine (`http://localhost:11434/v1` convention) | Offline conformance-tested; not in the credentialed live matrix |
@@ -52,10 +51,11 @@ Decisions:
 - OpenRouter, vLLM, and Ollama are presets over one public
   OpenAI-compatible, chat-completions-shaped engine. OpenRouter and vLLM add
   typed provider options and response mappings; Ollama is a data-only preset.
-- **Subscription auth is in scope for OpenAI Codex** (§17C): the separate
-  `openai-codex` provider serves ChatGPT Plus/Pro, consumes and refreshes
-  compatible credentials, and mints initial credentials through a
-  provider-owned browser PKCE login. Anthropic supports API keys only.
+- **Subscription auth is in scope for OpenAI** (§17C): the `openai`
+  provider accepts Sign in with ChatGPT OAuth credentials from a
+  `CredentialStore`, refreshes them, and mints them through a browser PKCE
+  login (`openai.NewLoginFlow`). The former `openai-codex` provider was
+  removed (2026-10-22), mirroring pi. Anthropic supports API keys only.
 
 ## 3. In Scope / Out of Scope
 
@@ -177,8 +177,10 @@ Unified request fields (all optional unless noted):
 
 `Message` = role + ordered content parts + optional provenance.
 
-Roles: `user`, `assistant`, `tool` (tool results), `system` (only where a
-provider models it as a message; normally use the request-level `System`).
+Roles: `user`, `assistant`, `tool` (tool results), and `system`. A
+`system` message changes the instructions or the offered tools from its
+position on (§7A); the request-level `System` and `Tools` are the
+conversation's starting point.
 
 **Provenance** (pi-validated): assistant messages carry optional
 `Provider`/`Model` metadata — stamped by `History.AddResponse`, preserved
@@ -197,6 +199,10 @@ Content part types:
   opaque raw payload** (e.g. Anthropic thinking-block signatures, OpenRouter
   `reasoning_details`) so multi-turn round-tripping works when messages are
   replayed
+- `SystemDelta` — sets a named section of the system prompt; empty text
+  deletes it (system messages only, §7A)
+- `ToolsDelta` — tools added and tool names removed (system messages only,
+  §7A)
 - Provider-specific parts may be registered through the extension mechanism
 
 ### 4.4 Response
@@ -216,7 +222,10 @@ Content part types:
 
 `StopReason` values: `end_turn`, `max_tokens`, `stop_sequence`, `tool_use`,
 `content_filter`, `refusal`, `context_overflow`, `paused`, `error`, `other`.
-The raw provider value is always preserved alongside.
+The raw provider value is always preserved alongside. `context_overflow`,
+`content_filter`, and `refusal` describe a generation the provider stopped;
+a rejected request surfaces as the matching error sentinel instead, never
+both (the one-channel rule in §16).
 
 | Provider raw | Normalized |
 |---|---|
@@ -266,6 +275,20 @@ adapter and its OpenRouter, vLLM, and Ollama presets.
   collision, or old-id mismatch as a canonical malformed-stream error.
   Identity corrections never create `Response.DroppedToolCalls` metadata.
   `ToolCallDropped` remains reserved for calls the adapter actually abandons.
+- **Incremental collection**: `llm.Collector` (zero value ready) is the
+  event-at-a-time form of `Collect`, which is defined as a loop over
+  `Collector.Add` followed by `Collector.Finish`, so the two share one
+  precedence. `Add` normalizes and folds one event and returns the canonical
+  malformed-stream error, which is sticky (later `Add` calls return it, and
+  it wins over a terminal stream error in `Finish`). `Snapshot` returns an
+  owned deep copy of what `Collect` would return if the stream failed now
+  (nil before `MessageStart` and any content), so a consumer can forward
+  deltas while periodically persisting the partial response. As with
+  `Response.Clone`, the in-memory SDK payloads (`Response.Raw`,
+  `Usage.Raw`) are shared by reference. `Finish(err)`
+  is idempotent, and `Add` after it is `ErrBadRequest`. `Session` streaming
+  collects through the same type. `llm.NormalizeEvent` exports the
+  pointer-to-value event normalization these paths share.
 - A helper (`llm.Collect`) accumulates any stream into a complete
   `*Response`. A text-only consumer adapter, `llm.StreamText`, filters a
   stream to plain text deltas (`iter.Seq2[string, error]`); its
@@ -344,7 +367,7 @@ adapter and its OpenRouter, vLLM, and Ollama presets.
 - **Tool-result content modality**: `ToolResultPart.Content` may carry
   images (and PDF files) alongside text — screenshot-returning agent tools.
   Anthropic maps them to native tool_result content blocks; the OpenAI
-  Responses adapters (openai, openai-codex) map them to the
+  Responses adapter maps them to the
   `function_call_output` content-array form (`input_text` / `input_image` /
   `input_file`; text-only results keep the plain string form). Chat
   Completions uses string content by default. Its explicit
@@ -389,6 +412,100 @@ adapter and its OpenRouter, vLLM, and Ollama presets.
   all four have hosted web search in incompatible shapes (v2 unification
   candidate, see provider_capabilities.md). Anthropic's `pause_turn` from
   server tools is normalized to `StopReason: paused`.
+
+## 7A. Positional Instructions and Tool Changes
+
+A prompt cache is a prefix, so changing `System` or `Tools` mid-conversation
+invalidates it from the top. Instead, a `system` message records the change
+where it happens, and providers send it in place where the model accepts
+that (pi's transcript model, `SystemMessage` with `sections`, `toolsAdded`,
+`toolsRemoved`).
+
+- **Parts.** A `system` message carries `TextPart` (more instructions),
+  `SystemDeltaPart{Section, Text, Cache}` (set a named section; empty
+  `Text` deletes it), and `ToolsDeltaPart{Added, Removed, Cache}` (withdraw
+  names, then offer tools, an added tool replacing one of the same name).
+  These two parts are rejected outside `system` messages, and a `system`
+  message rejects any other part, except that an `UnknownPart` (from a
+  newer go-llm's history) is ignored, as it is everywhere.
+- **Effective state** replays like pi's `getCurrentSystemMessage`. The
+  prompt is `System`, then each later text in order, then the sections in
+  the order they were first set, joined by blank lines. The tools are
+  `Tools`, then each delta in order (removals, then additions). As with pi's
+  `Map.set`, updating a section or redefining a tool keeps its position;
+  only a deleted section or removed tool that is added again moves to the
+  end.
+- **Folding.** `llm.FoldPositional(req, support)` folds what the target
+  model cannot take in place into `System` and `Tools`, which then hold the
+  state after the last change. Folding is deterministic and keeps the
+  meaning; only the cache benefit is lost. The leading run of `system`
+  messages always folds, because it describes the conversation's start.
+  Tools in place require instructions in place.
+- **Per-model support** comes from `ModelInfo.Behavior` in the embedded
+  table (§13B). Unknown models fold. The capabilities
+  `positional-instructions` and `positional-tools` say a provider has an
+  in-place mapping; they are advisory, and no request is rejected for
+  lacking them.
+- **Anthropic** (probed 2026-10-22, plan 11):
+  - Remaining `system` messages are sent as `role: "system"`, text as is
+    and section updates framed as pi frames them (`Updated system prompt
+    section "<name>":` / `Removed system prompt section "<name>".`).
+  - Tool changes become `tool_removal` and `tool_addition` blocks
+    (removals first, skipping a name the same delta redefines) under the
+    `inline-tools-2026-09-15` beta, added automatically. The top-level
+    `tools` list stays the initial one.
+  - Anthropic accepts a system message only after a user message (or an
+    assistant turn ending in a server tool result), and a `tool_use` must be
+    followed by its `tool_result`. So system messages are held until just
+    before the next assistant turn that is sent (one with nothing to send,
+    such as another provider's reasoning only, is skipped) and adjacent
+    ones merge, as pi does. Blank assistant text is dropped, since
+    Anthropic rejects empty text blocks. A
+    system message that would directly follow an assistant turn (a
+    prefill, or consecutive assistant turns) fails locally with
+    `ErrBadRequest`.
+  - `tool_choice` may name a tool added in place, and works with no
+    top-level tools at all.
+  - The cached prefix survives every change, and the beta header may first
+    appear at the first change. pi's deferred placeholder tool is not
+    needed.
+- **OpenAI Responses:**
+  - Remaining `system` messages are sent as `developer` messages.
+  - On a model that takes tool changes in place, every tool, including the
+    initial ones, is declared in `additional_tools` input items from the
+    first turn (pi's "changes" layout), so a later change extends the
+    prompt. A later item is preceded by pi's incremental-update notice.
+    This applies to every request with tools on those models, positional
+    messages or not, so sessions that predate it re-cache once. It was
+    probed under Sign in with ChatGPT; the API-key path follows pi's own
+    verification.
+  - `Options.HostedTools` stay in the top-level `tools` list next to the
+    in-place function tools; the mix is accepted and both are used.
+  - Removals cannot be expressed on the wire, so they are announced as
+    developer text and restated as "Still unavailable" until the tool is
+    declared again.
+  - `tool_choice` (named, required, none) and `parallel_tool_calls` work
+    with these tools.
+- **Chat Completions** engines (OpenRouter, vLLM, Ollama, custom) always
+  fold, as pi does by default: many chat templates reject system messages
+  after the conversation starts.
+- **Validation.** Removing a tool that is not offered at that point fails
+  with `ErrBadRequest`, as does a duplicate added name. When a request
+  carries any `ToolsDeltaPart`, an assistant tool call naming a tool not
+  offered at its position also fails (pi validates against the replayed
+  offered set). Without tool deltas, history may still name tools that are
+  no longer offered. `ToolChoice` must name a tool offered after the last
+  message. Tools added in place need `tools`, and strict ones
+  `strict-tools`.
+- **Serialization.** The parts encode as `system_delta` and `tools_delta`
+  (tools with `name`, `description`, `input_schema`, `strict`,
+  `annotations`; the schema reloads as `json.RawMessage`). An envelope whose
+  messages carry them is written as version 2, so readers that predate
+  them reject it instead of dropping the changes; other envelopes stay
+  version 1.
+- **Caching and estimation.** `CacheHint`s on the new parts are honored
+  where they are sent in place (Anthropic) and rewritten by
+  `CacheRetention`. Estimators count the new parts.
 
 ## 8. Structured Output
 
@@ -493,7 +610,7 @@ affinity across providers — set it once per logical conversation/agent run:
 
 Capability flag: `session-affinity` (present when the mapping has a real
 effect). The field is always safe to set — providers without a mapping
-ignore it. OpenAI and Codex preserve IDs up to 64 runes exactly; longer IDs
+ignore it. OpenAI preserves IDs up to 64 runes exactly; longer IDs
 become a 47-rune prefix plus `-` and a 16-character SHA-256 suffix only at
 the Responses wire boundary. Stored history and OpenRouter `session_id`
 remain unchanged.
@@ -549,11 +666,17 @@ A single, minimal interceptor seam:
   machinery).
 - Applied by **composition**, not provider support:
   `llm.Wrap(provider, mw...)` returns a decorated `Provider`. Adapters know
-  nothing about middleware.
+  nothing about middleware. The stream a wrapped provider returns is
+  single-use itself (§4.1), so middleware that defers its work, and the
+  call to `next`, into the iterator never re-sends a request when a caller
+  ranges the stream again.
 - Use cases: tracing, redaction, request mutation, custom policies. Shipped
-  built-ins on this seam: the observability trio (§17B) and
-  `RetryDroppedToolCalls` (§7); third-party integrations (OpenTelemetry,
-  metrics backends) build on the same seam.
+  built-ins on this seam: the observability trio (§17B),
+  `RetryDroppedToolCalls` (§7), and `ContextGuard` (§13A); third-party
+  integrations (OpenTelemetry, metrics backends) build on the same seam.
+- A wrapped provider exposes `Unwrap() Provider`, so optional extensions
+  such as `TokenCounter` stay discoverable through `Wrap` (`llm.CountTokens`
+  follows the chain).
 
 ## 10C. Prompt Templates (minimal)
 
@@ -604,6 +727,11 @@ Every response (and `MessageEnd` stream event) carries a normalized `Usage`:
 
 - `InputTokens`, `OutputTokens`, `TotalTokens`
 - `CacheReadTokens`, `CacheWriteTokens` (zero when unreported)
+- `CacheWrite1hTokens`: the informational subset of `CacheWriteTokens`
+  written with a one-hour lifetime (Anthropic `cache_creation.
+  ephemeral_1h_input_tokens`, produced by `CacheHint.TTL > 5m`), never
+  additive. Serialized as `cache_write_1h_tokens` (omitempty; additive key,
+  no envelope version bump).
 - `ReasoningTokens` (zero when unreported)
 - `CostUSD *float64` — `nil` when unknown
 - `CostSource string` — cost provenance: `"native"` (provider-reported,
@@ -621,8 +749,8 @@ natively, so this is where cross-adapter drift is prevented):
   `CacheWriteTokens` are disjoint additions (total prompt occupancy =
   `InputTokens + CacheReadTokens + CacheWriteTokens`). Anthropic reports
   this shape natively; **OpenAI reports `cached_tokens` as a subset of
-  its prompt total, so its adapter subtracts**. The OpenAI Responses and
-  Codex adapters apply that subtraction before exposing normalized usage.
+  its prompt total, so its adapter subtracts**. The OpenAI Responses
+  adapter applies that subtraction before exposing normalized usage.
 - `ReasoningTokens` is an **informational subset of `OutputTokens`**,
   never additive — `ContextUsage` and cost math count output exactly once.
   Exception: when a provider's *native* accounting violates the subset
@@ -635,18 +763,37 @@ natively, so this is where cross-adapter drift is prevented):
 Cost sourcing:
 
 1. **Provider-reported** (OpenRouter reports `usage.cost` in USD on every
-   response) — used verbatim, `CostSource: "native"`.
+   response) — `CostSource: "native"`. With a BYOK key (`usage.is_byok`)
+   `usage.cost` is only OpenRouter's fee, so the billed total adds
+   `cost_details.upstream_inference_cost`, or its prompt and completion
+   parts when that is null or absent. A missing `is_byok` means a plain
+   key. A negative or non-finite cost, a malformed `is_byok`, or BYOK
+   accounting without a valid upstream cost is not reported and falls
+   through to the estimate.
 2. **Estimated** (`CostSource: "estimated"`) — an optional, user-overridable price table
    (per provider/model: USD per MTok input/output/cache-read/cache-write).
    Pricing may include ascending input-occupancy tiers. The highest threshold
    strictly exceeded by `InputTokens + CacheReadTokens + CacheWriteTokens`
-   supplies all rates for the entire request; exact equality stays on the
-   lower tier. Invalid caller-supplied tiers are ignored. Native cost always
-   wins.
+   supplies the rates for the entire request; exact equality stays on the
+   lower tier. The snapshot fills a rate missing from a tier with the base
+   rate; a rate absent from both stays unknown rather than reading as free.
+   At estimation time a selected tier never falls back to base rates.
+   Invalid caller-supplied tiers are ignored. Native cost always wins.
+   **One-hour cache writes** have no published rate in any upstream table,
+   so a nonzero `CacheWrite1hTokens` leaves an estimated `CostUSD` nil
+   (unknown) rather than pricing those writes at the default write rate,
+   which would understate cost (Anthropic bills one-hour writes at 2× input
+   versus 1.25× for five-minute writes). This follows the
+   no-curated-pricing rule: a multiplier constant is never hand-maintained.
+   When upstream publishes a one-hour rate, it joins `ModelPricing`.
    The shipped table is a **trimmed JSON snapshot of the
-   community-maintained models.dev database** plus a hand-maintained
-   overrides file, refreshed by a dev-time script, embedded via `go:embed`,
-   parsed lazily on first use, and stamped with a generation date. The
+   community-maintained models.dev database** and OpenRouter's catalog,
+   refreshed by a dev-time script, embedded via `go:embed`,
+   parsed lazily on first use, and stamped with a generation date. Upstream
+   data is not hand-curated: a gap stays unknown and a wrong value is fixed
+   upstream (models.dev or OpenRouter). The overrides file is kept empty as an emergency escape
+   hatch. The one exception is per-model wire behavior, which no upstream
+   publishes: generator rules add it, as pi's do (§13B). The
    embedded-table API never fetches model data at runtime. Explicit provider
    `Models(ctx)` calls may use that provider's remote model endpoint.
    Estimates are marked as estimates via `Usage.CostSource`. No table entry →
@@ -658,7 +805,8 @@ Cost sourcing:
 - Standard constants in core: `streaming`, `tools`, `tool-choice-required`,
   `tool-streaming`, `parallel-tools`, `strict-tools`, `json-schema`,
   `json-mode`, `reasoning`, `image-input`, `pdf-input`, `stop-sequences`,
-  `prompt-caching`, `session-affinity`, `cost-reporting`, `models-listing`.
+  `prompt-caching`, `session-affinity`, `cost-reporting`, `models-listing`,
+  `positional-instructions`, `positional-tools` (advisory, §7A).
 - `cost-reporting` means the provider NATIVELY reports the request's cost in
   its responses (e.g. OpenRouter's `usage.cost`); price-table cost
   *estimation* is universal, works for every provider, and is not
@@ -682,13 +830,20 @@ pricing/capability lookup and same-model handoff across providers),
 and per-model `Capabilities` where the provider reports them.
 For `SupportedEfforts`, nil means the ladder was omitted or is unknown; a
 non-nil empty slice means the provider supplied a ladder containing no known
-unified effort values.
+unified effort values. The ladder lists the unified values the upstream source
+advertises for the model; it is not the set go-llm can map, since §9
+nearest-level mapping accepts every `Effort` (e.g. Anthropic rows list native
+levels such as `low..max` while `EffortNone` still disables thinking).
+`llm.SupportedEffortsForModel` reads the embedded table only; a model without
+upstream effort metadata returns nil, and no ladder is inferred from its name.
 `ModelPricing.Availability`, when non-nil, is authoritative per component and
 distinguishes an explicit zero/free input, output, cache-read, or cache-write
 rate from an unavailable component. A nil availability value preserves the
 legacy `ModelPricing` interpretation for callers constructing values directly.
-Cost estimation remains unknown when usage consumes an unavailable component;
-a complete request-wide tier remains independently estimable.
+Cost estimation remains unknown when usage consumes an unavailable component.
+`ModelPricingTier.Availability` follows the same contract for a selected
+request-wide tier (nil means all four tier rates are known), so a tier is
+estimable whenever the usage avoids its unavailable components.
 `ReasoningRequired == false` means false or unknown. These per-model fields
 never reject or rewrite a request; provider-wide `Capabilities()` remains the
 sole request-preflight authority, and `Request.Effort` is forwarded unchanged.
@@ -697,11 +852,6 @@ explicitly invoked; construction, chat, and streaming do not fetch catalogs.
 
 - Anthropic: `GET /v1/models` (rich capability data)
 - OpenAI: `GET /models` (IDs, minimal metadata)
-- OpenAI Codex: explicit authenticated
-  `GET {codex-base}/models?client_version=<compat>` with a 30-minute
-  per-instance success cache. Transient failures use stale/static fallback
-  and suppress refresh for five minutes; auth and context errors remain
-  visible. No construction or chat path fetches models.
 - OpenRouter: one `GET /models` per explicit call (rich: pricing, context
   length, input modalities, supported parameters, and reasoning policy). No
   models.dev or other fallback request is performed. Explicit catalog fields
@@ -733,6 +883,110 @@ models snapshot §11):
 - `Session.ContextUsage()` composes the two (last-turn usage + embedded
   window for the session's model; `ok=false` when the model is unknown
   to the table).
+
+## 13A. Context Fitting
+
+Explicit, opt-in helpers that answer "how big is this request, and does it
+fit?". None runs implicitly, and none changes a request unless the caller
+asks (ARCH §10: no silent clamping).
+
+- **`llm.EstimateRequestTokens(req)`** is a deterministic,
+  provider-neutral estimate covering system text, message parts, tool
+  definitions, and response format. It is calibrated (2026-10-22) against
+  vLLM's exact `/tokenize` on Qwen3.8: prose, Go code, indented JSON, tool
+  loops, and a 20-message conversation land at 0.95–1.17× of the exact
+  count. Two known cases run higher; both are described below. The rules:
+  - Text by character class: ASCII letters and digits at 4 per token,
+    punctuation at 0.6 tokens each, each newline and each whitespace
+    character after the first in a run at 0.5, and each non-ASCII rune at
+    1 token. CJK is about 1.5× high on CJK-efficient tokenizers such as
+    Qwen's, and lower on others.
+  - Fixed overheads: 8 per request, 4 per message, a one-time 300-token
+    tool-use preamble when tools are offered, plus 8 per tool and its
+    definition JSON. The preamble dominates tiny prompts, which therefore
+    estimate higher (1.36× for a one-tool, two-message request).
+  - Tool-call IDs (in calls and results) count as text.
+  - Images count 1600 tokens each. That is Anthropic's per-image cap, so on
+    providers that tile large images (for example vLLM-served vision models)
+    it is a floor, not a bound.
+  - Inline PDFs count 2500 per page object found (minimum 2000). Other
+    non-text files count 2000. Text-typed file data counts as text.
+  - Reasoning counts its visible text only, and extension parts count
+    nothing.
+  - It never claims exactness. Constants change only with recorded
+    calibration evidence.
+- **`llm.EstimateContinuationTokens(last, trailing)`** is the last
+  response's full occupancy (input, cache reads and writes, and output) plus
+  the estimate of the messages added since. `trailing` excludes the
+  assistant message built from that response. Hidden reasoning counted in
+  `OutputTokens` but not replayed makes the result run high, the safe
+  direction.
+- **`llm.TokenCounter`** is an optional exact-count extension,
+  `CountTokens(ctx, req) (TokenCount, error)`, found by type assertion.
+  vLLM implements it over `/tokenize`. Anthropic implements it over
+  `/v1/messages/count_tokens`, with the Chat conversion reduced to the
+  fields that endpoint accepts.
+- **`llm.CountTokens(ctx, p, req)`** uses the first counter on `p` or the
+  providers it wraps, and otherwise returns the estimate with
+  `Exact: false`. A counter error is returned unchanged.
+- **`llm.ResolveModelInfo(ctx, p, model)`** merges the live `Models()` row
+  (exact ID, then `SameModel`; among several inexact matches the lexically
+  greatest ID, normally the latest dated snapshot, wins) with the embedded
+  table, filling only zero or nil fields and never inventing one. A `Models()` failure degrades to
+  the table, and the error surfaces only when neither source knows the
+  model.
+- **`llm.FitMaxTokens(prompt, window, requested, margin)`** is a pure
+  function: `min(requested, window-prompt-margin)`, with requested ≤ 0
+  meaning "as much as fits". It returns `ErrContextTooLong` when no output
+  fits.
+- **`llm.EstimateCostBound(prompt, maxOutput, pricing)`** prices the prompt
+  as uncached input, as cache reads, and as cache writes, and returns the
+  largest; it reports unknown when a rate is missing.
+- **`llm.ContextGuard(GuardConfig{MaxOccupancy, Margin, ClampMaxTokens,
+  OnNearFull, Window})`** is `Wrap` middleware. Per request:
+  - It measures with `CountTokens`, falling back to the estimate if the
+    counter fails.
+  - It resolves the window per model, caching successful lookups and
+    unknown models, and passes the request through when the window is
+    unknown. A transient lookup failure is retried on the next request
+    rather than disabling the guard.
+  - It fails before the network call with `ErrContextTooLong` only for an
+    exact count with prompt + Margin ≥ window. An estimate never fails a
+    request.
+  - It runs `OnNearFull` at or above `MaxOccupancy` (a fraction; default
+    0.9, and values above 1 count as 1). The hook's error aborts the call.
+    The hook must not mutate the request, because the guard does not
+    re-measure. This is the go-agent compaction trigger: the primitive
+    lives here and the policy in go-agent.
+  - With `ClampMaxTokens`, it lowers an explicit `MaxTokens` on a copy of
+    the request, to fit the window and to a known `MaxOutputTokens`. When
+    an inexact estimate leaves no room in the window, the request passes
+    through (the server decides) but the `MaxOutputTokens` clamp still
+    applies. It never sets an unset `MaxTokens`: raising a provider's default can change
+    behavior (Anthropic's SDK requires streaming for large non-streaming
+    budgets).
+  - For `ChatStream`, the check runs when the stream is iterated.
+  - Place the guard last among the `Wrap` arguments (innermost), so that
+    request-rewriting middleware runs first and the measured request is the
+    one sent. `CountTokens` reaches the provider directly.
+  - The counting call is a visible extra wire request; it is never folded
+    into `Chat`/`ChatStream`.
+
+## 13B. Model Behavior
+
+`ModelInfo.Behavior` records how go-llm talks to a model, the counterpart
+of pi's per-model `compat` flags. Upstream catalogs do not publish these
+facts, so the `models.json` generator applies rules
+(`scripts/model-behavior.ts`), each citing its evidence (pi's rules or a
+live probe), and writes a `behavior` object on matching rows. Adapters read
+it through `LookupModelInfo` at request time; `Models` listings carry it for
+listed models. A zero field means unsupported or unknown and selects the
+conservative behavior. Aggregator rows (OpenRouter) do not inherit their
+canonical model's behavior, because the wire differs.
+
+- `PositionalInstructions`: `system` messages are accepted after the
+  conversation starts (§7A).
+- `PositionalTools`: tool changes are accepted in place (§7A).
 
 ## 14. Provider-Specific Extensions
 
@@ -795,8 +1049,7 @@ service tiers), raw SDK access via `Client()`.
 `ReasoningSummary` is empty by default, preserving effort-driven
 `summary: "auto"`; its currently closed values are `auto`, `concise`, and
 `detailed`, while OpenAI owns per-model acceptance. Invalid values fail before
-network I/O. This option is not part of `llm.Request` and does not apply to
-`openaicodex`. These extensions use library-owned or standard-library types;
+network I/O. This option is not part of `llm.Request`. These extensions use library-owned or standard-library types;
 `HostedTools` is a slice of validated JSON objects so future hosted-tool shapes
 do not expose SDK unions. `Client()` remains an advanced vendor-typed escape
 hatch.
@@ -811,6 +1064,22 @@ hatch.
 - Anthropic preserves hints on text nested inside tool results. OpenRouter
   emits cache-aware role-tool text blocks only when a nested hint exists;
   no-hint tool messages keep the traditional concatenated string wire form.
+- **`Request.CacheRetention`** is a request-wide policy, applied by every
+  engine before conversion without mutating the caller's request:
+  - `""`: hints and provider defaults are unchanged.
+  - `none`: removes every `CacheHint` (system, message parts, nested tool
+    results), and the OpenAI Responses `prompt_cache_key` is
+    omitted. Use it for one-off calls such as summarization; providers with
+    automatic caching may still cache internally. Session affinity is
+    unaffected: OpenRouter's `session_id` is routing (§9A), not a cache key.
+  - `short`: resets every hint to the provider's default lifetime
+    (five minutes on Anthropic).
+  - `long`: sets every hint to the long tier (Anthropic and
+    Anthropic-family OpenRouter: one hour).
+  - It does not toggle OpenAI's `prompt_cache_options`, which stay explicit
+    on `openai.Options` because model acceptance is server-defined.
+  - It needs no capability; unknown values fail validation with
+    `ErrBadRequest`.
 - Cache effectiveness is always observable via `Usage.CacheReadTokens` /
   `CacheWriteTokens`.
 
@@ -848,17 +1117,48 @@ yield identical sentinels across providers):
 | 403 | `ErrPermission` |
 | 404 | `ErrNotFound` |
 | 408 | `ErrTimeout` |
+| 413 | `ErrContextTooLong` (request-size or context overflow) |
 | 429 | `ErrRateLimited` |
 | 503 and 529 | `ErrOverloaded` |
 | any other 5xx | `ErrServer` |
 | any other 4xx | `ErrBadRequest` |
 
-Provider-native error codes/messages classify first (scoped heuristics —
-e.g. `context_length…` codes and "context window/length/limit" messages →
-`ErrContextTooLong`; a bare "context" substring deliberately does NOT
-match), then the status table, then weak code fallbacks for status-less
-in-stream errors (`invalid_request` → `ErrBadRequest`, `server_error` →
-`ErrServer`).
+Provider-native error codes/messages classify first (scoped heuristics),
+then the status table, then weak code fallbacks for status-less in-stream
+errors (`invalid_request` → `ErrBadRequest`, `server_error` → `ErrServer`).
+
+**Context overflow** uses one scoped matcher shared by every engine,
+including Anthropic and in-stream errors:
+
+- **Codes:** `context_length…`, `request_too_large`, and
+  `model_context_window_exceeded`.
+- **Messages:** an attributed corpus of real provider phrasings, covering
+  "context window/length/limit/size", "maximum context",
+  "prompt (is) too long", "maximum prompt length", "maximum model length",
+  "reduce the length of the messages", "maximum allowed input length",
+  "exceeded model token limit", "range of input length should be", and
+  "input token count".
+- **Vetoes:** throttling texts ("rate limit", "too many requests",
+  "throttl…", "per minute", "tokens per min") never classify as overflow.
+  A bare "context" or "tokens" substring deliberately does not match.
+- **413 is request size.** It can come from oversized attachments (images,
+  PDFs) rather than the conversation, so compaction alone may not fix it.
+- **Not overflow:** `max_tokens` above the model window (vLLM `max_tokens …
+  cannot be greater than max_model_len`) stays `ErrBadRequest`. The fix is
+  a smaller `MaxTokens`, not a shorter prompt.
+
+**One channel per event.** Overflow and content filtering each reach the
+caller through exactly one signal, never both:
+
+- A request the provider rejects, and any provider error event, including
+  a mid-stream error that names filtering, surfaces as the error sentinel
+  (`ErrContextTooLong`, `ErrContentFiltered`).
+- A generation that ends normally with a provider stop reason surfaces as
+  `StopReasonContextOverflow`, `StopReasonContentFilter`, or
+  `StopReasonRefusal` on a successful `MessageEnd`.
+- Consumers that handle a condition must therefore check both forms: the
+  error sentinel for rejections and the stop reason for stopped
+  generations.
 
 OpenRouter 403 moderation carries structured metadata (surfaced via `ProviderError`)
 and its status-less mid-stream numeric code `"402"` →
@@ -866,6 +1166,34 @@ and its status-less mid-stream numeric code `"402"` →
 to pre-stream errors. An empty-but-2xx SSE stream (zero events before EOF)
 normalizes to an in-stream `ErrServer` ("provider returned an empty
 stream") — never a silent empty success.
+
+**Classification helpers** (consumer-facing, typed-chain only — never
+message matching):
+
+- `llm.ErrorClass(err)` returns the normalized class in err's chain: one of
+  the package sentinels (including the `ErrLogin*` login sentinels) or
+  `context.Canceled` / `context.DeadlineExceeded`; nil when unclassified.
+  Precedence when a chain matches several: cancellation, then deadline, then
+  specific conditions (`ErrContextTooLong`, `ErrContentFiltered`,
+  `ErrUnsupported`, `ErrInsufficientCredits`, `ErrRateLimited`,
+  `ErrOverloaded`, `ErrTimeout`, `ErrAuth`, `ErrPermission`, `ErrNotFound`,
+  login sentinels), then the generic `ErrBadRequest` and `ErrServer`.
+  `llm.ErrorClasses()` returns that full list in precedence order, so a
+  wrapper that snapshots an error can keep every class the original matched.
+- `llm.SafeErrorInfo(err)` returns a serializable `llm.ErrorInfo{Class,
+  Provider, HTTPStatus, RetryAfter}` following the `SafeSummary` policy: it
+  never contains `Code`, `Message`, `Metadata`, or `RawBody`. `Class` uses
+  the stable vocabulary `canceled`, `deadline_exceeded`,
+  `context_too_long`, `content_filtered`, `unsupported`,
+  `insufficient_credits`, `rate_limited`, `overloaded`, `timeout`, `auth`,
+  `permission`, `not_found`, `login_expired`, `login_state_mismatch`,
+  `login_closed`, `bad_request`, `server`.
+- `llm.Transient(err)` is true exactly for `ErrRateLimited`,
+  `ErrOverloaded`, `ErrServer`, and `ErrTimeout` (and false when the chain
+  also carries cancellation). It is classification only: attempt budgets,
+  backoff, and jitter are caller policy, applied after go-llm's own
+  transport retries. An expired provider `WithTimeout` surfaces as
+  `context.DeadlineExceeded` and is not transient.
 
 ## 17. Configuration & Operations
 
@@ -903,6 +1231,15 @@ stream") — never a silent empty success.
 - All calls take `context.Context`; no global mutable request state. The
   write-once part registry, lazily parsed model table, and shared private
   default transport are the only process-wide infrastructure.
+- **`llm.CredentialEnvNames()`** lists every credential-bearing environment
+  variable read in-process, so hosts that spawn subprocesses can scrub them.
+  go-llm code reads `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+  `OPENROUTER_API_KEY`, and `OPENAI_CUSTOM_HEADERS`. openai-go's environment defaults also read
+  `OPENAI_ADMIN_KEY` and `OPENAI_WEBHOOK_SECRET`, which the adapters override
+  rather than use; the Anthropic SDK's environment defaults are disabled.
+  Self-hosted presets read no environment variables. A repository test scans
+  provider and CLI sources, resolving constant arguments, to keep the
+  go-llm-read names exact.
 - go-llm **never reads configuration files implicitly** — credentials
   come from explicit options or environment variables. For applications
   that keep provider credentials in a file, one explicit opt-in loader is
@@ -910,13 +1247,14 @@ stream") — never a silent empty success.
   format — a map of provider-id → credential union
   discriminated by `type`: `{"type": "api_key", "key": "..."}` or
   `{"type": "oauth", "access": "...", "refresh": "...", "expires": <ms>,
-  "accountId": "..."}` — accepted either bare or nested under a
-  `"providers"` wrapper (as the e2e harness's `gollm-test.json` does;
-  architecture §9). The caller passes
-  loaded credentials to constructors (`WithAPIKey` / `WithAPIKeyFunc` /
-  `WithOAuth`); `oauth` credentials serve the subscription auth paths
-  (§17C), where providers handle refresh and hand renewed credentials
-  back for persistence.
+  "accountId": "...", "clientId": "..."}` — accepted either bare or
+  nested under a `"providers"` wrapper (as the e2e harness's
+  `gollm-test.json` does; architecture §9). Callers either pass a static
+  key (`WithAPIKey` / `WithAPIKeyFunc`) or hand the provider a
+  `llm.CredentialStore` (`WithCredentials`, typically
+  `authstore.NewFile`); `oauth` credentials serve the subscription auth
+  path (§17C), where the provider refreshes inside the store's
+  serialized `Modify`.
 
 ## 17A. Testing Support (`llmtest`)
 
@@ -966,6 +1304,52 @@ are covered (usage observed on `MessageEnd`). `Stats()` returns a
 snapshot suitable for feeding any metrics system. OpenTelemetry and
 metrics-backend *integrations* are deliberately not in core — the
 tracker, middleware seam, and wire capture are their raw material.
+
+**OpenTelemetry integration (`contrib/otelllm`).** This is a separate
+nested module, `github.com/pkieltyka/go-llm/contrib/otelllm`, with its own
+`go.mod`, so the root module never requires OpenTelemetry.
+`otelllm.Middleware(opts...)` is `llm.Wrap` middleware that uses the global
+providers by default, or `WithTracerProvider` and `WithMeterProvider`. Place
+it outermost.
+
+- **Spans.** One CLIENT span per `Chat`/`ChatStream`, named
+  `chat {model}`. The parent comes from the request context, and the span's
+  context is passed to the wrapped provider.
+- **Naming.** Attributes and metrics follow the OpenTelemetry GenAI
+  semantic conventions as published in semconv v1.41.0 (development
+  status), written as string constants so no semconv package is imported:
+  - request: `gen_ai.operation.name`, `gen_ai.provider.name`,
+    `gen_ai.request.model`,
+    `gen_ai.request.max_tokens`, `gen_ai.request.temperature`,
+    `gen_ai.request.top_p`, and `gen_ai.request.stream`;
+  - response: `gen_ai.response.id`, `gen_ai.response.model`,
+    `gen_ai.response.finish_reasons`, and
+    `gen_ai.response.time_to_first_chunk`;
+  - usage: `gen_ai.usage.input_tokens` (including cache reads and writes,
+    per the conventions), `gen_ai.usage.output_tokens`,
+    `gen_ai.usage.cache_read.input_tokens`,
+    `gen_ai.usage.cache_creation.input_tokens`, and
+    `gen_ai.usage.reasoning.output_tokens`;
+  - errors: `error.type`, carrying the `SafeErrorInfo` class or `_OTHER`.
+- **go-llm names.** Concepts the conventions lack use `go_llm.*`:
+  - the raw provider, effort, and tool count;
+  - cost in USD and its source;
+  - dropped tool calls;
+  - `go_llm.canceled` and `go_llm.stream.abandoned`;
+  - a `go_llm.first_chunk` event, and one `go_llm.block` event per content
+    block carrying only type, index, character count, and tool name.
+- **Metrics:** `gen_ai.client.operation.duration`,
+  `gen_ai.client.token.usage` (by `gen_ai.token.type`),
+  `gen_ai.client.operation.time_to_first_chunk` (streams only), and the
+  `go_llm.client.cost` counter. They use the convention-recommended bucket
+  boundaries.
+- **Content-free by construction.** No prompt, system, completion,
+  reasoning, tool-argument, or tool-result bytes are recorded, and error
+  status descriptions are `llm.SafeError` truncated to 500 bytes for
+  provider errors, and only the error class for any other error, so text
+  from caller middleware is never recorded. A canary test enforces this.
+- **Error status.** Caller cancellation and a consumer abandoning a stream
+  are not errors.
 Budget **enforcement** (halting/refusing calls once a token or cost cap
 is hit) is workload policy → `go-agent`; it composes as a few-line
 middleware over `UsageTracker.Stats()`, and Anthropic's server-side task
@@ -987,67 +1371,136 @@ responsibility. (Naming: the whole capture surface uses the "wire"
 vocabulary — `WireCapture`, `NewWireTap`, `WithWireCapture`,
 `WireCaptureToLogger`.)
 
-## 17C. Subscription Auth (OAuth)
+## 17C. Authentication: credential stores and OAuth
 
-In scope: consuming and refreshing OpenAI Codex subscription credentials,
-minting initial Codex credentials through browser authorization-code PKCE,
-and a reusable public interactive-login lifecycle. Provider protocol details
-stay in provider packages.
+go-llm mirrors pi's authentication model (pi v1.4, `packages/ai/src/auth`).
 
-- **Login-flow contract**: `llm.LoginFlow` is a single-use, context-aware
-  `Begin` / `Complete` / `Submit` / `Cancel` lifecycle. `Begin` returns a
-  redacting `LoginAuthorization` containing a short-lived, non-secret launch
-  URL and display instructions. `Complete` waits for provider completion
-  delivered automatically or through `Submit`; `Submit` is an optional
-  provider-specific manual/fallback path. The provider owns endpoints, scopes,
-  callback choice, PKCE, CSRF state validation, response parsing, token
-  exchange, provider-owned input/code/state byte limits, and bounded cleanup.
-  Transport failures are mapped to stable normalized/sentinel-classified
-  errors without wrapping credential-bearing request errors. Errors and
-  formatted flow values never expose credentials, authorization codes, state,
-  or PKCE verifiers.
-
-- **Credential shape**: the `oauth` variant of the documented auth format
-  (§17): `{access, refresh?, expires?, accountId?}`.
-- **Provider option**: subscription-capable providers accept
-  `WithOAuth(cred, persist)` where `persist` is
-  `llm.OAuthPersistenceFunc` (`func(context.Context, AuthCredential) error`)
-  — bearer auth, automatic refresh on expiry (plus one forced-refresh retry
-  on 401), with renewed credentials handed to the caller for persistence
-  (go-llm never writes files). The callback MUST honor its generation context
-  and return only after durable persistence. Cancellation, deadline, or any
-  returned error prevents publication of the renewed credential and is
-  propagated to all waiters with `errors.Is` compatibility. A credential with
-  a non-empty refresh token is rejected at provider construction when persist
-  is nil. An access-only credential may omit persist because it cannot renew.
-  Callers may deliberately pass an explicit context-aware no-op for
-  in-memory-only rotation, but doing so risks restart with a stale stored
-  refresh token.
+- **Credentials.** An `llm.AuthCredential` is pi's auth.json credential
+  union: `{"type":"api_key","key"}` or `{"type":"oauth","access",
+  "refresh","expires","clientId"?,"accountId"?}`, plus go-llm's optional
+  `model`/`base_url` configuration fields. `llm.LoadAuthFile` and
+  `ParseAuthFile` read bare and `{"providers":...}`-wrapped files; unknown
+  fields such as pi's `scopes` are ignored. `ClientID` is the OAuth client
+  issued per login, which refresh requires.
+- **Credential stores.** `llm.CredentialStore` is application-owned storage
+  keyed by provider ID with `Read`, `Modify`, and `Delete`:
+  - `Modify` is the only write path, serialized per provider ID (across
+    processes where supported). It passes the current credential to `fn`
+    and stores `fn`'s result.
+  - `ctx` bounds only the wait for exclusivity: once `fn` runs, its write
+    completes, because a started OAuth refresh may already have rotated the
+    refresh token.
+  - Implementations live in `authstore`. `NewMemory` is in-process.
+    `NewFile(path)` is a pi-compatible auth.json:
+    - It re-reads the file on every `Read`, without the lock; a file that
+      reads as empty or unparsable is re-read under the lock, because pi
+      rewrites auth.json in place.
+    - `Modify` and `Delete` hold an in-process lock plus pi's
+      cross-process lock (proper-lockfile's protocol): `<path>.lock` is
+      created as a directory, the holder refreshes its mtime every 5 s
+      (pi's synchronous reload treats 10 s as stale), a lock untouched for
+      30 s is stale and removed, and release removes it. pi and go-llm
+      therefore exclude each other on a shared auth.json. A holder whose
+      lock was removed or replaced meanwhile writes nothing and leaves the
+      new lock alone. Waits are bounded at 45 s (`ErrTimeout`).
+    - Writes go through a symlinked path to its target.
+    - Writes are atomic (temporary file, fsync, rename, directory fsync)
+      with mode 0600.
+    - Other entries, the `providers` wrapper, and unknown entry fields are
+      preserved. A credential type change drops the old type's fields but
+      keeps `model`/`base_url`.
+    - Errors never quote file content.
+- **Provider resolution** (`WithCredentials(store)` on `openai`,
+  `anthropic`, and `openrouter`) runs on every request:
+  - A stored credential owns the provider: a stored credential of a type
+    the provider cannot use fails with `ErrAuth` and never falls back to
+    the environment.
+  - With nothing stored, or a stored `api_key` entry without a key (as in
+    pi), the provider's environment variable is used.
+  - `WithCredentials` is mutually exclusive with `WithAPIKey`/
+    `WithAPIKeyFunc`.
+  - Anthropic and OpenRouter accept stored `api_key` credentials only.
+    Anthropic explains a stored `oauth` entry (pi's Claude Pro/Max login):
+    subscription credentials are limited to Anthropic's own apps, so the
+    entry must be replaced with an API key or removed.
+- **OAuth refresh** (`provideroauth.Resolver`) mirrors pi's
+  `resolveStoredOAuth`:
+  - An optimistic `Read`; a token with less than five minutes left, or
+    without an expiry, is refreshed inside `Modify` after re-checking under
+    the lock, so concurrent requests and processes refresh exactly once.
+  - A minted or refreshed credential stores `expires` as now +
+    `expires_in` − 3 minutes, as pi does, so a shared file means the same
+    to both.
+  - The renewed credential is stored before it is used.
+  - A started refresh ignores caller cancellation and is bounded by a
+    15 s timeout (pi's).
+  - Identity fields (`clientId`, `accountId`) survive a refresh response
+    that omits them.
+  - After an HTTP 401, the request is retried once with a forced refresh,
+    skipped if the stored token has already changed.
+  - Refresh endpoints never follow redirects.
+- **Sign in with ChatGPT (`openai`).** An `oauth` credential lets a
+  ChatGPT subscription use the ordinary Responses API: its access token is
+  sent to `api.openai.com` as a bearer token.
+  - Login (`openai.NewLoginFlow`) is pi's public-client flow:
+    - It authorizes at `auth.openai.com/api/accounts/authorize` with
+      `client_id=dynamic_agent_client`, `agent_name_hint` (default
+      `go-llm`), `ext_agent_host_id=urn:uuid:<device ID>`, `resource=
+      https://api.openai.com/v1`, scope `openid profile email
+      offline_access resource.invoke chatgpt.tokens.use.direct`, S256
+      PKCE, state, and nonce.
+    - The callback must carry the issued `client_id`.
+    - The token exchange requires an ID token, a refresh token, a positive
+      lifetime, and the `chatgpt.tokens.use.direct` scope.
+  - Refresh sends `grant_type=refresh_token`, the stored `clientId`, and
+    `resource`, with the same response requirements.
+  - `WithLoginDeviceID` is required: a stable per-installation UUID that
+    the host creates once and persists.
+  - The flow binds only `127.0.0.1:1455` with redirect `/auth/callback`,
+    and fails with `ErrServer` while another login holds the port.
+  - Subscription usage limits (`subscription_sharing_*usage_limit_exceeded`)
+    classify as `ErrInsufficientCredits`, which is not transient.
+  - The token reaches only the subscription's model catalog, and the
+    endpoint accepts only streaming requests. Mirroring pi, on that path
+    the provider:
+    - serves `Chat` by draining a stream;
+    - omits `temperature`, `top_p`, `max_output_tokens`,
+      `prompt_cache_retention`, and `prompt_cache_options`, which the
+      endpoint rejects (so `MaxTokens`, `Temperature`, and `TopP` are
+      ignored);
+    - maps `Models` from the `{"models": [...]}` catalog the endpoint
+      returns in place of `{"data": [...]}` (listed rows only, with
+      context window, reasoning ladder and default, parallel tools, and
+      image input).
+  - Rejections arrive as `{"detail": ...}` bodies; their message maps
+    into `ProviderError.Message`.
+  - No prompt-cache reads were observed on this path (2026-10-22 probes);
+    `CacheReadTokens` reports what the endpoint returns.
+- **Login-flow contract.** `llm.LoginFlow` is a single-use, context-aware
+  `Begin`/`Complete`/`Submit`/`Cancel` lifecycle.
+  - `Begin` returns a redacting `LoginAuthorization` with a short-lived
+    loopback launch URL.
+  - `Complete` waits for the automatic callback or `Submit` (a copied
+    callback URL).
+  - The shared loopback engine (`provideroauth.LoopbackFlow`) provides
+    IPv4-only listening, constant-time state checks, bounded callback
+    fields, flow and exchange timeouts, single use, and closing of idle
+    keep-alive connections (so a later login's callback cannot hit a stale
+    server).
+  - The provider owns endpoints, parameters, and exchange.
+  - The returned credential is never persisted by go-llm: the host writes
+    it with `store.Modify`.
 - **Anthropic** — API-key authentication only. go-llm does not consume or
   mint Anthropic subscription credentials and does not emulate Claude Code
-  identity. An Agent SDK layer, if desired by a host application, belongs
-  outside this transport library.
-- **`openai-codex` (ChatGPT Plus/Pro)** — a separate provider (id
-  `openai-codex`): the
-  Responses wire shape against `chatgpt.com/backend-api/codex`, extra
-  headers (`chatgpt-account-id` resolved per request from the stored
-  credential, `originator`), refresh via OpenAI's OAuth token endpoint.
-  `openaicodex.NewLoginFlow` mints the initial credential using the official
-  browser authorization-code PKCE client identity, endpoints, scopes, flags,
-  and originator. It binds only `127.0.0.1`, advertises the exact
-  `http://localhost:{port}/auth/callback` redirect, tries port 1455 then the
-  registered 1457 fallback, and accepts a complete copied callback URL/query
-  through `Submit`. Independent CSRF state and PKCE verifier, constant-time
-  state checks, bounded callback/token data, total and exchange deadlines,
-  redirect refusal, and sanitized errors protect the flow. Only a
-  matching-state success or provider denial is terminal; stray, malformed,
-  wrong-method/path/state, missing, and oversized callbacks remain
-  non-terminal. Account ID comes from the ID token's namespaced claim with
-  access-token fallback and login fails if neither contains it. The ID token
-  is not stored. The host receives and persists the credential. Device flow
-  and a built-in CLI login UX remain deferred. Automated tests are offline;
-  live login verification remains required. Capabilities mirror
-  `providers/openai`.
+  identity (pi does; go-llm deliberately does not, because Anthropic
+  restricts subscription credentials to its own clients). An Agent SDK
+  layer, if desired by a host application, belongs outside this transport
+  library.
+- **Removed:** the `openai-codex` provider (ChatGPT backend at
+  `chatgpt.com/backend-api/codex`), `WithOAuth(cred, persist)`, and
+  `llm.OAuthPersistenceFunc`. pi superseded its Codex provider with Sign in
+  with ChatGPT on `openai`, and go-llm followed without a deprecation
+  period.
 
 ## 18. Edge Cases & Behaviors
 
@@ -1061,6 +1514,40 @@ stay in provider packages.
 - **Reasoning round-trip**: replaying history containing `Reasoning` parts
   re-emits the preserved raw payloads for the same provider; other providers
   receive only what their API accepts (raw payloads dropped).
+- **Model-aware replay**: a `ReasoningPart` replays only when its assistant
+  message was produced by the request's model.
+  - Every engine applies one shared pre-pass. When `Message.Model` is set
+    and `!llm.SameModel(Message.Model, Request.Model)`, the message's
+    reasoning parts are dropped, never converted to text.
+  - An assistant message left empty is dropped, as with provider filtering.
+  - `Message.Model` is the server-reported model, which often differs from
+    the requested alias (Anthropic answers `claude-opus-4-0` as
+    `claude-opus-4-20250514` and `…-latest` with a dated ID; OpenAI appends
+    a date). `llm.SameModel` therefore compares IDs case-insensitively
+    after trimming and removing, in order, one `:variant` routing suffix,
+    one trailing date snapshot (`-YYYYMMDD`, `_YYYYMMDD`, `@YYYYMMDD`,
+    `-YYYY-MM-DD`), one `-latest`, and one trailing `-0`.
+  - The normalization deliberately leans toward matching. A false match
+    reproduces the earlier provider-gated replay, while a false mismatch
+    would strip the signed thinking a same-model Anthropic tool loop
+    requires. Different versions or sizes (`gpt-5` vs `gpt-5-mini`) still
+    differ.
+  - History with an empty `Message.Model` (legacy) keeps provider-gated
+    replay. Persisting assistant provenance (as `History.AddResponse` does)
+    is what enables the rule.
+  - The rule matters most on aggregators such as OpenRouter, where one
+    provider fronts many model families. Live probes (2026-10-22) found
+    OpenRouter accepts cross-family `reasoning_details` without rejecting
+    them, and never requires them to continue a tool loop. Dropping them is
+    therefore safe there and keeps another model's signed reasoning off the
+    wire.
+  - Unverified on direct Anthropic: switching models mid tool loop with
+    thinking enabled leaves the final assistant turn without a thinking
+    block, which Anthropic may reject. Before this rule the previous model's
+    signed block was sent instead, and whether Anthropic accepts that across
+    models is equally unverified. Callers
+    switching models mid tool loop on direct Anthropic should disable
+    thinking for the switch turn until this is live-verified.
 - **OpenAI statelessness**: the adapter always sends `store: false` +
   `include: ["reasoning.encrypted_content"]` — no server-side conversation
   state unless explicitly opted into via `openai.Options`. Encrypted
@@ -1090,13 +1577,13 @@ Usage shape (single-shot, stateless, streams to stdout by default):
 llm-cli -p anthropic -m claude-opus-4-8 "explain me this error: ..."
 echo "long doc" | llm-cli -p openai -m gpt-5.5 -s "summarize stdin"
 llm-cli -p openrouter -m z-ai/glm-4.7 --effort high --json "..."
-llm-cli -p openai-codex --auth-file ~/.config/llm/auth.json -m gpt-5.4 "..."
+llm-cli -p openai --auth-file ~/.pi/agent/auth.json -m gpt-5.5 "..."
 llm-cli models -p openrouter
 ```
 
 - **Prompt sources**: positional arg, stdin (piped), or both (stdin
   appended as a text part) — curl-style composability.
-- **Flags**: `-p/--provider` (anthropic|openai|openai-codex|openrouter),
+- **Flags**: `-p/--provider` (anthropic|openai|openrouter),
   `-m/--model`, `-s/--system`, `--effort`, `--max-tokens`, `--temp`
   (alias `--temperature`), `--image <path|url>` / `--file <path|url>`
   (repeatable), `--schema <file.json>` (structured output; prints
@@ -1106,9 +1593,8 @@ llm-cli models -p openrouter
   stderr), `--reasoning` (print reasoning deltas to stderr as they
   stream), `--cache-system` (set `SystemCache` — pair with `--usage` to
   observe cache hits), `--session-id`, `--debug` (wire capture to stderr
-  via `WireCaptureToLogger`), `--api-key` (for `openai-codex` this carries the
-  OAuth **access token**, not an API key — a deliberate semantic overload
-  stated in the flag's help text), `--auth-file` (OpenAI Codex only),
+  via `WireCaptureToLogger`), `--api-key`, `--auth-file` (a pi-compatible
+  credential store for every provider; exclusive with `--api-key`),
   `--base-url`, `--timeout`, `--version`.
 - **Conversation files** — multi-turn the curl way (state in files, not
   the process): `--load <file>` prepends a saved conversation (canonical
@@ -1120,15 +1606,13 @@ llm-cli models -p openrouter
   supported efforts, default effort, and positive reasoning-required claims;
   JSON uses optional `supported_efforts`, `default_effort`, and
   `reasoning_required` fields.
-- **Keys** from provider env vars (library convention) or `--api-key`.
-  OpenAI Codex auth precedence is explicit `--auth-file`, then
-  `OPENAI_CODEX_ACCESS_TOKEN`, then compatibility `--api-key`; files are
-  never loaded unless the flag is supplied. The compatibility flag exposes
-  its value through process argv and often shell history, so the file or env
-  forms are preferred. Refreshes from an auth file hold a bounded
-  cross-process advisory lock across the full read/modify/durable-publication
-  transaction, retain restrictive temporary-file permissions, and replace
-  the file atomically.
+- **Credentials**: `--auth-file` opens an `authstore.File` (§17C) that every
+  provider reads per request: API keys for any provider, and Sign in with
+  ChatGPT OAuth for `openai`, refreshed and written back under the file's
+  cross-process lock. Without it, providers read their environment variable
+  (library convention), or `--api-key`, whose value is exposed through
+  process argv and shell history. Files are never read unless the flag is
+  supplied.
 - **Tool calls are printed, not executed**: with `--tool <file.json>`
   (repeatable tool declarations), a `tool_use` stop prints the tool calls
   as JSON and exits — execution loops are `go-agent` territory; the CLI

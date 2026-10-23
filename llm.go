@@ -51,7 +51,31 @@ type ModelInfo struct {
 	// The metadata is advisory: empty means unknown, and request validation
 	// continues to use Provider.Capabilities().
 	Capabilities []Capability
-	Raw          any
+	// Behavior records how go-llm talks to the model (FS §13B). It comes
+	// from the embedded models.json table, whose generator applies per-model
+	// rules as pi does; live listings leave it zero, which means unknown and
+	// selects the conservative behavior.
+	Behavior ModelBehavior
+	Raw      any
+}
+
+// ModelBehavior holds per-model wire behavior from the embedded models.json
+// table. Providers consult it through LookupModelInfo; a zero field means
+// unsupported or unknown.
+type ModelBehavior struct {
+	// PositionalInstructions: RoleSystem messages are accepted after the
+	// conversation has started, so they are sent in place instead of being
+	// folded into the system prompt.
+	PositionalInstructions bool
+	// PositionalTools: tool additions and removals are accepted in place
+	// (Anthropic tool_addition/tool_removal, OpenAI additional_tools).
+	PositionalTools bool
+}
+
+// PositionalSupport returns the positional changes the model accepts in
+// place, for FoldPositional.
+func (b ModelBehavior) PositionalSupport() PositionalSupport {
+	return PositionalSupport{Instructions: b.PositionalInstructions, Tools: b.PositionalInstructions && b.PositionalTools}
 }
 
 // ModelPricingTier replaces the base rates for an entire request when its
@@ -62,10 +86,14 @@ type ModelPricingTier struct {
 	OutputPerMTok     float64 `json:"output_per_mtok"`
 	CacheReadPerMTok  float64 `json:"cache_read_per_mtok"`
 	CacheWritePerMTok float64 `json:"cache_write_per_mtok"`
+	// Availability records which tier rates are known. Nil means all four
+	// rates are known; a non-nil value is authoritative, so an unavailable
+	// tier rate stays unknown rather than falling back to the base rate.
+	Availability *ModelPricingAvailability `json:"availability,omitempty"`
 }
 
 // ModelPricing stores per-million-token prices in USD. Tiers, when present,
-// apply one complete rate set to the entire request based on prompt occupancy.
+// apply one rate set to the entire request based on prompt occupancy.
 type ModelPricing struct {
 	InputPerMTok      float64            `json:"input_per_mtok"`
 	OutputPerMTok     float64            `json:"output_per_mtok"`
@@ -73,19 +101,44 @@ type ModelPricing struct {
 	CacheWritePerMTok float64            `json:"cache_write_per_mtok"`
 	Tiers             []ModelPricingTier `json:"tiers,omitempty"`
 	// Availability distinguishes an explicitly reported zero/free component
-	// from an unknown component. Nil preserves the legacy contract: input and
-	// output rates are known, while cache rates are known when non-zero.
+	// from an unknown component. Nil means input and output rates are known
+	// and cache rates are known when non-zero.
 	Availability *ModelPricingAvailability `json:"availability,omitempty"`
 }
 
-// ModelPricingAvailability records which independently optional base rates a
-// provider reported as valid. A non-nil value is authoritative for all four
+// ModelPricingAvailability records which independently optional base or tier
+// rates a provider reported as valid. A non-nil value is authoritative for all four
 // components, including explicit zero/free rates.
 type ModelPricingAvailability struct {
 	InputPerMTok      bool `json:"input_per_mtok,omitempty"`
 	OutputPerMTok     bool `json:"output_per_mtok,omitempty"`
 	CacheReadPerMTok  bool `json:"cache_read_per_mtok,omitempty"`
 	CacheWritePerMTok bool `json:"cache_write_per_mtok,omitempty"`
+}
+
+// Clone returns a deep copy of p, or nil when p is nil.
+func (p *ModelPricing) Clone() *ModelPricing {
+	if p == nil {
+		return nil
+	}
+	cloned := *p
+	cloned.Availability = cloneAvailability(p.Availability)
+	if p.Tiers != nil {
+		cloned.Tiers = make([]ModelPricingTier, len(p.Tiers))
+		for i, tier := range p.Tiers {
+			tier.Availability = cloneAvailability(tier.Availability)
+			cloned.Tiers[i] = tier
+		}
+	}
+	return &cloned
+}
+
+func cloneAvailability(availability *ModelPricingAvailability) *ModelPricingAvailability {
+	if availability == nil {
+		return nil
+	}
+	cloned := *availability
+	return &cloned
 }
 
 // HasInputPrice reports whether InputPerMTok is known, including when it is

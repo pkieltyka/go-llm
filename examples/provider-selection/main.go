@@ -1,8 +1,8 @@
 // Provider-selection constructs a provider from whatever credentials are
 // available, in priority order:
 //
-//  1. LLM_AUTH_FILE — a pi-compatible auth file loaded with llm.LoadAuthFile,
-//     covering both API-key providers and subscription OAuth (openai-codex).
+//  1. LLM_AUTH_FILE — a pi-compatible auth file used as an authstore.File
+//     credential store, covering API keys and OpenAI Sign in with ChatGPT.
 //  2. Provider env keys: ANTHROPIC_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY.
 //  3. The scripted llmtest fallback, so the example still runs offline.
 //
@@ -16,10 +16,10 @@ import (
 	"os"
 
 	llm "github.com/pkieltyka/go-llm"
+	"github.com/pkieltyka/go-llm/authstore"
 	"github.com/pkieltyka/go-llm/llmtest"
 	"github.com/pkieltyka/go-llm/providers/anthropic"
 	"github.com/pkieltyka/go-llm/providers/openai"
-	"github.com/pkieltyka/go-llm/providers/openaicodex"
 	"github.com/pkieltyka/go-llm/providers/openrouter"
 )
 
@@ -61,40 +61,27 @@ func selectProvider() (llm.Provider, string, error) {
 }
 
 // fromAuthFile builds the first configured provider found in a pi-compatible
-// credential file (either bare or wrapped in {"providers": ...}).
+// credential file (either bare or wrapped in {"providers": ...}). Providers
+// read the file through an authstore.File on every request, so an OpenAI
+// Sign in with ChatGPT credential is refreshed and written back under the
+// file's lock automatically.
 func fromAuthFile(path string) (llm.Provider, string, error) {
 	auth, err := llm.LoadAuthFile(path)
 	if err != nil {
 		return nil, "", err
 	}
+	store := authstore.NewFile(path)
 	if cred, ok := auth["anthropic"]; ok && cred.Key != "" {
-		p, err := anthropic.New(anthropic.WithAPIKey(cred.Key))
+		p, err := anthropic.New(anthropic.WithCredentials(store))
 		return p, modelOr(cred.Model, "claude-haiku-4-5"), err
 	}
-	if cred, ok := auth["openai"]; ok && cred.Key != "" {
-		p, err := openai.New(openai.WithAPIKey(cred.Key))
-		return p, modelOr(cred.Model, "gpt-4.1-mini"), err
+	if cred, ok := auth["openai"]; ok && (cred.Key != "" || cred.Type == "oauth") {
+		p, err := openai.New(openai.WithCredentials(store))
+		return p, modelOr(cred.Model, "gpt-5.4-mini"), err
 	}
 	if cred, ok := auth["openrouter"]; ok && cred.Key != "" {
-		p, err := openrouter.New(openrouter.WithAPIKey(cred.Key))
+		p, err := openrouter.New(openrouter.WithCredentials(store))
 		return p, modelOr(cred.Model, "qwen/qwen3.6-27b"), err
-	}
-	if cred, ok := auth["openai-codex"]; ok && cred.Access != "" {
-		var persist llm.OAuthPersistenceFunc
-		if cred.Refresh != "" {
-			// This demo deliberately keeps rotations in memory. Production code
-			// should durably update path instead; this no-op can leave the stored
-			// refresh token stale after restart.
-			fmt.Fprintln(os.Stderr, "warning: OAuth rotations are not persisted by this demo")
-			persist = func(ctx context.Context, _ llm.AuthCredential) error {
-				if err := ctx.Err(); err != nil {
-					return err
-				}
-				return nil
-			}
-		}
-		p, err := openaicodex.New(openaicodex.WithOAuth(cred, persist))
-		return p, modelOr(cred.Model, "gpt-5.4-mini"), err
 	}
 	return nil, "", fmt.Errorf("no usable credentials in %s", path)
 }

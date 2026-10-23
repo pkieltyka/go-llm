@@ -32,7 +32,7 @@ func TestAnthropicPromptCacheProbeRequiresObservedRead(t *testing.T) {
 func TestPromptCacheProbeAcceptsWarmupCacheHit(t *testing.T) {
 	warmup := &llm.Response{Usage: llm.Usage{InputTokens: 10, CacheReadTokens: 90}}
 	calls := 0
-	first, hit, err := probePromptCache(context.Background(), "openai-codex", noDelayPromptCachePolicy(3, nil), func(context.Context) (*llm.Response, error) {
+	first, hit, err := probePromptCache(context.Background(), "openai", noDelayPromptCachePolicy(3, nil), func(context.Context) (*llm.Response, error) {
 		calls++
 		return warmup, nil
 	})
@@ -44,12 +44,12 @@ func TestPromptCacheProbeAcceptsWarmupCacheHit(t *testing.T) {
 	}
 }
 
-func TestCodexPromptCacheProbeUsesBoundedDeterministicRetries(t *testing.T) {
+func TestPromptCacheProbeUsesBoundedDeterministicRetries(t *testing.T) {
 	reads := []int64{0, 0, 0, 7} // warm-up followed by three probes.
 	calls := 0
 	var waits []time.Duration
 	policy := noDelayPromptCachePolicy(3, &waits)
-	_, hit, err := probePromptCache(context.Background(), "openai-codex", policy, func(context.Context) (*llm.Response, error) {
+	_, hit, err := probePromptCache(context.Background(), "openai", policy, func(context.Context) (*llm.Response, error) {
 		response := &llm.Response{Usage: llm.Usage{InputTokens: 100, CacheReadTokens: reads[calls]}}
 		calls++
 		return response, nil
@@ -68,7 +68,7 @@ func TestCodexPromptCacheProbeUsesBoundedDeterministicRetries(t *testing.T) {
 
 func TestPromptCacheProbeFailsAfterBound(t *testing.T) {
 	calls := 0
-	_, _, err := probePromptCache(context.Background(), "openai-codex", noDelayPromptCachePolicy(3, nil), func(context.Context) (*llm.Response, error) {
+	_, _, err := probePromptCache(context.Background(), "openai", noDelayPromptCachePolicy(3, nil), func(context.Context) (*llm.Response, error) {
 		calls++
 		return &llm.Response{Usage: llm.Usage{InputTokens: 100}}, nil
 	})

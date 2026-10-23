@@ -298,3 +298,22 @@ func TestTokenizerInfoNotEnabled(t *testing.T) {
 		t.Fatalf("error missing vllm provider metadata: %v", err)
 	}
 }
+
+func TestCountTokensUsesTokenize(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/tokenize" {
+			t.Errorf("path = %q, want /tokenize", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		mustWrite(t, w, `{"count":288,"max_model_len":262144,"tokens":[1,2]}`)
+	}))
+	t.Cleanup(server.Close)
+	p, err := New(server.URL+"/v1", WithMaxRetries(0), WithHTTPClient(server.Client()))
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	got, err := llm.CountTokens(context.Background(), llm.Wrap(p, llm.Middleware{}), &llm.Request{Model: "m", Messages: []llm.Message{llm.UserText("hi")}})
+	if err != nil || got != (llm.TokenCount{Tokens: 288, Exact: true}) {
+		t.Fatalf("CountTokens = %+v, %v", got, err)
+	}
+}

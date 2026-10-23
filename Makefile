@@ -1,27 +1,32 @@
 GO ?= go
 PNPM ?= pnpm
-GOLANGCI_LINT_VERSION ?= v2.12.2
+GOLANGCI_LINT_VERSION ?= v2.14.0
 GOVULNCHECK_VERSION ?= v1.5.0
 GO_MIN_VERSION ?= 1.26.0
-MODEL_SOURCE_DIR ?= scripts/model-sources/2026-08-26
+MODEL_SOURCE_DIR ?= scripts/model-sources/2026-10-23
 MODEL_ARGS ?=
 PATCH_BASE ?= HEAD
+# Nested modules with their own go.mod (integrations kept out of the root
+# module's dependency graph). Each check below also runs inside them.
+CONTRIB_MODULES ?= contrib/otelllm
 
 .DEFAULT_GOAL := build
 
 .PHONY: build test e2e-test models check check-go-version \
 	check-release-go-version check-format check-mod-tidy check-patch \
 	check-build check-vet check-lint check-test check-snapshots \
-	check-models-reproducible check-live \
+	check-models-json check-models-reproducible check-live \
 	check-coverage check-vulnerabilities check-fuzz
 
 build:
 	$(GO) build ./...
+	@for m in $(CONTRIB_MODULES); do echo "$(GO) -C $$m build ./..."; $(GO) -C $$m build ./... || exit 1; done
 	mkdir -p bin
 	$(GO) build -o bin/llm-cli ./cmd/llm-cli
 
 test:
 	$(GO) test -race -count=1 ./... $(TEST_ARGS)
+	@for m in $(CONTRIB_MODULES); do echo "$(GO) -C $$m test -race -count=1 ./..."; $(GO) -C $$m test -race -count=1 ./... $(TEST_ARGS) || exit 1; done
 
 e2e-test:
 	$(GO) test -count=1 -tags=live -v ./internal/e2e $(E2E_ARGS)
@@ -33,7 +38,7 @@ models:
 # check is the complete credential-free, network-dependent CI gate.
 check: check-go-version check-format check-mod-tidy check-patch \
 	check-build check-vet check-lint check-test check-snapshots check-live \
-	check-models-reproducible check-coverage check-vulnerabilities check-fuzz
+	check-models-json check-coverage check-vulnerabilities check-fuzz
 
 check-go-version:
 	./scripts/check-go-version.sh "$(GO)" "$(GO_MIN_VERSION)"
@@ -46,6 +51,7 @@ check-format:
 
 check-mod-tidy:
 	$(GO) mod tidy -diff
+	@for m in $(CONTRIB_MODULES); do echo "$(GO) -C $$m mod tidy -diff"; $(GO) -C $$m mod tidy -diff || exit 1; done
 
 check-patch:
 	git diff --check "$(PATCH_BASE)" -- .
@@ -57,9 +63,11 @@ check-build: build
 
 check-vet:
 	$(GO) vet ./...
+	@for m in $(CONTRIB_MODULES); do echo "$(GO) -C $$m vet ./..."; $(GO) -C $$m vet ./... || exit 1; done
 
 check-lint:
 	$(GO) run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run --default=none --enable=govet --enable=ineffassign --enable=unused ./...
+	@for m in $(CONTRIB_MODULES); do echo "lint $$m"; $(GO) -C $$m run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run --default=none --enable=govet --enable=ineffassign --enable=unused ./... || exit 1; done
 
 check-test: test
 
@@ -67,6 +75,10 @@ check-snapshots:
 	$(PNPM) --dir scripts install --frozen-lockfile
 	$(PNPM) --dir scripts test
 
+check-models-json:
+	node -e 'JSON.parse(require("node:fs").readFileSync("models.json", "utf8"))'
+
+# Optional audit against captured sources; normal model refreshes need only valid JSON.
 check-models-reproducible:
 	$(PNPM) --dir scripts install --frozen-lockfile
 	$(PNPM) --dir scripts run snapshot-models-table \
@@ -86,6 +98,7 @@ check-coverage:
 
 check-vulnerabilities:
 	$(GO) run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
+	@for m in $(CONTRIB_MODULES); do echo "govulncheck $$m"; $(GO) -C $$m run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./... || exit 1; done
 
 # go test -fuzz accepts only one package and one matching target per call.
 check-fuzz:

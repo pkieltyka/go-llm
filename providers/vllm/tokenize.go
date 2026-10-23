@@ -117,3 +117,16 @@ func (p *Provider) TokenizerInfo(ctx context.Context) (json.RawMessage, error) {
 	}
 	return out, nil
 }
+
+var _ llm.TokenCounter = (*Provider)(nil)
+
+// CountTokens implements llm.TokenCounter over Tokenize: the server's exact
+// prompt count for the request, rendered through the same conversion as
+// Chat. Use Tokenize directly for the token ids or max_model_len.
+func (p *Provider) CountTokens(ctx context.Context, req *llm.Request) (llm.TokenCount, error) {
+	result, err := p.Tokenize(ctx, req)
+	if err != nil {
+		return llm.TokenCount{}, err
+	}
+	return llm.TokenCount{Tokens: int64(result.Count), Exact: true}, nil
+}

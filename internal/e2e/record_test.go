@@ -12,10 +12,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	llm "github.com/pkieltyka/go-llm"
+	"github.com/pkieltyka/go-llm/authstore"
 )
 
 var updateFixtureRedactions = flag.Bool("update-fixture-redactions", false, "rewrite recorded fixtures through the current redactor")
@@ -59,7 +61,7 @@ func TestRedactCaptureRedactsHeadersBodiesAndURL(t *testing.T) {
 
 func TestRedactCaptureRedactsStableProviderIdentifiers(t *testing.T) {
 	capture := llm.WireCapture{
-		Provider: "openai-codex",
+		Provider: "openai",
 		Method:   http.MethodPost,
 		URL:      "https://api.example.test/v1/messages?request_id=req_live_123&prompt_cache_key=cache_live_123",
 		ResponseHeaders: http.Header{
@@ -690,5 +692,70 @@ func assertFixtureRedacted(t *testing.T, path string, data []byte) {
 	t.Helper()
 	if err := ValidateFixtureBytes(path, data); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRedactCaptureMocksAttributionItemKeys(t *testing.T) {
+	redacted := RedactCapture(llm.WireCapture{
+		Provider:     "openai",
+		Method:       http.MethodPost,
+		URL:          "https://api.example.test/v1/responses",
+		RequestBody:  []byte(`{"tools":[{"parameters":{"type":"array","items":{"type":"string"}}}]}`),
+		ResponseBody: []byte(`{"item_id":"msg_mocklive1234567890","usage":{"attribution":{"items":{"msg_mocklive1234567890":{"input_tokens":2}}}}}`),
+	})
+	if strings.Contains(redacted.ResponseBody, "msg_mocklive1234567890") {
+		t.Fatalf("attribution item key leaked: %s", redacted.ResponseBody)
+	}
+	if !strings.Contains(redacted.ResponseBody, `"item_id":"MOCK-MSG-1"`) || !strings.Contains(redacted.ResponseBody, `"items":{"MOCK-MSG-1":`) {
+		t.Fatalf("attribution key not mocked like the item ID: %s", redacted.ResponseBody)
+	}
+	if !strings.Contains(redacted.RequestBody, `"items":{"type":"string"}`) {
+		t.Fatalf("schema items object must be untouched: %s", redacted.RequestBody)
+	}
+}
+
+// Credentials the store hands out, including tokens a refresh rotates in,
+// join the secret set, so an error body echoing the rotated token is
+// redacted from the recorded fixture.
+func TestRecordingCredentialStoreTracksRotatedCredentials(t *testing.T) {
+	ctx := context.Background()
+	secrets := NewSecretSet()
+	store := RecordingCredentialStore(authstore.NewMemory(llm.AuthFile{
+		"openai": {Type: "oauth", Access: "initial-access-canary", Refresh: "initial-refresh-canary"},
+	}), secrets)
+	if _, _, err := store.Read(ctx, "openai"); err != nil {
+		t.Fatal(err)
+	}
+	for _, rotation := range []string{"rotated-access-canary-1", "rotated-access-canary-2"} {
+		if _, _, err := store.Modify(ctx, "openai", func(current llm.AuthCredential, _ bool) (llm.AuthCredential, bool, error) {
+			current.Access = rotation
+			current.Refresh = rotation + "-refresh"
+			return current, true, nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := filepath.Join(t.TempDir(), "live.json")
+	capture := llm.WireCapture{
+		Provider:     "openai",
+		Method:       http.MethodGet,
+		URL:          "https://api.openai.com/v1/models",
+		Status:       http.StatusUnauthorized,
+		ResponseBody: []byte(`{"error":{"message":"bad token rotated-access-canary-1, rotated-access-canary-2"}}`),
+	}
+	if _, err := WriteFixtureChecked(path, []llm.WireCapture{capture}, FixtureWriteOptions{Secrets: secrets.Values()}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"initial-access-canary", "initial-refresh-canary", "rotated-access-canary-1", "rotated-access-canary-2", "rotated-access-canary-2-refresh"} {
+		if !slices.Contains(secrets.Values(), secret) {
+			t.Errorf("secret set lacks %s", secret)
+		}
+		if strings.Contains(string(data), secret) {
+			t.Errorf("fixture kept %s", secret)
+		}
 	}
 }

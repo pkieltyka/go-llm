@@ -1,6 +1,9 @@
 package llm
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestHistory(t *testing.T) {
 	var h History
@@ -53,5 +56,31 @@ func TestHistory(t *testing.T) {
 	}
 	if got := string(again[1].Parts[2].(ToolCallPart).Args); got != `{"q":"go"}` {
 		t.Fatalf("stored tool args = %q, want original JSON", got)
+	}
+}
+
+// A tool a ToolsDeltaPart adds is owned by the history: mutating its schema
+// through a snapshot or the original never reaches the stored message.
+func TestHistoryOwnsToolsDeltaSchemas(t *testing.T) {
+	raw := json.RawMessage(`{"type":"object"}`)
+	shaped := map[string]any{"type": "object", "required": []any{"q"}}
+	var h History
+	h.Add(Message{Role: RoleSystem, Parts: []Part{ToolsDeltaPart{Added: []Tool{
+		{Name: "raw", InputSchema: raw},
+		{Name: "shaped", InputSchema: shaped},
+	}}}})
+	raw[0] = '!'
+	shaped["type"] = "mutated"
+	snapshot := h.Messages()[0].Parts[0].(ToolsDeltaPart)
+	snapshot.Added[0].InputSchema.(json.RawMessage)[0] = '!'
+	snapshot.Added[1].InputSchema.(map[string]any)["required"].([]any)[0] = "mutated"
+
+	stored := h.Messages()[0].Parts[0].(ToolsDeltaPart)
+	if got := string(stored.Added[0].InputSchema.(json.RawMessage)); got != `{"type":"object"}` {
+		t.Fatalf("raw schema = %s", got)
+	}
+	schema := stored.Added[1].InputSchema.(map[string]any)
+	if schema["type"] != "object" || schema["required"].([]any)[0] != "q" {
+		t.Fatalf("JSON-shaped schema = %v", schema)
 	}
 }

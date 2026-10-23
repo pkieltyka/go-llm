@@ -43,6 +43,27 @@ func (r *Response) Reasoning() string {
 	return b.String()
 }
 
+// Clone returns a deep copy of r, or nil when r is nil. Parts follow
+// CloneParts semantics; DroppedToolCalls and Usage.CostUSD are copied, and
+// nil versus empty slices are preserved. The
+// in-memory SDK payloads Response.Raw and Usage.Raw are shared by reference
+// because their concrete types belong to provider SDKs.
+func (r *Response) Clone() *Response {
+	if r == nil {
+		return nil
+	}
+	cloned := *r
+	cloned.Parts = cloneParts(r.Parts)
+	if r.Parts != nil && cloned.Parts == nil {
+		cloned.Parts = []Part{}
+	}
+	if r.DroppedToolCalls != nil {
+		cloned.DroppedToolCalls = append([]DroppedToolCall{}, r.DroppedToolCalls...)
+	}
+	cloned.Usage = cloneUsage(r.Usage)
+	return &cloned
+}
+
 // ToolCalls returns all top-level tool calls in order.
 func (r *Response) ToolCalls() []ToolCallPart {
 	if r == nil {
@@ -108,6 +129,12 @@ type Usage struct {
 	// CacheWriteTokens counts prompt tokens written to a provider cache;
 	// zero when unreported.
 	CacheWriteTokens int64
+	// CacheWrite1hTokens is the informational SUBSET of CacheWriteTokens
+	// written with a one-hour cache lifetime (Anthropic CacheHint.TTL > 5m),
+	// never additive. Price tables publish no one-hour rate, so a nonzero
+	// value leaves an estimated CostUSD unknown rather than pricing it at the
+	// default write rate (FS §11).
+	CacheWrite1hTokens int64
 	// ReasoningTokens is an informational SUBSET of OutputTokens, never
 	// additive — context and cost math count output exactly once. Exception
 	// (FS §11): when a provider's native accounting violates the subset
@@ -128,7 +155,7 @@ type Usage struct {
 // CostUSD provenance values for Usage.CostSource.
 const (
 	// CostSourceNative marks a cost reported by the provider itself
-	// (billing-grade, e.g. OpenRouter usage.cost).
+	// (billing-grade, e.g. OpenRouter's billed total).
 	CostSourceNative = "native"
 	// CostSourceEstimated marks a cost computed from a price table
 	// (best-effort estimate, not billing data).

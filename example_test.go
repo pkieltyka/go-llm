@@ -254,3 +254,45 @@ func ExampleMarshalMessages_providerReplay() {
 	)
 	// Output: provider-b saw 3 messages; replayed provider-a/model-a; answered "ship checklist"
 }
+
+func ExampleCollector() {
+	ctx := context.Background()
+	p := llmtest.New()
+	p.EnqueueStream(
+		llm.MessageStart{Provider: "llmtest", Model: "test-model"},
+		llm.TextDelta{Index: 0, Text: "hel"},
+		llm.TextDelta{Index: 0, Text: "lo"},
+		llm.MessageEnd{StopReason: llm.StopReasonEndTurn},
+	)
+
+	var c llm.Collector
+	for event, err := range p.ChatStream(ctx, &llm.Request{
+		Model:    "test-model",
+		Messages: []llm.Message{llm.UserText("Say hello.")},
+	}) {
+		if err == nil {
+			err = c.Add(event)
+		}
+		if err != nil {
+			partial, err := c.Finish(err)
+			fmt.Println("partial:", partial.Text(), err)
+			return
+		}
+		if _, ok := event.(llm.TextDelta); ok {
+			fmt.Printf("so far: %q\n", c.Snapshot().Text())
+		}
+	}
+	resp, _ := c.Finish(nil)
+	fmt.Println(resp.Text(), resp.StopReason)
+	// Output:
+	// so far: "hel"
+	// so far: "hello"
+	// hello end_turn
+}
+
+func ExampleTransient() {
+	err := fmt.Errorf("chat: %w", &llm.ProviderError{Provider: "openrouter", HTTPStatus: 429, Kind: llm.ErrRateLimited})
+	info := llm.SafeErrorInfo(err)
+	fmt.Println(llm.Transient(err), info.Class, info.HTTPStatus)
+	// Output: true rate_limited 429
+}

@@ -95,7 +95,7 @@ llmtest 61
 cmd/llm-cli 77
 providers/anthropic 78
 providers/openai 82
-providers/openaicodex 69
+authstore 80
 providers/openrouter 75
 providers/chatcompletions 77
 providers/vllm 84

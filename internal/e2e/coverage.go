@@ -37,6 +37,8 @@ var liveCapabilityCoverage = []capabilityCoverage{
 	{llm.CapabilityPromptCaching, []string{"prompt_cache"}},
 	{llm.CapabilitySessionAffinity, []string{"session_affinity"}},
 	{llm.CapabilityCostReporting, []string{"cost_reporting"}},
+	{llm.CapabilityPositionalInstructions, []string{"positional_changes"}},
+	{llm.CapabilityPositionalTools, []string{"positional_changes"}},
 	{llm.Capability("openrouter/routing"), nil},
 	{llm.Capability("openrouter/plugins"), nil},
 }
@@ -55,16 +57,13 @@ var liveProviderProfiles = map[string]liveProviderProfile{
 	"openai": {
 		Exemptions: map[llm.Capability]string{llm.CapabilityPDFInput: pdfLiveExemption},
 	},
-	"openai-codex": {
-		Exemptions: map[llm.Capability]string{
-			llm.CapabilityPDFInput:      pdfLiveExemption,
-			llm.CapabilityPromptCaching: "the ChatGPT subscription backend accepts prompt_cache_key but cache admission and positive cached-token telemetry are nondeterministic; exact wire mapping and usage decoding are covered offline",
-		},
-	},
 	"openrouter": {
 		Exemptions: map[llm.Capability]string{
 			llm.Capability("openrouter/routing"): "routing selection is account and upstream availability dependent; request mapping is covered offline",
 			llm.Capability("openrouter/plugins"): "plugins invoke external services with nondeterministic availability; request mapping is covered offline",
+		},
+		Extensions: map[string]string{
+			"reasoning_model_switch": "cross-family model switch drops foreign reasoning_details (FS §18 model-aware replay); OpenRouter is the one configured preset fronting several reasoning model families",
 		},
 	},
 	"vllm": {
@@ -88,9 +87,11 @@ var liveScenarioOrder = []string{
 	"json_mode",
 	"reasoning",
 	"reasoning_replay",
+	"reasoning_model_switch",
 	"multimodal",
 	"stop_sequences",
 	"prompt_cache",
+	"positional_changes",
 	"session_affinity",
 	"usage",
 	"cost_reporting",

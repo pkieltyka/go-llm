@@ -336,3 +336,19 @@ func (o *countingProviderOptions) ForProvider() string {
 	o.calls++
 	return o.provider
 }
+
+func TestValidateRequestCacheRetention(t *testing.T) {
+	base := Request{Model: "m", Messages: []Message{UserText("hi")}}
+	for _, retention := range []CacheRetention{CacheRetentionDefault, CacheRetentionNone, CacheRetentionShort, CacheRetentionLong} {
+		req := base
+		req.CacheRetention = retention
+		if err := ValidateRequest(nil, &req); err != nil {
+			t.Errorf("retention %q: %v", retention, err)
+		}
+	}
+	req := base
+	req.CacheRetention = "forever"
+	if err := ValidateRequest(nil, &req); !errors.Is(err, ErrBadRequest) {
+		t.Fatalf("unknown retention err = %v, want ErrBadRequest", err)
+	}
+}

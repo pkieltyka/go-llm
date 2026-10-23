@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -42,7 +43,7 @@ func TestParseModelTableRejectsMalformedCatalogs(t *testing.T) {
 		{name: "negative base price", raw: catalogJSON(`{"provider":"openai","id":"gpt","pricing":{"input_per_mtok":-1}}`), want: "finite and non-negative"},
 		{name: "zero tier threshold", raw: catalogJSON(`{"provider":"openai","id":"gpt","pricing":{"tiers":[{"input_tokens_above":0,"input_per_mtok":1,"output_per_mtok":1,"cache_read_per_mtok":1,"cache_write_per_mtok":1}]}}`), want: "threshold must be positive and ascending"},
 		{name: "duplicate tier threshold", raw: catalogJSON(`{"provider":"openai","id":"gpt","pricing":{"tiers":[{"input_tokens_above":100,"input_per_mtok":1,"output_per_mtok":1,"cache_read_per_mtok":1,"cache_write_per_mtok":1},{"input_tokens_above":100,"input_per_mtok":2,"output_per_mtok":2,"cache_read_per_mtok":2,"cache_write_per_mtok":2}]}}`), want: "threshold must be positive and ascending"},
-		{name: "incomplete tier", raw: catalogJSON(`{"provider":"openai","id":"gpt","pricing":{"tiers":[{"input_tokens_above":100,"input_per_mtok":1}]}}`), want: "must be present"},
+		{name: "negative tier price", raw: catalogJSON(`{"provider":"openai","id":"gpt","pricing":{"tiers":[{"input_tokens_above":100,"input_per_mtok":1,"cache_write_per_mtok":-1}]}}`), want: "tier 0 cache_write_per_mtok must be finite and non-negative"},
 		{name: "unknown effort", raw: catalogJSON(`{"provider":"openai","id":"gpt","supported_efforts":["turbo"]}`), want: "known, unique, and ordered"},
 		{name: "duplicate effort", raw: catalogJSON(`{"provider":"openai","id":"gpt","supported_efforts":["low","low"]}`), want: "known, unique, and ordered"},
 		{name: "out of order effort", raw: catalogJSON(`{"provider":"openai","id":"gpt","supported_efforts":["high","low"]}`), want: "known, unique, and ordered"},
@@ -80,19 +81,48 @@ func TestModelTableCanonicalFallbackDeepCopiesPricingTiers(t *testing.T) {
 	}
 }
 
+func TestModelTableTierOmittedRatesAreUnavailable(t *testing.T) {
+	raw := catalogJSON(`{"provider":"openrouter","id":"x-ai/grok","pricing":{"input_per_mtok":1,"output_per_mtok":2,"cache_read_per_mtok":0.5,"tiers":[{"input_tokens_above":100,"input_per_mtok":2,"output_per_mtok":4,"cache_read_per_mtok":1}]}}`)
+	table, err := parseModelTable([]byte(raw))
+	if err != nil {
+		t.Fatalf("parseModelTable returned error: %v", err)
+	}
+	info, ok := table.lookup("openrouter", "x-ai/grok")
+	if !ok || info.Pricing == nil || len(info.Pricing.Tiers) != 1 {
+		t.Fatalf("lookup = %+v, %v", info, ok)
+	}
+	want := ModelPricingAvailability{InputPerMTok: true, OutputPerMTok: true, CacheReadPerMTok: true}
+	if got := info.Pricing.Tiers[0].Availability; got == nil || *got != want {
+		t.Fatalf("tier availability = %+v, want %+v", got, want)
+	}
+
+	costed := EstimateCost(Usage{InputTokens: 101, CacheReadTokens: 10, OutputTokens: 1}, *info.Pricing)
+	if costed.CostUSD == nil || *costed.CostUSD != 0.000216 {
+		t.Fatalf("tier cost = %v, want 0.000216", costed.CostUSD)
+	}
+	unknown := EstimateCost(Usage{InputTokens: 101, CacheWriteTokens: 1}, *info.Pricing)
+	if unknown.CostUSD != nil {
+		t.Fatalf("unpublished tier cache-write rate produced cost %v", *unknown.CostUSD)
+	}
+}
+
 func TestCloneModelInfoCopiesMutableMetadata(t *testing.T) {
 	availability := &ModelPricingAvailability{InputPerMTok: true}
 	original := ModelInfo{
 		ID:               "model",
 		SupportedEfforts: []Effort{EffortLow, EffortHigh},
 		Capabilities:     []Capability{CapabilityTools, CapabilityReasoning},
-		Pricing:          &ModelPricing{Availability: availability, Tiers: []ModelPricingTier{{InputTokensAbove: 100}}},
+		Pricing: &ModelPricing{Availability: availability, Tiers: []ModelPricingTier{{
+			InputTokensAbove: 100,
+			Availability:     &ModelPricingAvailability{InputPerMTok: true},
+		}}},
 	}
 	cloned := cloneModelInfo(original)
 	cloned.SupportedEfforts[0] = EffortMax
 	cloned.Capabilities[0] = CapabilityStreaming
 	cloned.Pricing.Tiers[0].InputTokensAbove = 999
 	cloned.Pricing.Availability.InputPerMTok = false
+	cloned.Pricing.Tiers[0].Availability.InputPerMTok = false
 
 	if original.SupportedEfforts[0] != EffortLow {
 		t.Fatal("cloned efforts alias the original")
@@ -105,6 +135,41 @@ func TestCloneModelInfoCopiesMutableMetadata(t *testing.T) {
 	}
 	if !original.Pricing.Availability.InputPerMTok {
 		t.Fatal("cloned pricing availability aliases the original")
+	}
+	if !original.Pricing.Tiers[0].Availability.InputPerMTok {
+		t.Fatal("cloned tier availability aliases the original")
+	}
+}
+
+func TestSupportedEffortsFromTableFixture(t *testing.T) {
+	raw := catalogJSON(
+		`{"provider":"openai","id":"synthetic-empty","supported_efforts":[]},` +
+			`{"provider":"openai","id":"synthetic-reasoner","supported_efforts":["low","high"]},` +
+			`{"provider":"openrouter","id":"openai/synthetic-reasoner","canonical_id":"openai/synthetic-reasoner"}`,
+	)
+	table, err := parseModelTable([]byte(raw))
+	if err != nil {
+		t.Fatalf("parseModelTable: %v", err)
+	}
+
+	if got := table.supportedEfforts("openai", "synthetic-empty"); got == nil || len(got) != 0 {
+		t.Fatalf("explicit empty ladder = %#v, want non-nil empty", got)
+	}
+
+	inherited := table.supportedEfforts("openrouter", "openai/synthetic-reasoner")
+	if want := []Effort{EffortLow, EffortHigh}; !slices.Equal(inherited, want) {
+		t.Fatalf("canonical-inherited ladder = %v, want %v", inherited, want)
+	}
+	inherited[0] = EffortMax
+	if again := table.supportedEfforts("openrouter", "openai/synthetic-reasoner"); again[0] != EffortLow {
+		t.Fatal("mutating an inherited ladder leaked into the table")
+	}
+	if canonical := table.supportedEfforts("openai", "synthetic-reasoner"); canonical[0] != EffortLow {
+		t.Fatal("mutating an inherited ladder leaked into the canonical row")
+	}
+
+	if got := table.supportedEfforts("openai", "synthetic-missing"); got != nil {
+		t.Fatalf("unknown model ladder = %v, want nil", got)
 	}
 }
 

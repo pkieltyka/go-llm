@@ -6,14 +6,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	llm "github.com/pkieltyka/go-llm"
 	"github.com/pkieltyka/go-llm/providers/anthropic"
 	"github.com/pkieltyka/go-llm/providers/openai"
-	"github.com/pkieltyka/go-llm/providers/openaicodex"
 	"github.com/pkieltyka/go-llm/providers/openrouter"
 	"github.com/pkieltyka/go-llm/providers/vllm"
 )
@@ -120,7 +118,7 @@ func handoffContinuationProvider(ctx context.Context, t *testing.T, sourceName s
 	if err != nil {
 		t.Fatalf("LoadConfig returned error: %v", err)
 	}
-	for _, name := range []string{"anthropic", "openrouter", "openai", "openai-codex", "vllm"} {
+	for _, name := range []string{"anthropic", "openrouter", "openai", "vllm"} {
 		if name == sourceName {
 			continue
 		}
@@ -184,7 +182,7 @@ func handoffProvider(ctx context.Context, t *testing.T, root string, cfg Config,
 			t.Fatalf("invalid openai handoff configuration: %v", err)
 		}
 		opts := []openai.Option{
-			openai.WithAPIKey(providerCfg.Auth.Key),
+			openAILiveAuth(root, providerCfg, secrets),
 			openai.WithMaxRetries(0),
 		}
 		if providerCfg.BaseURL != "" {
@@ -194,28 +192,7 @@ func handoffProvider(ctx context.Context, t *testing.T, root string, cfg Config,
 		if err != nil {
 			t.Fatalf("openai.New returned error: %v", err)
 		}
-		return p, orDefault(providerCfg.Model, openAICheapModel), true
-	case "openai-codex":
-		providerCfg := cfg.Provider("openai-codex", "")
-		if err := ValidateLiveProviderConfig(name, providerCfg); err != nil {
-			if errors.Is(err, errLiveCredentialsMissing) {
-				return nil, "", false
-			}
-			t.Fatalf("invalid openai-codex handoff configuration: %v", err)
-		}
-		persist := AuthFilePersistence(filepath.Join(root, "gollm-test.json"), "openai-codex", t.Logf, secrets)
-		opts := []openaicodex.Option{
-			openaicodex.WithOAuth(providerCfg.Auth, persist),
-			openaicodex.WithMaxRetries(0),
-		}
-		if providerCfg.BaseURL != "" {
-			opts = append(opts, openaicodex.WithBaseURL(providerCfg.BaseURL))
-		}
-		p, err := openaicodex.New(opts...)
-		if err != nil {
-			t.Fatalf("openaicodex.New returned error: %v", err)
-		}
-		return p, orDefault(providerCfg.Model, openAICodexCheapModel), true
+		return p, openAIDefaultModel(providerCfg), true
 	case "vllm":
 		providerCfg := cfg.Provider("vllm", "")
 		if err := ValidateLiveProviderConfig(name, providerCfg); err != nil {

@@ -13,15 +13,21 @@
 // Every provider implements the small Provider interface: Name,
 // Capabilities, Models, blocking Chat, and streaming ChatStream. Shipped
 // providers live under providers/: anthropic (API key), openai (Responses
-// API), openaicodex (ChatGPT Plus/Pro subscription OAuth), openrouter, vllm,
-// ollama, and the generic
-// chatcompletions engine. Concrete providers expose advanced escape hatches,
-// and typed extension options travel through Request.ProviderOptions.
-// OpenAI Codex credentials can be minted through the provider-owned browser
-// login flow or loaded from compatible existing tools, then consumed and
-// auto-refreshed; LoadAuthFile reads the documented credential union.
-// Refreshable credentials require a context-aware persistence callback, and
-// renewed credentials publish only after durable persistence succeeds.
+// API, with an API key or Sign in with ChatGPT), openrouter, vllm, ollama,
+// and the generic chatcompletions engine. Concrete providers expose advanced
+// escape hatches, and typed extension options travel through
+// Request.ProviderOptions.
+//
+// # Credentials
+//
+// Authentication mirrors pi. A CredentialStore (see package authstore for
+// memory and pi-compatible auth.json implementations) holds one credential
+// per provider; WithCredentials makes a provider read it on every request.
+// OAuth credentials are refreshed inside the store's serialized Modify, so
+// concurrent requests and processes refresh exactly once and the renewed
+// credential is stored before use. openai.NewLoginFlow mints a Sign in with
+// ChatGPT credential for the host to store. LoadAuthFile reads the same
+// credential format.
 //
 // # Requests, messages, and streaming
 //
@@ -30,6 +36,13 @@
 // unified knobs: System, MaxTokens, Temperature/TopP (use Ptr for the
 // optional pointers), Tools, ToolChoice, ResponseFormat, the Effort
 // reasoning dial, and SessionID routing affinity.
+//
+// A RoleSystem message changes the instructions or tools from its position on
+// (TextPart, SystemDeltaPart, ToolsDeltaPart), so a long conversation keeps
+// its cached prefix. Providers send these changes in place for models whose
+// ModelInfo.Behavior allows it (Anthropic inline tool changes, OpenAI
+// additional_tools) and fold the rest into System and Tools with
+// FoldPositional.
 //
 // ChatStream returns an iter.Seq2[Event, error] of unified events. Collect
 // drains any stream into a *Response — and on an in-stream error it returns

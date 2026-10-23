@@ -8,8 +8,11 @@ import (
 // Role identifies the speaker for a message.
 type Role string
 
-// Message roles. RoleTool messages carry ToolResultPart contents; RoleSystem
-// messages are provider-dependent (most callers use Request.System instead).
+// Message roles. RoleTool messages carry ToolResultPart contents. RoleSystem
+// messages change the instructions or tools from their position on (FS §7A):
+// they carry TextPart, SystemDeltaPart, and ToolsDeltaPart, and providers
+// send them in place where the model accepts it, folding them into the
+// system prompt and tool list otherwise.
 const (
 	RoleUser      Role = "user"
 	RoleAssistant Role = "assistant"
@@ -180,6 +183,37 @@ func AssistantParts(parts ...Part) Message {
 	return Message{Role: RoleAssistant, Parts: cloneParts(parts)}
 }
 
+// CloneParts returns a deep copy of parts. Pointer parts are normalized to
+// their value form (a typed nil pointer part becomes a nil element); byte
+// payloads (image and file data, tool-call
+// arguments, reasoning raw payloads, unknown-part data), cache hints,
+// nested tool-result content, and the tools a ToolsDeltaPart adds are
+// copied. A tool's InputSchema is copied when it is raw JSON or JSON-shaped
+// (map[string]any and []any, recursively); any other schema value, such as
+// a pointer to a schema struct, is shared, so treat it as immutable.
+// Provider extension parts are shared by reference because their concrete
+// types live outside this package (the same rule History.Messages
+// documents). An empty or nil slice returns nil.
+func CloneParts(parts []Part) []Part {
+	return cloneParts(parts)
+}
+
+// CloneMessage returns a deep copy of msg with CloneParts semantics.
+func CloneMessage(msg Message) Message {
+	return Message{
+		Role:     msg.Role,
+		Parts:    cloneParts(msg.Parts),
+		Provider: msg.Provider,
+		Model:    msg.Model,
+	}
+}
+
+// CloneMessages returns a deep copy of msgs with CloneParts semantics. An
+// empty or nil slice returns nil.
+func CloneMessages(msgs []Message) []Message {
+	return cloneMessages(msgs)
+}
+
 func cloneMessages(msgs []Message) []Message {
 	if len(msgs) == 0 {
 		return nil
@@ -232,6 +266,14 @@ func clonePart(part Part) Part {
 	case UnknownPart:
 		p.Data = append(json.RawMessage(nil), p.Data...)
 		return p
+	case SystemDeltaPart:
+		p.Cache = cloneCacheHint(p.Cache)
+		return p
+	case ToolsDeltaPart:
+		p.Added = cloneTools(p.Added)
+		p.Removed = append([]string(nil), p.Removed...)
+		p.Cache = cloneCacheHint(p.Cache)
+		return p
 	default:
 		// Extension parts (and any other unknown Part implementations) are
 		// shared by reference: their concrete types live outside this
@@ -277,6 +319,16 @@ func derefPart(part Part) Part {
 		}
 		return *p
 	case *UnknownPart:
+		if p == nil {
+			return nil
+		}
+		return *p
+	case *SystemDeltaPart:
+		if p == nil {
+			return nil
+		}
+		return *p
+	case *ToolsDeltaPart:
 		if p == nil {
 			return nil
 		}

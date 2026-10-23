@@ -59,8 +59,9 @@ func modelIDHasBoundaryPrefix(modelID, prefix string) bool {
 
 // EstimateCost returns a copy of usage with CostUSD populated from pricing
 // and CostSource set to CostSourceEstimated. It leaves cost unknown when a
-// nonzero usage component has no available rate. Provider-reported costs are
-// left untouched.
+// nonzero usage component has no available rate, including any one-hour
+// cache writes (Usage.CacheWrite1hTokens), for which no table publishes a
+// rate. Provider-reported costs are left untouched.
 func EstimateCost(usage Usage, pricing ModelPricing) Usage {
 	if usage.CostUSD != nil {
 		return usage
@@ -86,19 +87,41 @@ func pricingForUsage(usage Usage, pricing ModelPricing) ModelPricing {
 			continue
 		}
 		bestThreshold = tier.InputTokensAbove
-		pricing.InputPerMTok = tier.InputPerMTok
-		pricing.OutputPerMTok = tier.OutputPerMTok
-		pricing.CacheReadPerMTok = tier.CacheReadPerMTok
-		pricing.CacheWritePerMTok = tier.CacheWritePerMTok
-		pricing.Availability = &ModelPricingAvailability{
-			InputPerMTok: true, OutputPerMTok: true,
-			CacheReadPerMTok: true, CacheWritePerMTok: true,
-		}
+		availability := tierAvailability(tier)
+		pricing.InputPerMTok = availableRate(tier.InputPerMTok, availability.InputPerMTok)
+		pricing.OutputPerMTok = availableRate(tier.OutputPerMTok, availability.OutputPerMTok)
+		pricing.CacheReadPerMTok = availableRate(tier.CacheReadPerMTok, availability.CacheReadPerMTok)
+		pricing.CacheWritePerMTok = availableRate(tier.CacheWritePerMTok, availability.CacheWritePerMTok)
+		pricing.Availability = &availability
 	}
 	return pricing
 }
 
+// availableRate zeroes an unavailable rate so an unvalidated value never
+// reaches the cost sum, even when multiplied by zero tokens.
+func availableRate(rate float64, available bool) float64 {
+	if !available {
+		return 0
+	}
+	return rate
+}
+
+func tierAvailability(tier ModelPricingTier) ModelPricingAvailability {
+	if tier.Availability == nil {
+		return ModelPricingAvailability{
+			InputPerMTok: true, OutputPerMTok: true,
+			CacheReadPerMTok: true, CacheWritePerMTok: true,
+		}
+	}
+	return *tier.Availability
+}
+
 func pricingCoversUsage(usage Usage, pricing ModelPricing) bool {
+	// No published price table carries a one-hour cache-write rate, so those
+	// tokens are never priced at the default write rate (FS §11).
+	if usage.CacheWrite1hTokens > 0 {
+		return false
+	}
 	if pricing.Availability == nil {
 		return true
 	}
@@ -108,12 +131,15 @@ func pricingCoversUsage(usage Usage, pricing ModelPricing) bool {
 		(usage.CacheWriteTokens == 0 || pricing.HasCacheWritePrice())
 }
 
+// validPricingTier requires a positive threshold and valid known rates.
+// Unavailable rates are not validated because they are never used.
 func validPricingTier(tier ModelPricingTier) bool {
+	available := tierAvailability(tier)
 	return tier.InputTokensAbove > 0 &&
-		validPrice(tier.InputPerMTok) &&
-		validPrice(tier.OutputPerMTok) &&
-		validPrice(tier.CacheReadPerMTok) &&
-		validPrice(tier.CacheWritePerMTok)
+		(!available.InputPerMTok || validPrice(tier.InputPerMTok)) &&
+		(!available.OutputPerMTok || validPrice(tier.OutputPerMTok)) &&
+		(!available.CacheReadPerMTok || validPrice(tier.CacheReadPerMTok)) &&
+		(!available.CacheWritePerMTok || validPrice(tier.CacheWritePerMTok))
 }
 
 func validPrice(price float64) bool {

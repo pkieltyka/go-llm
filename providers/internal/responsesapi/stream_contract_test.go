@@ -318,6 +318,27 @@ func TestFunctionCallArgumentsDoneIsAuthoritative(t *testing.T) {
 		}
 	})
 
+	t.Run("repairs suffix without name", func(t *testing.T) {
+		state, _ := build(t, `{"q":`)
+		events, err := state.MapEvent(streamEvent(t, `{"type":"response.function_call_arguments.done","output_index":0,"arguments":"{\"q\":\"go\"}"}`))
+		if err != nil || len(events) != 1 {
+			t.Fatalf("MapEvent(done) = %#v, %v; want one repaired delta", events, err)
+		}
+		if delta, ok := providerutil.DerefEvent(events[0]).(llm.ToolCallDelta); !ok || delta.ArgsFragment != `"go"}` {
+			t.Fatalf("done event = %#v, want repaired argument suffix", events[0])
+		}
+	})
+
+	for _, name := range []string{`"other"`, `123`} {
+		t.Run("rejects invalid name "+name, func(t *testing.T) {
+			state, _ := build(t, `{"q":`)
+			_, err := state.MapEvent(streamEvent(t, `{"type":"response.function_call_arguments.done","output_index":0,"name":`+name+`,"arguments":"{\"q\":\"go\"}"}`))
+			if !errors.Is(err, llm.ErrServer) {
+				t.Fatalf("name error = %v, want ErrServer", err)
+			}
+		})
+	}
+
 	t.Run("rejects contradiction", func(t *testing.T) {
 		state, _ := build(t, `{"x":`)
 		_, err := state.MapEvent(streamEvent(t, `{"type":"response.function_call_arguments.done","output_index":0,"name":"lookup","arguments":"{\"q\":\"go\"}"}`))

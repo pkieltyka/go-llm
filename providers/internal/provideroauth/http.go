@@ -15,9 +15,16 @@ type ApplyHeadersFunc func(*http.Request, llm.AuthCredential)
 // MiddlewareNext is the common SDK middleware continuation shape.
 type MiddlewareNext func(*http.Request) (*http.Response, error)
 
+// CredentialSource yields the current OAuth credential and renews it after
+// a rejected access token. Resolver implements it.
+type CredentialSource interface {
+	Credential(ctx context.Context) (llm.AuthCredential, error)
+	ForceRefreshIfCurrent(ctx context.Context, failedAccess string) (llm.AuthCredential, error)
+}
+
 // DoWithAuthRetry applies OAuth headers and retries exactly once after a 401
 // with a forced refresh.
-func DoWithAuthRetry(req *http.Request, next MiddlewareNext, source *Source, apply ApplyHeadersFunc) (*http.Response, error) {
+func DoWithAuthRetry(req *http.Request, next MiddlewareNext, source CredentialSource, apply ApplyHeadersFunc) (*http.Response, error) {
 	if source == nil {
 		return next(req)
 	}
@@ -89,9 +96,7 @@ func cloneRequest(req *http.Request, body []byte) *http.Request {
 
 // drainAndClose releases the connection for reuse. The bodies drained here
 // are 401 responses from provider APIs — small JSON error envelopes — so no
-// read limit is applied. providers/openaicodex has a deliberately different
-// twin that caps the drain at 1MB because it discards rejected SSE stream
-// bodies, which can be arbitrarily large.
+// read limit is applied.
 func drainAndClose(body io.ReadCloser) {
 	if body == nil {
 		return

@@ -18,8 +18,11 @@ import (
 )
 
 const (
-	anthropicCheapModel      = "claude-haiku-4-5"
-	anthropicReasoningModel  = "claude-sonnet-5"
+	anthropicCheapModel     = "claude-haiku-4-5"
+	anthropicReasoningModel = "claude-sonnet-5"
+	// anthropicPositionalModel takes system messages and tool changes in
+	// place (models.json behavior); the cheap model folds them.
+	anthropicPositionalModel = "claude-haiku-5-5"
 	anthropicReasoningPrompt = "A store has three boxes. One is labeled apples, one oranges, and one mixed, " +
 		"but every label is wrong. You may inspect one fruit from one box. Determine the correct labels, then answer with only: solved."
 )
@@ -90,6 +93,12 @@ func anthropicLiveScenarioRunners(reasoningModel, baseURL string) map[string]Sce
 		liveReasoningReplayScenario(ctx, t, p, reasoningModel)
 	}
 	runners["prompt_cache"] = livePromptCacheScenario
+	runners["positional_changes"] = func(ctx context.Context, t *testing.T, p llm.Provider, model string) {
+		if baseURL == "" {
+			model = anthropicPositionalModel
+		}
+		livePositionalChangesScenario(ctx, t, p, model, true)
+	}
 	runners["error_mapping"] = func(ctx context.Context, t *testing.T, p llm.Provider, model string) {
 		liveErrorMappingScenario(ctx, t, p, model, baseURL)
 	}
@@ -347,12 +356,11 @@ func liveReasoningReplayScenario(ctx context.Context, t *testing.T, p llm.Provid
 	if !hasAnthropicReasoningRaw(first) {
 		t.Fatalf("reasoning replay needs Anthropic raw reasoning: parts=%d stop_reason=%s", len(first.Parts), first.StopReason)
 	}
-	replayModel := first.Model
-	if replayModel == "" {
-		replayModel = model
-	}
+	// Replay under the requested alias, as callers do, while the assistant
+	// message carries the server-reported model: same-model replay must
+	// survive alias-to-response-ID differences (FS §18).
 	resp, err := p.Chat(ctx, &llm.Request{
-		Model:     replayModel,
+		Model:     model,
 		MaxTokens: 128,
 		Messages: []llm.Message{
 			llm.UserText(anthropicReasoningPrompt),

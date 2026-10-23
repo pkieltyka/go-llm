@@ -10,7 +10,7 @@ import (
 )
 
 func TestLiveCapabilityExemptionsAreExplicitAndNarrow(t *testing.T) {
-	for _, providerID := range []string{"anthropic", "openai", "openai-codex"} {
+	for _, providerID := range []string{"anthropic", "openai"} {
 		_, exemptions, err := capabilityScenarioNames(providerID, []llm.Capability{llm.CapabilityPDFInput})
 		if err != nil {
 			t.Fatalf("%s PDF coverage: %v", providerID, err)
@@ -24,32 +24,6 @@ func TestLiveCapabilityExemptionsAreExplicitAndNarrow(t *testing.T) {
 	}
 	if _, _, err := capabilityScenarioNames("anthropic", []llm.Capability{"future-capability"}); err == nil {
 		t.Fatal("unregistered capability should fail")
-	}
-}
-
-func TestOpenAICodexPromptCacheLiveExemptionIsNarrow(t *testing.T) {
-	names, exemptions, err := capabilityScenarioNames("openai-codex", []llm.Capability{
-		llm.CapabilityPromptCaching,
-		llm.CapabilitySessionAffinity,
-	})
-	if err != nil {
-		t.Fatalf("openai-codex prompt-cache coverage: %v", err)
-	}
-	if len(exemptions) != 1 || exemptions[0].Capability != llm.CapabilityPromptCaching || strings.TrimSpace(exemptions[0].Reason) == "" {
-		t.Fatalf("openai-codex exemptions = %+v", exemptions)
-	}
-
-	foundSessionAffinity := false
-	for _, name := range names {
-		if name == "prompt_cache" {
-			t.Fatalf("prompt_cache scenario selected despite explicit exemption: %v", names)
-		}
-		if name == "session_affinity" {
-			foundSessionAffinity = true
-		}
-	}
-	if !foundSessionAffinity {
-		t.Fatalf("session_affinity scenario missing from %v", names)
 	}
 }
 

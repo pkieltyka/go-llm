@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -34,7 +35,7 @@ var tokenRedactionPatterns = []*regexp.Regexp{
 
 var bearerPattern = regexp.MustCompile(`(?i)(bearer\s+)[A-Za-z0-9._~+/=-]{16,}`)
 
-var credentialJSONPattern = regexp.MustCompile(`(?i)("(api_key|key|authorization|x-api-key|access|refresh|access_token|refresh_token|accountId|chatgpt-account-id)"\s*:\s*")([^"]+)(")`)
+var credentialJSONPattern = regexp.MustCompile(`(?i)("(api_key|key|authorization|x-api-key|access|refresh|access_token|refresh_token|accountId)"\s*:\s*")([^"]+)(")`)
 
 var mockJSONPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)("(safety_identifier|prompt_cache_key|encrypted_content|signature|obfuscation|user|user_id|end_user_id)"\s*:\s*")([^"]+)(")`),
@@ -54,16 +55,15 @@ var sequentialMockPattern = regexp.MustCompile(`^MOCK-([A-Z0-9]+(?:-[A-Z0-9]+)*)
 var mockTokenPattern = regexp.MustCompile(`MOCK-[A-Za-z0-9_-]+`)
 
 var credentialFieldNames = map[string]struct{}{
-	"api_key":            {},
-	"key":                {},
-	"authorization":      {},
-	"x-api-key":          {},
-	"access":             {},
-	"refresh":            {},
-	"access_token":       {},
-	"refresh_token":      {},
-	"accountid":          {},
-	"chatgpt-account-id": {},
+	"api_key":       {},
+	"key":           {},
+	"authorization": {},
+	"x-api-key":     {},
+	"access":        {},
+	"refresh":       {},
+	"access_token":  {},
+	"refresh_token": {},
+	"accountid":     {},
 }
 
 var mockFieldNames = map[string]struct{}{
@@ -93,7 +93,6 @@ var sensitiveHeaderNames = map[string]struct{}{
 	"cookie":                    {},
 	"etag":                      {},
 	"set-cookie":                {},
-	"chatgpt-account-id":        {},
 	"anthropic-organization-id": {},
 	"cf-ray":                    {},
 	"nel":                       {},
@@ -213,6 +212,43 @@ func (s *SecretSet) AddCredential(cred llm.AuthCredential) {
 	s.Add(cred.Key, cred.Access, cred.Refresh, cred.AccountID)
 }
 
+// RecordingCredentialStore wraps store so every credential read from it or
+// written through it (a refresh rotating the tokens) joins secrets before
+// the provider uses it, keeping rotated values out of recorded fixtures.
+func RecordingCredentialStore(store llm.CredentialStore, secrets *SecretSet) llm.CredentialStore {
+	return recordingStore{CredentialStore: store, secrets: secrets}
+}
+
+type recordingStore struct {
+	llm.CredentialStore
+	secrets *SecretSet
+}
+
+func (s recordingStore) Read(ctx context.Context, providerID string) (llm.AuthCredential, bool, error) {
+	cred, ok, err := s.CredentialStore.Read(ctx, providerID)
+	if ok {
+		s.secrets.AddCredential(cred)
+	}
+	return cred, ok, err
+}
+
+func (s recordingStore) Modify(ctx context.Context, providerID string, fn func(llm.AuthCredential, bool) (llm.AuthCredential, bool, error)) (llm.AuthCredential, bool, error) {
+	cred, ok, err := s.CredentialStore.Modify(ctx, providerID, func(current llm.AuthCredential, exists bool) (llm.AuthCredential, bool, error) {
+		if exists {
+			s.secrets.AddCredential(current)
+		}
+		next, write, err := fn(current, exists)
+		if write {
+			s.secrets.AddCredential(next)
+		}
+		return next, write, err
+	})
+	if ok {
+		s.secrets.AddCredential(cred)
+	}
+	return cred, ok, err
+}
+
 func (s *SecretSet) Values() []string {
 	if s == nil {
 		return nil
@@ -284,6 +320,13 @@ func (r *fixtureRedactor) redactJSON(raw []byte) ([]byte, bool) {
 func (r *fixtureRedactor) redactJSONValue(field string, value any) any {
 	switch typed := value.(type) {
 	case map[string]any:
+		if field == "attribution" {
+			// usage.attribution.items (Sign in with ChatGPT) is keyed by
+			// output item IDs; mock the keys as the IDs are mocked elsewhere.
+			if items, ok := typed["items"].(map[string]any); ok {
+				typed["items"] = r.mockKeys(items)
+			}
+		}
 		keys := make([]string, 0, len(typed))
 		for key := range typed {
 			keys = append(keys, key)
@@ -319,6 +362,19 @@ func (r *fixtureRedactor) redactJSONValue(field string, value any) any {
 	default:
 		return value
 	}
+}
+
+func (r *fixtureRedactor) mockKeys(value map[string]any) map[string]any {
+	keys := make([]string, 0, len(value))
+	for key := range value {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	mocked := make(map[string]any, len(value))
+	for _, key := range keys {
+		mocked[r.mockValue("id", key)] = value[key]
+	}
+	return mocked
 }
 
 func jsonObjectType(value map[string]any) string {
@@ -1283,7 +1339,7 @@ func shannonEntropy(value []byte) float64 {
 }
 
 var unredactedFixturePatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)"(?:safety_identifier|prompt_cache_key|encrypted_content|signature|obfuscation|api_key|access|refresh|access_token|refresh_token|accountId|chatgpt-account-id)"\s*:\s*"[^"]+`),
+	regexp.MustCompile(`(?i)"(?:safety_identifier|prompt_cache_key|encrypted_content|signature|obfuscation|api_key|access|refresh|access_token|refresh_token|accountId)"\s*:\s*"[^"]+`),
 	regexp.MustCompile(`(?i)"(?:id|item_id|response_id|previous_response_id|request_id|call_id|tool_call_id|tool_use_id)"\s*:\s*"(?:resp|msg|req|rs|fc|call|toolu|gen|chatcmpl)[A-Za-z0-9._:-]+`),
 	regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9._~+/=-]{16,}`),
 	regexp.MustCompile(`(?i)user-[A-Za-z0-9_-]{8,}`),

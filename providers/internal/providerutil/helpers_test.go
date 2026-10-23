@@ -144,6 +144,7 @@ func TestStatusErrorKindCanonicalTable(t *testing.T) {
 		{403, llm.ErrPermission},
 		{404, llm.ErrNotFound},
 		{408, llm.ErrTimeout},
+		{413, llm.ErrContextTooLong},
 		{429, llm.ErrRateLimited},
 		{500, llm.ErrServer},
 		{502, llm.ErrServer},

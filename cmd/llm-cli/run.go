@@ -160,6 +160,9 @@ func printUsage(w io.Writer, u llm.Usage) error {
 		u.CacheWriteTokens,
 		u.ReasoningTokens,
 	)
+	if u.CacheWrite1hTokens > 0 {
+		fmt.Fprintf(&line, " cache_write_1h=%d", u.CacheWrite1hTokens)
+	}
 	if u.CostUSD != nil {
 		fmt.Fprintf(&line, " cost_usd=%.8f", *u.CostUSD)
 	}

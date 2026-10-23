@@ -260,11 +260,8 @@ func assertReplayRequest(t *testing.T, exchange RecordedExchange, requests []cap
 		}
 	}
 
-	if strings.Contains(exchange.RequestBody, `"tools"`) {
-		tools, ok := body["tools"].([]any)
-		if !ok || len(tools) == 0 {
-			t.Fatalf("recorded scenario had tools but outbound request has none: %s", sent.Body)
-		}
+	if strings.Contains(exchange.RequestBody, `"tools"`) && len(RequestTools(body)) == 0 {
+		t.Fatalf("recorded scenario had tools but outbound request has none: %s", sent.Body)
 	}
 
 	messages := requestMessageList(body)
@@ -385,8 +382,11 @@ func assertReplayStopReason(t *testing.T, resp *llm.Response) {
 // OutputTokens, and TotalTokens equals prompt occupancy plus output.
 func assertReplayUsage(t *testing.T, u llm.Usage) {
 	t.Helper()
-	if u.InputTokens < 0 || u.OutputTokens < 0 || u.TotalTokens < 0 || u.CacheReadTokens < 0 || u.CacheWriteTokens < 0 || u.ReasoningTokens < 0 {
+	if u.InputTokens < 0 || u.OutputTokens < 0 || u.TotalTokens < 0 || u.CacheReadTokens < 0 || u.CacheWriteTokens < 0 || u.CacheWrite1hTokens < 0 || u.ReasoningTokens < 0 {
 		t.Fatalf("replay usage has negative counts: %+v", u)
+	}
+	if u.CacheWrite1hTokens > u.CacheWriteTokens {
+		t.Fatalf("replay usage 1h cache writes exceed total cache writes: %+v", u)
 	}
 	if u.OutputTokens == 0 {
 		t.Fatalf("replay usage missing output tokens: %+v", u)
@@ -520,4 +520,19 @@ func bodyContainsAny(body string, markers []string) bool {
 		}
 	}
 	return false
+}
+
+// RequestTools returns the tools an outbound request body offers: the
+// top-level "tools" array plus those declared in place by Responses
+// additional_tools input items (FS §7A).
+func RequestTools(body map[string]any) []any {
+	tools, _ := body["tools"].([]any)
+	input, _ := body["input"].([]any)
+	for _, item := range input {
+		if item, ok := item.(map[string]any); ok && item["type"] == "additional_tools" {
+			declared, _ := item["tools"].([]any)
+			tools = append(tools, declared...)
+		}
+	}
+	return tools
 }

@@ -7,14 +7,14 @@ import (
 	llm "github.com/pkieltyka/go-llm"
 )
 
-// RefreshError normalizes a non-2xx response from an OAuth token refresh
-// endpoint. 429 (token endpoint rate limit) maps to llm.ErrRateLimited and
-// 408 (request timeout) to llm.ErrTimeout — both are transient and say
+// TokenError normalizes a non-2xx response from an OAuth token endpoint;
+// operation ("refresh", "login token exchange") labels the message. 429
+// (token endpoint rate limit) maps to llm.ErrRateLimited and 408 (request timeout) to llm.ErrTimeout — both are transient and say
 // nothing about credential validity. Every other 4xx (400 invalid_grant,
 // 401, 403, ...) means the stored credential can no longer be exchanged — an
 // auth failure the caller must resolve by re-authenticating — so it maps to
 // llm.ErrAuth. 5xx and anything else stays llm.ErrServer (retryable).
-func RefreshError(providerName string, status int) error {
+func TokenError(providerName, operation string, status int) error {
 	kind := llm.ErrServer
 	switch {
 	case status == http.StatusTooManyRequests:
@@ -27,19 +27,18 @@ func RefreshError(providerName string, status int) error {
 	return &llm.ProviderError{
 		Provider:   providerName,
 		HTTPStatus: status,
-		Message:    "OAuth token refresh failed",
+		Message:    "OAuth " + operation + " failed",
 		Kind:       kind,
 	}
 }
 
-// ExpiresAt converts a token endpoint's expires_in (seconds) into an absolute
-// Unix-millisecond expiry. It records the TRUE server expiry — no safety
-// margin is subtracted here, because credentials handed to persistence are
-// stored verbatim; the Source applies its refresh-before-expiry margin at
-// read time instead.
+// ExpiryMargin is subtracted from a token's lifetime before it is stored,
+// as pi does, so a credential pi and go-llm share means the same thing to
+// both (pi's EXPIRY_MARGIN_MS).
+const ExpiryMargin = 3 * time.Minute
+
+// ExpiresAt converts a token endpoint's expires_in (seconds) into the
+// Unix-millisecond expiry to store: now + expires_in - ExpiryMargin.
 func ExpiresAt(expiresIn int64) int64 {
-	if expiresIn <= 0 {
-		return 0
-	}
-	return time.Now().Add(time.Duration(expiresIn) * time.Second).UnixMilli()
+	return time.Now().Add(time.Duration(expiresIn)*time.Second - ExpiryMargin).UnixMilli()
 }

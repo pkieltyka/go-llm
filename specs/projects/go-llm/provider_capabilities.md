@@ -15,6 +15,13 @@ status: complete
 empty means unknown. Provider-wide `Provider.Capabilities()` remains the sole
 request-validation authority.
 
+`ModelInfo.Behavior` (FS §13B) is separate: per-model wire behavior written
+into `models.json` by generator rules, consulted by adapters at request
+time. Today it marks positional instructions and tool changes (FS §7A):
+Anthropic claude-opus-4-8, -opus-5, -opus-5-5, -sonnet-5-5, -haiku-5-5,
+-fable-5, -fable-5-1 (both), claude-sonnet-5 (instructions only); OpenAI
+gpt-5.4 family, gpt-5.5, gpt-5.6-*, gpt-6-*, gpt-6.1-sol (both).
+
 ## Capability evidence layers
 
 An advertised provider-wide capability is a request-validation claim: it says
@@ -33,13 +40,12 @@ is intentionally layered:
 An offline `CapabilityExemption` is an explicit evidence gap, not a denial of
 the advertised capability. Conversely, fixture wire proof does not establish
 live availability, quota, cache admission/effectiveness, or reliability.
-OpenRouter cache-control and Codex prompt-cache-key mappings are deterministic
+OpenRouter cache-control and OpenAI prompt-cache-key mappings are deterministic
 offline evidence even though positive cache admission is nondeterministic
 live.
 
 | Provider | Model metadata source | Advisory capabilities currently populated |
 |---|---|---|
-| OpenAI Codex | Explicit authenticated catalog requested by `Models(ctx)` | Tools, tool choice, parallel tools, JSON schema, reasoning, image input, stop sequences, and prompt caching when explicitly advertised. Curated fallback rows remain unknown/empty. |
 | OpenRouter | One explicit `GET /models` call; `supported_parameters`, input modalities, and reasoning metadata | Tools, tool choice, parallel tools, JSON schema, reasoning, image input, and stop sequences when explicitly advertised. Supported/default effort and positive mandatory-reasoning claims populate separate advisory `ModelInfo` fields. |
 | Anthropic, OpenAI, vLLM, Ollama, generic Chat Completions | Their current model-list responses do not provide sufficiently precise fields for this mapping | Unknown/empty by design; no model-name inference is applied. |
 
@@ -155,7 +161,7 @@ tools + parallel + tool_choice · structured output (`response_format`
 json_schema, upstream-dependent) · `reasoning.effort` → `Effort` ·
 `reasoning`/`reasoning_details` output → `ReasoningPart` (echo-back via
 `Raw`) · image input · usage + cached tokens · **`usage.cost` → `CostUSD`**
-(the only provider with native cost) · `session_id` → `SessionID` ·
+(plus upstream inference cost under BYOK; the only provider with native cost) · `session_id` → `SessionID` ·
 `cache_control` passthrough → `CacheHint` (including live-verified cached
 text blocks inside role-tool results) · normalized + `native` finish
 reasons · errors (incl. moderation metadata via `ProviderError`) · models

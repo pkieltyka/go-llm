@@ -29,6 +29,11 @@ func (a Adapter) MapError(err error) error {
 	}
 
 	raw := []byte(apiErr.RawJSON())
+	if len(raw) == 0 && apiErr.Response != nil {
+		// No {"error": {...}} envelope (Sign in with ChatGPT answers
+		// {"detail": "..."}): parse the body the SDK left buffered.
+		return a.MapHTTPResponseError(apiErr.Response)
+	}
 	code := apiErr.Code
 	if code == "" {
 		code = apiErr.Type
@@ -80,7 +85,7 @@ func (a Adapter) MapStreamError(code, message, param string) error {
 	return providerErr
 }
 
-// MapHTTPResponseError normalizes a non-2xx direct Responses HTTP response.
+// MapHTTPResponseError normalizes a non-2xx Responses HTTP response.
 func (a Adapter) MapHTTPResponseError(resp *http.Response) error {
 	if resp == nil {
 		return &llm.ProviderError{
@@ -136,8 +141,31 @@ func parseErrorBody(body []byte) (code, typ, message, param string) {
 	if err := json.Unmarshal(body, &direct); err == nil && (direct.Message != "" || direct.Code != "") {
 		return direct.Code, direct.Type, direct.Message, direct.Param
 	}
-	return "", "", strings.TrimSpace(string(body)), ""
+	var detailed struct {
+		Detail json.RawMessage `json:"detail"`
+	}
+	if err := json.Unmarshal(body, &detailed); err == nil && len(detailed.Detail) > 0 {
+		var message string
+		if json.Unmarshal(detailed.Detail, &message) == nil && message != "" {
+			return "", "", message, ""
+		}
+		var object struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		}
+		if json.Unmarshal(detailed.Detail, &object) == nil && (object.Message != "" || object.Code != "") {
+			return object.Code, "", object.Message, ""
+		}
+	}
+	// A short plain-text body is the message; an HTML error page or a
+	// large payload stays in RawBody only.
+	if text := strings.TrimSpace(string(body)); len(text) <= maxPlainErrorMessage && !strings.HasPrefix(text, "<") {
+		return "", "", text, ""
+	}
+	return "", "", "", ""
 }
+
+const maxPlainErrorMessage = 512
 
 // errorKind delegates to the unified providerutil classifier (FS §16), with
 // a Responses-family hook that classifies from the error envelope's "type"

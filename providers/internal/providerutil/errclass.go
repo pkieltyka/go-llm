@@ -52,7 +52,8 @@ func ErrorKind(status int, code, message string, hooks ...ErrorKindHook) error {
 
 // StatusErrorKind maps an HTTP status onto the canonical sentinel (FS §16):
 // 401→ErrAuth, 402→ErrInsufficientCredits, 403→ErrPermission,
-// 404→ErrNotFound, 408→ErrTimeout, 429→ErrRateLimited, 503 and 529→
+// 404→ErrNotFound, 408→ErrTimeout, 413→ErrContextTooLong,
+// 429→ErrRateLimited, 503 and 529→
 // ErrOverloaded, any other 5xx→ErrServer, any other 4xx→ErrBadRequest.
 // Statuses outside 4xx/5xx (including 0) classify as ErrServer.
 func StatusErrorKind(status int) error {
@@ -74,6 +75,8 @@ func canonicalStatusKind(status int) error {
 		return llm.ErrNotFound
 	case http.StatusRequestTimeout:
 		return llm.ErrTimeout
+	case http.StatusRequestEntityTooLarge:
+		return llm.ErrContextTooLong
 	case http.StatusTooManyRequests:
 		return llm.ErrRateLimited
 	case http.StatusServiceUnavailable, 529:
@@ -96,9 +99,9 @@ func fallbackStatusKind(status int) error {
 
 // heuristicErrorKind holds the shared OpenAI-family code/message
 // classification (the union of the previously drifting responsesapi and
-// chatcompletions tables). Context-overflow detection is scoped to the
-// shapes providers actually emit — a bare "context" code substring match
-// would misclassify unrelated errors that merely mention the word.
+// chatcompletions tables). Context-overflow detection is the scoped shared
+// matcher IsContextOverflow — a bare "context" code substring match would
+// misclassify unrelated errors that merely mention the word.
 func heuristicErrorKind(code, message string) error {
 	lowerCode := strings.ToLower(code)
 	lowerMessage := strings.ToLower(message)
@@ -107,13 +110,13 @@ func heuristicErrorKind(code, message string) error {
 		return llm.ErrAuth
 	case strings.Contains(lowerCode, "rate") || strings.Contains(lowerMessage, "rate limit"):
 		return llm.ErrRateLimited
-	case strings.Contains(lowerCode, "credit") || strings.Contains(lowerCode, "quota") || strings.Contains(lowerCode, "billing"):
+	// Subscription usage limits (Sign in with ChatGPT
+	// subscription_sharing_*usage_limit_exceeded, Codex usage_limit_reached)
+	// reset on the provider's schedule, not within a retry backoff.
+	case strings.Contains(lowerCode, "credit") || strings.Contains(lowerCode, "quota") ||
+		strings.Contains(lowerCode, "billing") || strings.Contains(lowerCode, "usage_limit"):
 		return llm.ErrInsufficientCredits
-	case strings.Contains(lowerCode, "context_length") ||
-		strings.Contains(lowerMessage, "context window") ||
-		strings.Contains(lowerMessage, "context length") ||
-		strings.Contains(lowerMessage, "context limit") ||
-		strings.Contains(lowerMessage, "maximum context"):
+	case IsContextOverflow(code, message):
 		return llm.ErrContextTooLong
 	case strings.Contains(lowerCode, "moderation") ||
 		strings.Contains(lowerCode, "content_filter") ||

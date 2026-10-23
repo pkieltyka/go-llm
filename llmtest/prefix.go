@@ -29,6 +29,11 @@ type AppendOnlyPrefixConfig struct {
 	// across the two turns (tools, model, cache/session keys, system).
 	// Fields absent from both turns compare equal.
 	StableFields []string
+	// AppendDelta appends a RoleSystem message (a section update and a tool
+	// addition) after turn 1's tool result, so turn 2 checks that positional
+	// changes extend the prefix instead of rewriting it (FS §7A). Set it
+	// only when Model takes positional changes in place.
+	AppendDelta bool
 }
 
 // RunAppendOnlyPrefix machine-checks the append-only wire-prefix property
@@ -61,6 +66,16 @@ func RunAppendOnlyPrefix(t *testing.T, cfg AppendOnlyPrefixConfig) {
 		t.Fatalf("turn 1 tool calls = %d, want 1 (fixture must answer turn 1 with one lookup call)", len(calls))
 	}
 	session.AddToolResults(llm.ToolResult(calls[0].ID, "result-data"))
+	if cfg.AppendDelta {
+		session.History().Add(llm.Message{Role: llm.RoleSystem, Parts: []llm.Part{
+			llm.SystemDeltaPart{Section: "probe", Text: "Answer in one word."},
+			llm.ToolsDeltaPart{Added: []llm.Tool{{
+				Name:        "summarize",
+				Description: "Summarize text.",
+				InputSchema: json.RawMessage(`{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}`),
+			}}},
+		}})
+	}
 	if _, err := session.Continue(context.Background()); err != nil {
 		t.Fatalf("turn 2 returned error: %v", err)
 	}

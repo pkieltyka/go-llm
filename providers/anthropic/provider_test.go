@@ -10,13 +10,16 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	sdk "github.com/anthropics/anthropic-sdk-go"
 	llm "github.com/pkieltyka/go-llm"
+	"github.com/pkieltyka/go-llm/authstore"
 	"github.com/pkieltyka/go-llm/internal/testutil"
 	"github.com/pkieltyka/go-llm/providers/internal/providerutil"
 )
@@ -173,17 +176,66 @@ func TestAnthropicToolResultPreservesTextCacheHints(t *testing.T) {
 	}
 }
 
-func TestAnthropicRejectsSystemMessageRole(t *testing.T) {
-	p := &Provider{defaultMaxTokens: 99}
-	_, _, err := p.buildParams(&llm.Request{
-		Model: "claude-test",
+func positionalRequest(model string) *llm.Request {
+	weather := llm.Tool{Name: "get_weather", Description: "Weather in a city.", InputSchema: map[string]any{"type": "object"}}
+	return &llm.Request{
+		Model:  model,
+		System: "base",
+		Tools:  []llm.Tool{{Name: "get_time", InputSchema: map[string]any{"type": "object"}}},
 		Messages: []llm.Message{
-			{Role: llm.RoleSystem, Parts: []llm.Part{llm.Text("Use the request System field instead.")}},
 			llm.UserText("hello"),
+			llm.AssistantText("hi"),
+			{Role: llm.RoleSystem, Parts: []llm.Part{
+				llm.Text("Be brief."),
+				llm.SystemDeltaPart{Section: "style", Text: "Use French."},
+				llm.ToolsDeltaPart{Added: []llm.Tool{weather}, Removed: []string{"get_time"}, Cache: &llm.CacheHint{}},
+			}},
+			llm.UserText("weather in Paris?"),
 		},
-	})
-	if !errors.Is(err, llm.ErrUnsupported) {
-		t.Fatalf("buildParams error = %v, want ErrUnsupported", err)
+	}
+}
+
+func TestAnthropicSendsPositionalChangesInPlace(t *testing.T) {
+	p := &Provider{defaultMaxTokens: 99}
+	params, opts, err := p.buildParams(positionalRequest("claude-haiku-5-5"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := testutil.MustCompactJSON(t, params)
+	for _, want := range []string{
+		`{"content":[{"text":"weather in Paris?","type":"text"}],"role":"user"},{"content":[{"text":"Be brief.","type":"text"},{"text":"Updated system prompt section \"style\":\n\nUse French.","type":"text"},{"tool":{"name":"get_time","type":"tool_reference"},"type":"tool_removal"},{"cache_control":{"ttl":"5m","type":"ephemeral"},"tool":{"definition":{"input_schema":{"properties":{},"type":"object"},"name":"get_weather","description":"Weather in a city.","strict":false,"type":"custom"},"type":"tool_definition"},"type":"tool_addition"}],"role":"system"}`,
+		`"system":[{"text":"base","type":"text"}]`,
+		`"tools":[{"input_schema":{"properties":{},"type":"object"},"name":"get_time","strict":false,"type":"custom"}]`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("params missing %s:\n%s", want, body)
+		}
+	}
+	if len(opts) != 1 {
+		t.Fatalf("request options = %d, want the inline-tools beta header", len(opts))
+	}
+}
+
+// claude-sonnet-5 takes system text in place but not tool changes; an
+// unknown model folds everything.
+func TestAnthropicFoldsWhatTheModelCannotTakeInPlace(t *testing.T) {
+	p := &Provider{defaultMaxTokens: 99}
+	params, opts, err := p.buildParams(positionalRequest("claude-sonnet-5"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := testutil.MustCompactJSON(t, params)
+	if strings.Contains(body, "tool_addition") || len(opts) != 0 || !strings.Contains(body, `"role":"system"`) ||
+		!strings.Contains(body, `"tools":[{"input_schema":{"properties":{},"type":"object"},"name":"get_weather"`) {
+		t.Fatalf("claude-sonnet-5 must keep system text in place and fold tools:\n%s", body)
+	}
+	params, _, err = p.buildParams(positionalRequest("claude-test"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body = testutil.MustCompactJSON(t, params)
+	if strings.Contains(body, `"role":"system"`) || !strings.Contains(body, `"system":[{"text":"base\n\nBe brief.\n\nUse French.","type":"text"}]`) {
+		t.Fatalf("unknown model must fold into the system prompt:\n%s", body)
 	}
 }
 
@@ -1561,3 +1613,398 @@ func (b *anthropicReadErrorBody) Read(p []byte) (int, error) {
 }
 
 func (*anthropicReadErrorBody) Close() error { return nil }
+
+func TestAnthropicReplayDropsForeignModelReasoning(t *testing.T) {
+	raw := json.RawMessage(`{"type":"thinking","thinking":"because","signature":"sig-model-a"}`)
+	history := func() []llm.Message {
+		return []llm.Message{
+			llm.UserText("hello"),
+			{Role: llm.RoleAssistant, Provider: providerName, Model: "claude-model-a-20260101", Parts: []llm.Part{
+				llm.ReasoningPart{Provider: providerName, Raw: raw},
+				llm.Text("answer"),
+			}},
+			llm.UserText("continue"),
+		}
+	}
+	p := &Provider{defaultMaxTokens: 99}
+	for _, tt := range []struct {
+		model string
+		want  bool
+	}{
+		{model: "claude-model-a", want: true},
+		{model: "claude-model-b", want: false},
+	} {
+		params, _, err := p.buildParams(&llm.Request{Model: tt.model, Messages: history()})
+		if err != nil {
+			t.Fatalf("buildParams(%s) returned error: %v", tt.model, err)
+		}
+		body := testutil.MustCompactJSON(t, params)
+		if got := strings.Contains(body, "sig-model-a"); got != tt.want {
+			t.Fatalf("model %s: signed thinking replayed = %v, want %v\n%s", tt.model, got, tt.want, body)
+		}
+		if !strings.Contains(body, `"answer"`) {
+			t.Fatalf("model %s: assistant text missing after reasoning filter: %s", tt.model, body)
+		}
+	}
+}
+
+func TestAnthropicRequestTooLargeIsContextTooLong(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		status  int
+		code    string
+		message string
+	}{
+		{name: "http 413", status: 413, code: "request_too_large", message: "Request exceeds the maximum size"},
+		{name: "in-stream", status: 0, code: "request_too_large", message: "Request exceeds the maximum size"},
+		{name: "413 without body type", status: 413, code: "", message: ""},
+		{name: "prompt too long", status: 400, code: "invalid_request_error", message: "prompt is too long: 213462 tokens > 200000 maximum"},
+	} {
+		if got := errorKind(tc.status, tc.code, tc.message); !errors.Is(got, llm.ErrContextTooLong) {
+			t.Errorf("%s: errorKind = %v, want ErrContextTooLong", tc.name, got)
+		}
+	}
+	if got := errorKind(400, "invalid_request_error", "messages: text content blocks must be non-empty"); !errors.Is(got, llm.ErrBadRequest) {
+		t.Errorf("ordinary invalid request = %v, want ErrBadRequest", got)
+	}
+}
+
+func TestAnthropicOneHourCacheWritesTrackedAndLeaveCostUnknown(t *testing.T) {
+	p := &Provider{}
+	usage := p.mapUsage(sdk.Model("claude-haiku-4-5"), sdk.Usage{
+		InputTokens:              10,
+		OutputTokens:             5,
+		CacheCreationInputTokens: 300,
+		CacheCreation:            sdk.CacheCreation{Ephemeral1hInputTokens: 200, Ephemeral5mInputTokens: 100},
+	})
+	if usage.CacheWriteTokens != 300 || usage.CacheWrite1hTokens != 200 {
+		t.Fatalf("cache write split = %d/%d, want 300 total with 200 at 1h", usage.CacheWriteTokens, usage.CacheWrite1hTokens)
+	}
+	if usage.CostUSD != nil {
+		t.Fatalf("1h writes must leave the estimated cost unknown, got %v", *usage.CostUSD)
+	}
+	fiveMinute := p.mapUsage(sdk.Model("claude-haiku-4-5"), sdk.Usage{
+		InputTokens:              10,
+		OutputTokens:             5,
+		CacheCreationInputTokens: 100,
+		CacheCreation:            sdk.CacheCreation{Ephemeral5mInputTokens: 100},
+	})
+	if fiveMinute.CostUSD == nil {
+		t.Fatal("5m-only cache writes on a priced model must keep an estimated cost")
+	}
+
+	resp := collectAnthropicStream(t, []string{
+		`{"type":"message_start","message":{"id":"msg_1","model":"claude-haiku-4-5","usage":{"input_tokens":10,"cache_creation_input_tokens":300,"cache_creation":{"ephemeral_1h_input_tokens":200,"ephemeral_5m_input_tokens":100},"output_tokens":0}}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"hi"}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}`,
+		`{"type":"message_stop"}`,
+	})
+	if resp.Usage.CacheWrite1hTokens != 200 || resp.Usage.CostUSD != nil {
+		t.Fatalf("streamed usage = %+v, want 200 1h writes and unknown cost", resp.Usage)
+	}
+}
+
+func TestAnthropicCountTokens(t *testing.T) {
+	var gotPath string
+	var gotBody map[string]json.RawMessage
+	var gotBeta string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotBeta = r.Header.Get("Anthropic-Beta")
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"input_tokens":1234}`)
+	}))
+	defer server.Close()
+	p, err := New(WithAPIKey("test-key"), WithBaseURL(server.URL), WithHTTPClient(server.Client()), WithMaxRetries(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := llm.CountTokens(context.Background(), llm.Wrap(p, llm.Middleware{}), &llm.Request{
+		Model:           "claude-test",
+		System:          "be brief",
+		MaxTokens:       999,
+		Temperature:     llm.Ptr(0.3),
+		Effort:          llm.EffortLow,
+		Tools:           []llm.Tool{{Name: "lookup", InputSchema: json.RawMessage(`{"type":"object","properties":{}}`)}},
+		Messages:        []llm.Message{llm.UserText("hello")},
+		ProviderOptions: Options{BetaHeaders: []string{"test-beta-2026"}},
+	})
+	if err != nil || got != (llm.TokenCount{Tokens: 1234, Exact: true}) {
+		t.Fatalf("CountTokens = %+v, %v", got, err)
+	}
+	if gotPath != "/v1/messages/count_tokens" {
+		t.Fatalf("path = %q", gotPath)
+	}
+	for _, field := range []string{"model", "messages", "system", "tools", "tool_choice", "thinking", "output_config"} {
+		if _, ok := gotBody[field]; !ok {
+			t.Errorf("count body missing %q: %v", field, gotBody)
+		}
+	}
+	for _, field := range []string{"max_tokens", "temperature", "stop_sequences", "metadata"} {
+		if _, ok := gotBody[field]; ok {
+			t.Errorf("count body carries generation-only field %q", field)
+		}
+	}
+	if !strings.Contains(gotBeta, "test-beta-2026") {
+		t.Fatalf("beta headers not forwarded: %q", gotBeta)
+	}
+}
+
+func TestAnthropicCountTokensMapsErrorsAndValidates(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`)
+	}))
+	defer server.Close()
+	p, err := New(WithAPIKey("test-key"), WithBaseURL(server.URL), WithHTTPClient(server.Client()), WithMaxRetries(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.CountTokens(context.Background(), &llm.Request{Model: "claude-test", Messages: []llm.Message{llm.UserText("hi")}}); !errors.Is(err, llm.ErrRateLimited) {
+		t.Fatalf("CountTokens err = %v, want ErrRateLimited", err)
+	}
+	if _, err := p.CountTokens(context.Background(), &llm.Request{Model: "claude-test", Messages: []llm.Message{{Role: llm.RoleSystem, Parts: []llm.Part{llm.ImageURL("https://example.test/x.png")}}}}); !errors.Is(err, llm.ErrBadRequest) {
+		t.Fatalf("CountTokens must validate like Chat, got %v", err)
+	}
+}
+
+func TestAnthropicNoArgumentToolSendsInputSchema(t *testing.T) {
+	for _, schema := range []string{`{"type":"object"}`, `{}`} {
+		tools, err := buildTools([]llm.Tool{{Name: "now", InputSchema: json.RawMessage(schema)}})
+		if err != nil {
+			t.Fatalf("buildTools(%s) returned error: %v", schema, err)
+		}
+		testutil.AssertJSONEqual(t, testutil.MustCompactJSON(t, tools),
+			`[{"input_schema":{"properties":{},"type":"object"},"name":"now","strict":false,"type":"custom"}]`)
+	}
+}
+
+func TestAnthropicCacheRetentionOnWire(t *testing.T) {
+	p := &Provider{defaultMaxTokens: 99}
+	req := func(retention llm.CacheRetention) *llm.Request {
+		return &llm.Request{
+			Model: "claude-test", System: "sys", SystemCache: &llm.CacheHint{}, CacheRetention: retention,
+			Messages: []llm.Message{llm.UserParts(llm.TextPart{Text: "hello", Cache: &llm.CacheHint{}})},
+		}
+	}
+	none, _, err := p.buildParams(req(llm.CacheRetentionNone))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body := testutil.MustCompactJSON(t, none); strings.Contains(body, "cache_control") {
+		t.Fatalf("CacheRetentionNone sent cache_control: %s", body)
+	}
+	long, _, err := p.buildParams(req(llm.CacheRetentionLong))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body := testutil.MustCompactJSON(t, long); strings.Count(body, `"ttl":"1h"`) != 2 {
+		t.Fatalf("CacheRetentionLong must request the 1h tier for both hints: %s", body)
+	}
+}
+
+func TestAnthropicWithCredentialsIsExclusiveWithAPIKey(t *testing.T) {
+	if _, err := New(WithCredentials(authstore.NewMemory(nil)), WithAPIKey("k")); !errors.Is(err, llm.ErrBadRequest) {
+		t.Fatalf("err = %v, want ErrBadRequest", err)
+	}
+	if _, err := New(WithCredentials(authstore.NewMemory(nil))); err != nil {
+		t.Fatalf("store-only construction = %v", err)
+	}
+}
+
+func TestAnthropicStoredSubscriptionOAuthExplainsRejection(t *testing.T) {
+	store := authstore.NewMemory(llm.AuthFile{providerName: {Type: "oauth", Access: "a", Refresh: "r"}})
+	_, err := storedAPIKey(store, "ambient-key")(context.Background())
+	if !errors.Is(err, llm.ErrAuth) {
+		t.Fatalf("err = %v, want ErrAuth", err)
+	}
+	for _, want := range []string{"Claude subscription (OAuth)", `"api_key"`, apiKeyEnv} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("err = %q, want it to mention %q", err, want)
+		}
+	}
+	key, err := storedAPIKey(authstore.NewMemory(llm.AuthFile{providerName: {Type: "api_key", Key: "k"}}), "")(context.Background())
+	if err != nil || key != "k" {
+		t.Fatalf("stored api_key = %q, %v", key, err)
+	}
+}
+
+// After message_stop the body is read to EOF, so the connection can be
+// reused and wire captures are complete.
+func TestAnthropicStreamReadsToEOFAfterMessageStop(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, anthropicSSE(
+			`{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"usage":{"input_tokens":1,"output_tokens":0}}}`,
+			`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"hi"}}`,
+			`{"type":"content_block_stop","index":0}`,
+			`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`,
+			`{"type":"message_stop"}`,
+		))
+		w.(http.Flusher).Flush()
+		time.Sleep(20 * time.Millisecond)
+		_, _ = io.WriteString(w, ": trailing keep-alive\n\n")
+	}))
+	t.Cleanup(server.Close)
+	var mu sync.Mutex
+	var captures []llm.WireCapture
+	p, err := New(WithAPIKey("k"), WithBaseURL(server.URL), WithHTTPClient(server.Client()), WithMaxRetries(0), WithWireCapture(func(c llm.WireCapture) {
+		mu.Lock()
+		captures = append(captures, c)
+		mu.Unlock()
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := llm.Collect(p.ChatStream(context.Background(), anthropicStreamFixtureRequest())); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(captures) != 1 || captures[0].ResponseIncomplete {
+		t.Fatalf("captures = %d, incomplete = %v; the body must be read to EOF", len(captures), len(captures) == 1 && captures[0].ResponseIncomplete)
+	}
+}
+
+// A system message between a tool_use and its tool_result is held until
+// just before the next assistant turn, and adjacent ones merge; one that
+// would directly follow the final assistant turn is rejected locally.
+func TestAnthropicSystemMessagePlacement(t *testing.T) {
+	sys := func(text string) llm.Message {
+		return llm.Message{Role: llm.RoleSystem, Parts: []llm.Part{llm.Text(text)}}
+	}
+	messages, err := buildMessages([]llm.Message{
+		llm.UserText("u"),
+		llm.AssistantParts(llm.ToolCall("toolu_1", "get_time", json.RawMessage(`{}`))),
+		sys("first"),
+		{Role: llm.RoleTool, Parts: []llm.Part{llm.ToolResult("toolu_1", "09:00")}},
+		sys("second"),
+		llm.AssistantText("done"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var roles []string
+	for _, msg := range messages {
+		roles = append(roles, string(msg.Role))
+	}
+	if want := []string{"user", "assistant", "user", "system", "assistant"}; !slices.Equal(roles, want) {
+		t.Fatalf("roles = %v, want %v", roles, want)
+	}
+	if got := testutil.MustCompactJSON(t, messages[3]); got != `{"content":[{"text":"first","type":"text"},{"text":"second","type":"text"}],"role":"system"}` {
+		t.Fatalf("merged system message = %s", got)
+	}
+	for name, history := range map[string][]llm.Message{
+		"after the final assistant turn":      {llm.UserText("u"), llm.AssistantText("prefill"), sys("late")},
+		"between consecutive assistant turns": {llm.UserText("u"), llm.AssistantText("a"), sys("mid"), llm.AssistantText("b")},
+	} {
+		if _, err := buildMessages(history); !errors.Is(err, llm.ErrBadRequest) {
+			t.Fatalf("system message %s = %v, want ErrBadRequest", name, err)
+		}
+	}
+}
+
+// A held system message waits past an assistant turn that converts to no
+// blocks (another provider's reasoning, or a blank reply), so it never lands
+// before a user message (pi #11091).
+func TestAnthropicHoldsSystemPastDroppedAssistant(t *testing.T) {
+	history := []llm.Message{
+		llm.UserText("hi"),
+		{Role: llm.RoleSystem, Parts: []llm.Part{llm.Text("updated guidance")}},
+		llm.AssistantParts(llm.ReasoningPart{Text: "foreign", Provider: "openai"}),
+		llm.UserText("again"),
+	}
+	roles := func(history []llm.Message) []string {
+		t.Helper()
+		messages, err := buildMessages(history)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, msg := range messages {
+			out = append(out, string(msg.Role))
+		}
+		return out
+	}
+	if got, want := roles(history), []string{"user", "user", "system"}; !slices.Equal(got, want) {
+		t.Fatalf("no later assistant: roles = %v, want %v", got, want)
+	}
+	later := append(slices.Clone(history), llm.AssistantText("answer"), llm.UserText("third"))
+	if got, want := roles(later), []string{"user", "user", "system", "assistant", "user"}; !slices.Equal(got, want) {
+		t.Fatalf("later assistant: roles = %v, want %v", got, want)
+	}
+	blank := slices.Clone(history)
+	blank[2] = llm.AssistantText(" \n")
+	if got, want := roles(blank), []string{"user", "user", "system"}; !slices.Equal(got, want) {
+		t.Fatalf("blank reply: roles = %v, want %v", got, want)
+	}
+	// Past a sent assistant turn, a system message no longer fails when
+	// the turn after it is dropped: it waits for the next user message.
+	afterSent := []llm.Message{
+		llm.UserText("hi"),
+		llm.AssistantText("hello"),
+		{Role: llm.RoleSystem, Parts: []llm.Part{llm.Text("updated guidance")}},
+		llm.AssistantParts(llm.ReasoningPart{Text: "foreign", Provider: "openai"}),
+		llm.UserText("again"),
+	}
+	if got, want := roles(afterSent), []string{"user", "assistant", "user", "system"}; !slices.Equal(got, want) {
+		t.Fatalf("after a sent turn: roles = %v, want %v", got, want)
+	}
+	// Blank text is dropped from a kept assistant turn too.
+	mixed, err := buildMessages([]llm.Message{llm.UserText("hi"), llm.AssistantParts(llm.Text(""), llm.Text("answer"))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := testutil.MustCompactJSON(t, mixed[1]); got != `{"content":[{"text":"answer","type":"text"}],"role":"assistant"}` {
+		t.Fatalf("assistant with blank text = %s", got)
+	}
+}
+
+func TestAnthropicSendsPointerPositionalParts(t *testing.T) {
+	req := positionalRequest("claude-haiku-5-5")
+	parts := req.Messages[2].Parts
+	section, delta := parts[1].(llm.SystemDeltaPart), parts[2].(llm.ToolsDeltaPart)
+	req.Messages[2].Parts = []llm.Part{parts[0], &section, &delta}
+	params, _, err := (&Provider{defaultMaxTokens: 99}).buildParams(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body := testutil.MustCompactJSON(t, params); !strings.Contains(body, "tool_addition") || !strings.Contains(body, `Updated system prompt section`) {
+		t.Fatalf("pointer parts were not sent in place:\n%s", body)
+	}
+}
+
+func TestAnthropicStreamDrainIsBoundedWhenServerHoldsOpen(t *testing.T) {
+	old := providerutil.StreamDrainGrace
+	providerutil.StreamDrainGrace = 30 * time.Millisecond
+	t.Cleanup(func() { providerutil.StreamDrainGrace = old })
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, anthropicSSE(
+			`{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"usage":{"input_tokens":1,"output_tokens":0}}}`,
+			`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"hi"}}`,
+			`{"type":"content_block_stop","index":0}`,
+			`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`,
+			`{"type":"message_stop"}`,
+		))
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	t.Cleanup(server.Close)
+	p, err := New(WithAPIKey("k"), WithBaseURL(server.URL), WithHTTPClient(server.Client()), WithMaxRetries(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	resp, err := llm.Collect(p.ChatStream(context.Background(), anthropicStreamFixtureRequest()))
+	if err != nil || resp.Text() != "hi" {
+		t.Fatalf("held-open stream = %+v, %v; the completed response must still be returned", resp, err)
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("drain took %v, want it bounded by the grace", elapsed)
+	}
+}

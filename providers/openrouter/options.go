@@ -10,6 +10,7 @@ import (
 
 	llm "github.com/pkieltyka/go-llm"
 	"github.com/pkieltyka/go-llm/providers/chatcompletions"
+	"github.com/pkieltyka/go-llm/providers/internal/providerutil"
 )
 
 const (
@@ -43,6 +44,7 @@ type config struct {
 	apiKey          string
 	apiKeySet       bool
 	apiKeyFunc      func(context.Context) (string, error)
+	credentials     llm.CredentialStore
 	baseURL         string
 	httpClient      *http.Client
 	maxRetries      *int
@@ -61,12 +63,29 @@ func defaultConfig() config {
 	}
 }
 
-func (c *config) resolveAPIKey() {
+func (c *config) resolveAPIKey() error {
+	if c.credentials != nil {
+		if c.apiKeySet || c.apiKeyFunc != nil {
+			return fmt.Errorf("%w: OpenRouter WithCredentials cannot be combined with WithAPIKey or WithAPIKeyFunc", llm.ErrBadRequest)
+		}
+		c.apiKeyFunc = providerutil.StoredAPIKey(c.credentials, providerName, os.Getenv(apiKeyEnv))
+		return nil
+	}
 	if c.apiKeySet || c.apiKeyFunc != nil {
-		return
+		return nil
 	}
 	c.apiKey = os.Getenv(apiKeyEnv)
 	c.apiKeySet = true
+	return nil
+}
+
+// WithCredentials resolves the API key on every request from store's
+// "openrouter" entry, which must be an "api_key" credential. A stored
+// credential owns the provider; with nothing stored, OPENROUTER_API_KEY is
+// used if set. WithCredentials is mutually exclusive with WithAPIKey and
+// WithAPIKeyFunc.
+func WithCredentials(store llm.CredentialStore) Option {
+	return func(c *config) { c.credentials = store }
 }
 
 // WithAPIKey sets a static OpenRouter API key. Empty values disable env fallback.

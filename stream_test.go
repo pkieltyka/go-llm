@@ -648,8 +648,8 @@ func eventSeq(events ...Event) iter.Seq2[Event, error] {
 
 // TestApplyCollectEventInstallsMessageEndRaw pins the B2 fix at the shared
 // apply function: MessageEnd.Raw must be installed on the accumulating
-// Response. Collect and Session's stream collection both fold events through
-// applyCollectEvent, so this single assertion covers both paths.
+// Response. Collect, Collector, and Session's stream collection all fold
+// events through applyCollectEvent, so this single assertion covers them.
 func TestApplyCollectEventInstallsMessageEndRaw(t *testing.T) {
 	resp := &Response{}
 	blocks := map[int]Part{}

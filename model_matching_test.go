@@ -186,3 +186,48 @@ func TestMatchModelTrimsQueryWhitespace(t *testing.T) {
 		t.Fatalf("MatchModel with padded query = (%+v, %v)", matched, ok)
 	}
 }
+
+func TestSameModel(t *testing.T) {
+	tests := []struct {
+		a, b string
+		want bool
+	}{
+		{"gpt-5.5", "gpt-5.5", true},
+		{" GPT-5.5 ", "gpt-5.5", true},
+		{"gpt-5.5", "gpt-5.5-2026-08-15", true},
+		{"claude-haiku-4-5", "claude-haiku-4-5-20251001", true},
+		{"claude-3-5-sonnet@20240620", "claude-3-5-sonnet", true},
+		{"model_20250101", "model", true},
+		{"anthropic/claude-haiku-4.5", "anthropic/claude-haiku-4.5", true},
+		{"gpt-5.5", "gpt-5.6", false},
+		{"gpt-5-mini", "gpt-5-nano", false},
+		{"anthropic/claude-haiku-4.5", "anthropic/claude-haiku-5.5", false},
+		{"anthropic/claude-haiku-4.5", "claude-haiku-4.5", false},
+		// Anthropic aliases are answered with differently named dated IDs.
+		{"claude-opus-4-0", "claude-opus-4-20250514", true},
+		{"claude-sonnet-4-0", "claude-sonnet-4-20250514", true},
+		{"claude-3-7-sonnet-latest", "claude-3-7-sonnet-20250219", true},
+		{"claude-haiku-4-5", "claude-haiku-4-5-20251001", true},
+		// Routing variants and Bedrock revisions name the same weights.
+		{"qwen/qwen3.6-27b:free", "qwen/qwen3.6-27b", true},
+		{"anthropic/claude-haiku-4.5:nitro", "anthropic/claude-haiku-4.5", true},
+		{"anthropic.claude-3-5-sonnet-20241022-v2:0", "anthropic.claude-3-5-sonnet-20241022-v2", true},
+		{"claude-3-5-sonnet-v2@20241022", "claude-3-5-sonnet-v2", true},
+		{"anthropic.claude-3-5-sonnet-20240620-v1:0", "anthropic.claude-3-5-sonnet-20241022-v2:0", false},
+		{"gpt-5", "gpt-5-mini", false},
+		{"claude-opus-4-1", "claude-opus-4-20250514", false},
+		{"openrouter/auto", "anthropic/claude-haiku-4.5", false},
+		{"model-12345678", "model", false}, // not a plausible date
+		{"model-2026-13-01", "model", false},
+		{"", "", false},
+		{"gpt-5.5", "", false},
+	}
+	for _, tt := range tests {
+		if got := llm.SameModel(tt.a, tt.b); got != tt.want {
+			t.Errorf("SameModel(%q, %q) = %v, want %v", tt.a, tt.b, got, tt.want)
+		}
+		if got := llm.SameModel(tt.b, tt.a); got != tt.want {
+			t.Errorf("SameModel(%q, %q) = %v, want %v (symmetry)", tt.b, tt.a, got, tt.want)
+		}
+	}
+}

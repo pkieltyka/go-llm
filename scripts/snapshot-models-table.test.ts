@@ -14,6 +14,7 @@ import {
   type SnapshotDocument,
   type SourceMinimums,
 } from "./snapshot-models-table.ts";
+import { modelBehavior } from "./model-behavior.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtureMinimums: SourceMinimums = {
@@ -182,18 +183,27 @@ test("effort overrides replace derivation and unknown effort values fail", async
   );
 });
 
-test("context tiers require complete inherited rates and override tiers replace as a unit", async () => {
+test("context tiers inherit base rates, leave unpublished rates absent, and override tiers replace as a unit", async () => {
   const modelsDev = structuredClone(await fixture("models-dev.json")) as any;
   const openRouter = await fixture("openrouter-models.json");
   const model = modelsDev.anthropic.models["claude-fixture"];
   model.cost.tiers = [{ input: 6, output: 30, tier: { type: "context", size: 100_000 } }];
   delete model.cost.cache_write;
 
-  assert.throws(
-    () =>
-      buildSnapshot(modelsDev, openRouter, { models: [] }, { generatedAt: "2026-08-05T00:00:00Z", minimums: fixtureMinimums }),
-    /anthropic\/claude-fixture pricing tier 100000 has no cache_write_per_mtok/,
-  );
+  const unpublished = buildSnapshot(modelsDev, openRouter, { models: [] }, {
+    generatedAt: "2026-08-05T00:00:00Z",
+    minimums: fixtureMinimums,
+  });
+  const row = unpublished.models.find((entry) => entry.provider === "anthropic" && entry.id === "claude-fixture");
+  assert.equal(row?.pricing?.cache_write_per_mtok, undefined);
+  assert.deepEqual(row?.pricing?.tiers, [
+    {
+      input_tokens_above: 100_000,
+      input_per_mtok: 6,
+      output_per_mtok: 30,
+      cache_read_per_mtok: model.cost.cache_read,
+    },
+  ]);
 
   const overrides = {
     models: [
@@ -423,6 +433,25 @@ test("file-backed destructive checks preserve pricing tiers", async (t) => {
   assert.deepEqual(JSON.parse(await readFile(output, "utf8")), previous);
 });
 
+test("file-backed snapshots reread tiers that omit unpublished rates", async (t) => {
+  const directory = await mkdtemp(resolve(tmpdir(), "go-llm-partial-tiers-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const output = resolve(directory, "models.json");
+  const partial = snapshotDocument("2026-07-10T00:00:00Z", [
+    {
+      provider: "openrouter",
+      id: "x-ai/grok-fixture",
+      pricing: {
+        input_per_mtok: 1,
+        tiers: [{ input_tokens_above: 200_000, input_per_mtok: 2, output_per_mtok: 3, cache_read_per_mtok: 0.5 }],
+      },
+    },
+  ]);
+  await persistSnapshot(output, partial);
+  await persistSnapshot(output, structuredClone(partial));
+  assert.deepEqual(JSON.parse(await readFile(output, "utf8")), partial);
+});
+
 test("remote JSON reads are bounded, timed out, and parsed after a complete read", async () => {
   const source = "https://models.test/api.json";
   const validFetch = async () => new Response(`{"models":["ok"]}`, { status: 200 });
@@ -517,4 +546,25 @@ test("local JSON reads remain file-backed", async (t) => {
   assert.deepEqual(await readJSON(path), { local: true });
   await writeFile(path, "{broken");
   await assert.rejects(() => readJSON(path), /JSON/);
+});
+
+test("behavior rules mark positional models and leave others unset", async () => {
+  assert.deepEqual(modelBehavior("anthropic", "claude-haiku-5-5"), { positional_instructions: true, positional_tools: true });
+  assert.deepEqual(modelBehavior("anthropic", "claude-opus-4-8-20260801"), { positional_instructions: true, positional_tools: true });
+  assert.deepEqual(modelBehavior("anthropic", "claude-sonnet-5"), { positional_instructions: true });
+  assert.equal(modelBehavior("anthropic", "claude-sonnet-4-6"), undefined);
+  assert.equal(modelBehavior("anthropic", "claude-opus-4-7"), undefined);
+  assert.deepEqual(modelBehavior("openai", "gpt-5.6-luna"), { positional_instructions: true, positional_tools: true });
+  assert.equal(modelBehavior("openai", "gpt-4.1"), undefined);
+  assert.equal(modelBehavior("openrouter", "anthropic/claude-haiku-5-5"), undefined);
+
+  const modelsDev = structuredClone(await fixture("models-dev.json")) as any;
+  modelsDev.anthropic.models["claude-haiku-5-5"] = { ...modelsDev.anthropic.models["claude-fixture"], id: "claude-haiku-5-5" };
+  const snapshot = buildSnapshot(modelsDev, await fixture("openrouter-models.json"), await fixture("overrides.json"), {
+    generatedAt: "2026-10-22T00:00:00Z",
+    minimums: fixtureMinimums,
+  });
+  const row = (id: string) => snapshot.models.find((entry) => entry.provider === "anthropic" && entry.id === id)!;
+  assert.deepEqual(row("claude-haiku-5-5").behavior, { positional_instructions: true, positional_tools: true });
+  assert.equal("behavior" in row("claude-fixture"), false);
 });

@@ -118,40 +118,133 @@ func Collect(events iter.Seq2[Event, error]) (*Response, error) {
 		return nil, fmt.Errorf("%w: nil stream", ErrBadRequest)
 	}
 
-	resp := &Response{}
-	blocks := map[int]Part{}
-	activeTools := map[int]struct{}{}
-	seenStart := false
-
-	partial := func() *Response {
-		if !seenStart && len(blocks) == 0 {
-			return nil
-		}
-		return finalizeCollectedResponse(resp, blocks)
-	}
-
+	var c Collector
 	for event, err := range events {
 		if err != nil {
-			return partial(), err
+			return c.Finish(err)
 		}
-		event, err = normalizeEvent(event)
-		if err != nil {
-			return partial(), err
-		}
-		if _, ok := event.(MessageStart); ok {
-			seenStart = true
-		}
-		if err := applyCollectEvent(resp, blocks, activeTools, event); err != nil {
-			return partial(), err
+		if err := c.Add(event); err != nil {
+			return c.Finish(err)
 		}
 	}
+	return c.Finish(nil)
+}
 
-	return finalizeCollectedResponse(resp, blocks), nil
+// Collector accumulates stream events into a Response one event at a time,
+// with exactly the semantics of Collect: Collect is a loop over Add followed
+// by Finish. Use it when a consumer must act on events as they arrive — for
+// example to forward deltas while also persisting periodic Snapshots of the
+// response so far.
+//
+// The zero value is ready to use. A Collector is not safe for concurrent use
+// (streams are single-use and consumed by one goroutine) and must not be
+// copied after first use.
+type Collector struct {
+	resp        Response
+	blocks      map[int]Part
+	activeTools map[int]struct{}
+	seenStart   bool
+	err         error
+	finished    bool
+	final       *Response
+}
+
+// Add normalizes and folds one event. Pointer events are accepted and
+// normalized to their value form, as in Collect.
+//
+// Add returns the canonical malformed-stream error for an event that
+// violates the stream grammar (unknown or nil event, index type collision,
+// mismatched ToolCallIDChanged, ...). The error is sticky: once Add fails,
+// later Add calls return the same error without applying anything, and
+// Finish reports it. Add after Finish returns ErrBadRequest.
+func (c *Collector) Add(event Event) error {
+	if c.finished {
+		return fmt.Errorf("%w: collector already finished", ErrBadRequest)
+	}
+	if c.err != nil {
+		return c.err
+	}
+	if c.blocks == nil {
+		c.blocks = map[int]Part{}
+		c.activeTools = map[int]struct{}{}
+	}
+	event, err := normalizeEvent(event)
+	if err != nil {
+		c.err = err
+		return err
+	}
+	if _, ok := event.(MessageStart); ok {
+		c.seenStart = true
+	}
+	if err := applyCollectEvent(&c.resp, c.blocks, c.activeTools, event); err != nil {
+		c.err = err
+		return err
+	}
+	return nil
+}
+
+// Snapshot returns an owned deep copy of the Response that Collect would
+// return if the stream failed now: nil before MessageStart and before any
+// content, otherwise the partial response (StopReason stays empty until
+// MessageEnd). After Finish it returns a copy of the response Finish
+// returned, including any changes the caller made to it. Later Add calls never mutate a returned snapshot, and
+// mutating a snapshot never affects the Collector. Raw SDK payloads
+// (Response.Raw, Usage.Raw) are shared by reference, as with Response.Clone.
+func (c *Collector) Snapshot() *Response {
+	if c.finished {
+		return c.final.Clone()
+	}
+	if !c.seenStart && len(c.blocks) == 0 {
+		return nil
+	}
+	snapshot := c.resp
+	snapshot.DroppedToolCalls = append([]DroppedToolCall(nil), c.resp.DroppedToolCalls...)
+	snapshot.Usage = cloneUsage(c.resp.Usage)
+	return finalizeCollectedResponse(&snapshot, c.blocks)
+}
+
+// Finish completes collection and returns what Collect would return for the
+// same event sequence. Pass the terminal stream error, or nil when the
+// stream ended cleanly:
+//
+//   - clean end after successful Adds: the complete Response and nil;
+//   - a non-nil streamErr, or an earlier Add failure: the partial Response
+//     (nil before MessageStart and any content) and the error. An earlier
+//     Add failure takes precedence over streamErr, because Collect stops at
+//     the first error.
+//
+// The caller owns the returned Response. Finish is idempotent: later calls
+// return the same values.
+func (c *Collector) Finish(streamErr error) (*Response, error) {
+	if c.finished {
+		return c.final, c.err
+	}
+	c.finished = true
+	if c.err == nil {
+		c.err = streamErr
+	}
+	if c.err != nil && !c.seenStart && len(c.blocks) == 0 {
+		c.final = nil
+	} else {
+		c.final = finalizeCollectedResponse(&c.resp, c.blocks)
+	}
+	c.blocks = nil
+	c.activeTools = nil
+	return c.final, c.err
+}
+
+// NormalizeEvent applies the Event value-type doctrine: pointer events
+// dereference to their value form, while nil (typed or untyped) and unknown
+// event types return ErrBadRequest. Collect, Collector, and the built-in
+// middleware normalize this way; stream decorators can use it to see the same
+// value types.
+func NormalizeEvent(event Event) (Event, error) {
+	return normalizeEvent(event)
 }
 
 // applyCollectEvent folds one normalized event into an accumulating response.
-// It is the single event-application path shared by Collect and Session's
-// stream collection, so the two can never diverge.
+// It is Collector's single event-application path; Collect and Session's
+// stream collection both run through Collector, so they can never diverge.
 func applyCollectEvent(resp *Response, blocks map[int]Part, activeTools map[int]struct{}, event Event) error {
 	switch e := event.(type) {
 	case MessageStart:
@@ -272,6 +365,34 @@ func derefEvent(event Event) Event {
 	}
 }
 
+// textBlock and reasoningBlock accumulate a streamed block's text in a
+// builder, so collecting a long stream copies its text a linear, not
+// quadratic, number of times. blockPart turns them into the TextPart and
+// ReasoningPart they stand for.
+type textBlock struct{ text *strings.Builder }
+
+func (textBlock) part() {}
+
+type reasoningBlock struct {
+	text     *strings.Builder
+	raw      json.RawMessage
+	provider string
+}
+
+func (reasoningBlock) part() {}
+
+// blockPart returns the part an accumulating block stands for. The text is
+// the builder's current contents, which later writes never change.
+func blockPart(part Part) Part {
+	switch block := part.(type) {
+	case textBlock:
+		return Text(block.text.String())
+	case reasoningBlock:
+		return ReasoningPart{Text: block.text.String(), Raw: block.raw, Provider: block.provider}
+	}
+	return part
+}
+
 func appendTextDelta(blocks map[int]Part, index int, text string) error {
 	if text == "" {
 		return nil
@@ -281,15 +402,16 @@ func appendTextDelta(blocks map[int]Part, index int, text string) error {
 	}
 	part, ok := blocks[index]
 	if !ok {
-		blocks[index] = Text(text)
+		block := textBlock{text: &strings.Builder{}}
+		block.text.WriteString(text)
+		blocks[index] = block
 		return nil
 	}
-	textPart, ok := part.(TextPart)
+	block, ok := part.(textBlock)
 	if !ok {
-		return fmt.Errorf("%w: stream index %d changed from %T to TextDelta", ErrBadRequest, index, part)
+		return fmt.Errorf("%w: stream index %d changed from %T to TextDelta", ErrBadRequest, index, blockPart(part))
 	}
-	textPart.Text += text
-	blocks[index] = textPart
+	block.text.WriteString(text)
 	return nil
 }
 
@@ -305,25 +427,27 @@ func appendReasoningDelta(blocks map[int]Part, event ReasoningDelta) error {
 	}
 	part, ok := blocks[event.Index]
 	if !ok {
-		blocks[event.Index] = ReasoningPart{
-			Text:     event.Text,
-			Raw:      append(json.RawMessage(nil), event.Raw...),
-			Provider: event.Provider,
+		block := reasoningBlock{
+			text:     &strings.Builder{},
+			raw:      append(json.RawMessage(nil), event.Raw...),
+			provider: event.Provider,
 		}
+		block.text.WriteString(event.Text)
+		blocks[event.Index] = block
 		return nil
 	}
-	reasoningPart, ok := part.(ReasoningPart)
+	block, ok := part.(reasoningBlock)
 	if !ok {
-		return fmt.Errorf("%w: stream index %d changed from %T to ReasoningDelta", ErrBadRequest, event.Index, part)
+		return fmt.Errorf("%w: stream index %d changed from %T to ReasoningDelta", ErrBadRequest, event.Index, blockPart(part))
 	}
-	reasoningPart.Text += event.Text
+	block.text.WriteString(event.Text)
 	if len(event.Raw) != 0 {
-		reasoningPart.Raw = append(json.RawMessage(nil), event.Raw...)
+		block.raw = append(json.RawMessage(nil), event.Raw...)
 	}
 	if event.Provider != "" {
-		reasoningPart.Provider = event.Provider
+		block.provider = event.Provider
 	}
-	blocks[event.Index] = reasoningPart
+	blocks[event.Index] = block
 	return nil
 }
 
@@ -332,7 +456,7 @@ func startToolCall(blocks map[int]Part, event ToolCallStart) error {
 		return fmt.Errorf("%w: negative stream index %d", ErrBadRequest, event.Index)
 	}
 	if part, ok := blocks[event.Index]; ok {
-		return fmt.Errorf("%w: stream index %d already started as %T", ErrBadRequest, event.Index, part)
+		return fmt.Errorf("%w: stream index %d already started as %T", ErrBadRequest, event.Index, blockPart(part))
 	}
 	blocks[event.Index] = ToolCallPart{ID: event.ID, Name: event.Name}
 	return nil
@@ -345,7 +469,7 @@ func appendToolCallDelta(blocks map[int]Part, event ToolCallDelta) error {
 	}
 	call, ok := part.(ToolCallPart)
 	if !ok {
-		return fmt.Errorf("%w: stream index %d is %T, not ToolCallPart", ErrBadRequest, event.Index, part)
+		return fmt.Errorf("%w: stream index %d is %T, not ToolCallPart", ErrBadRequest, event.Index, blockPart(part))
 	}
 	call.Args = append(call.Args, event.ArgsFragment...)
 	blocks[event.Index] = call
@@ -368,7 +492,7 @@ func changeToolCallID(blocks map[int]Part, activeTools map[int]struct{}, event T
 	}
 	call, ok := part.(ToolCallPart)
 	if !ok {
-		return fmt.Errorf("%w: stream index %d is %T, not ToolCallPart", ErrBadRequest, event.Index, part)
+		return fmt.Errorf("%w: stream index %d is %T, not ToolCallPart", ErrBadRequest, event.Index, blockPart(part))
 	}
 	if call.ID != event.OldID {
 		return fmt.Errorf("%w: tool call ID change at index %d expected %q, got %q", ErrBadRequest, event.Index, call.ID, event.OldID)
@@ -384,7 +508,7 @@ func endToolCall(blocks map[int]Part, index int) error {
 		return fmt.Errorf("%w: tool call end before start for index %d", ErrBadRequest, index)
 	}
 	if _, ok := part.(ToolCallPart); !ok {
-		return fmt.Errorf("%w: stream index %d is %T, not ToolCallPart", ErrBadRequest, index, part)
+		return fmt.Errorf("%w: stream index %d is %T, not ToolCallPart", ErrBadRequest, index, blockPart(part))
 	}
 	return nil
 }
@@ -398,7 +522,7 @@ func finalizeCollectedResponse(resp *Response, blocks map[int]Part) *Response {
 
 	resp.Parts = make([]Part, 0, len(indexes))
 	for _, index := range indexes {
-		resp.Parts = append(resp.Parts, clonePart(blocks[index]))
+		resp.Parts = append(resp.Parts, clonePart(blockPart(blocks[index])))
 	}
 	sort.Slice(resp.DroppedToolCalls, func(i, j int) bool {
 		left, right := resp.DroppedToolCalls[i], resp.DroppedToolCalls[j]

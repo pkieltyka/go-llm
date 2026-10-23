@@ -45,10 +45,10 @@ func (h *History) AddToolResults(results ...ToolResultPart) {
 	h.Add(Message{Role: RoleTool, Parts: parts})
 }
 
-// Messages returns a defensive copy of the accumulated messages. Core part
-// types are deep-copied; provider extension parts are shared by reference
-// (their concrete types are unknown to this package), so treat extension
-// parts as immutable.
+// Messages returns a defensive copy of the accumulated messages with
+// CloneParts semantics: core part types are deep-copied; provider extension
+// parts, and tool schemas that are neither raw nor JSON-shaped, are shared
+// by reference, so treat them as immutable.
 func (h *History) Messages() []Message {
 	return cloneMessages(h.msgs)
 }

@@ -115,7 +115,7 @@ func TestSessionContinueErrorLeavesHistoryUnchanged(t *testing.T) {
 
 // TestSessionStreamAppliesMessageEndViaSharedCollect is the B2 regression
 // test on the public surface: the session stream path uses the SAME event
-// application as Collect (applyCollectEvent), so MessageEnd fields —
+// application as Collect (Collector), so MessageEnd fields —
 // usage here, Raw in the internal companion test in stream.go's tests —
 // land on the session's collected response instead of diverging.
 func TestSessionStreamAppliesMessageEndViaSharedCollect(t *testing.T) {

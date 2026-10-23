@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
 
 	sdk "github.com/anthropics/anthropic-sdk-go"
 	llm "github.com/pkieltyka/go-llm"
@@ -68,7 +67,7 @@ func errorKind(status int, code, message string) error {
 	case string(sdk.ErrorTypeBillingError):
 		return llm.ErrInsufficientCredits
 	case string(sdk.ErrorTypeInvalidRequestError):
-		if isContextOverflowMessage(message) {
+		if providerutil.IsContextOverflow(code, message) {
 			return llm.ErrContextTooLong
 		}
 		return llm.ErrBadRequest
@@ -76,17 +75,15 @@ func errorKind(status int, code, message string) error {
 		return llm.ErrServer
 	}
 
+	// Overflow types the switch does not name (request_too_large on HTTP 413
+	// or in-stream, model_context_window_exceeded) classify before the
+	// status fallback, so a status-less in-stream event is not ErrServer.
+	if providerutil.IsContextOverflow(code, message) {
+		return llm.ErrContextTooLong
+	}
+
 	// Status fallback: the unified providerutil classifier's canonical
 	// mapping (FS §16) — identical sentinels across all provider engines
 	// for identical statuses (402→credits, 408→timeout, 503/529→overloaded).
 	return providerutil.StatusErrorKind(status)
-}
-
-func isContextOverflowMessage(message string) bool {
-	lower := strings.ToLower(message)
-	return strings.Contains(lower, "context window") ||
-		strings.Contains(lower, "context length") ||
-		strings.Contains(lower, "context limit") ||
-		strings.Contains(lower, "maximum context") ||
-		strings.Contains(lower, "prompt is too long")
 }

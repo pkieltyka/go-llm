@@ -21,7 +21,11 @@ func ValidateRequest(caps []Capability, req *Request) error {
 	}
 
 	capSet := makeCapabilitySet(caps)
-	if err := validateTools(capSet, req); err != nil {
+	finalTools, err := validateTranscript(capSet, req)
+	if err != nil {
+		return err
+	}
+	if err := validateTools(capSet, req, finalTools); err != nil {
 		return err
 	}
 	if err := validateResponseFormat(capSet, req.ResponseFormat); err != nil {
@@ -29,6 +33,11 @@ func ValidateRequest(caps []Capability, req *Request) error {
 	}
 	if err := validateEffort(capSet, req.Effort); err != nil {
 		return err
+	}
+	switch req.CacheRetention {
+	case CacheRetentionDefault, CacheRetentionNone, CacheRetentionShort, CacheRetentionLong:
+	default:
+		return fmt.Errorf("%w: unknown cache retention %q", ErrBadRequest, req.CacheRetention)
 	}
 	if len(req.StopSequences) > 0 && !capSet.has(CapabilityStopSequences) {
 		return unsupported(CapabilityStopSequences)
@@ -101,7 +110,9 @@ func makeCapabilitySet(caps []Capability) capabilitySet {
 	return set
 }
 
-func validateTools(caps capabilitySet, req *Request) error {
+// validateTools checks Request.Tools and the tool choice against the tools
+// offered after the last message (finalTools, from validateTranscript).
+func validateTools(caps capabilitySet, req *Request, finalTools []Tool) error {
 	toolNames := make(map[string]struct{}, len(req.Tools))
 	for _, tool := range req.Tools {
 		if tool.Name == "" {
@@ -116,11 +127,15 @@ func validateTools(caps capabilitySet, req *Request) error {
 		if req.ToolChoice.Name == "" {
 			return fmt.Errorf("%w: tool choice name is required", ErrBadRequest)
 		}
-		if _, exists := toolNames[req.ToolChoice.Name]; !exists {
+		offered := false
+		for _, tool := range finalTools {
+			offered = offered || tool.Name == req.ToolChoice.Name
+		}
+		if !offered {
 			return fmt.Errorf("%w: tool choice names undeclared tool %q", ErrBadRequest, req.ToolChoice.Name)
 		}
 	}
-	if len(req.Tools) == 0 && req.ToolChoice.Mode != "" && req.ToolChoice.Mode != ToolChoiceAuto && req.ToolChoice.Mode != ToolChoiceNone {
+	if len(finalTools) == 0 && req.ToolChoice.Mode != "" && req.ToolChoice.Mode != ToolChoiceAuto && req.ToolChoice.Mode != ToolChoiceNone {
 		return fmt.Errorf("%w: tool choice requires tools", ErrBadRequest)
 	}
 
@@ -202,7 +217,7 @@ func validatePart(caps capabilitySet, part Part) error {
 	switch p := derefPart(part).(type) {
 	case nil:
 		return fmt.Errorf("%w: nil part", ErrBadRequest)
-	case TextPart, ToolCallPart, ReasoningPart, UnknownPart:
+	case TextPart, ToolCallPart, ReasoningPart, UnknownPart, SystemDeltaPart, ToolsDeltaPart:
 		return nil
 	case ImagePart:
 		if !caps.has(CapabilityImageInput) {

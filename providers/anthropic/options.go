@@ -40,7 +40,9 @@ type apiKeyFunc func(context.Context) (string, error)
 
 type config struct {
 	apiKey           string
+	apiKeySet        bool
 	apiKeyFunc       apiKeyFunc
+	credentials      llm.CredentialStore
 	baseURL          string
 	httpClient       *http.Client
 	maxRetries       *int
@@ -64,7 +66,33 @@ func defaultConfig() config {
 func WithAPIKey(key string) Option {
 	return func(c *config) {
 		c.apiKey = key
+		c.apiKeySet = true
 		c.apiKeyFunc = nil
+	}
+}
+
+// WithCredentials resolves the API key on every request from store's
+// "anthropic" entry, which must be an "api_key" credential (this provider
+// does not accept subscription OAuth). A stored credential owns the
+// provider; with nothing stored, ANTHROPIC_API_KEY is used if set.
+// WithCredentials is mutually exclusive with WithAPIKey and WithAPIKeyFunc.
+func WithCredentials(store llm.CredentialStore) Option {
+	return func(c *config) { c.credentials = store }
+}
+
+// storedAPIKey is providerutil.StoredAPIKey with a specific error for the
+// OAuth entry pi's Claude Pro/Max login writes under "anthropic".
+func storedAPIKey(store llm.CredentialStore, ambient string) apiKeyFunc {
+	return func(ctx context.Context) (string, error) {
+		cred, ok, err := store.Read(ctx, providerName)
+		if err != nil {
+			return "", fmt.Errorf("%w: read %s credential: %w", llm.ErrAuth, providerName, err)
+		}
+		if ok && cred.Type == "oauth" {
+			return "", fmt.Errorf("%w: stored %s credential is a Claude subscription (OAuth) login, which Anthropic permits only in its own apps; "+
+				"replace it with an \"api_key\" credential from console.anthropic.com, or remove it to use %s", llm.ErrAuth, providerName, apiKeyEnv)
+		}
+		return providerutil.APIKeyFromCredential(providerName, cred, ok, ambient)
 	}
 }
 
@@ -125,7 +153,10 @@ func WithDefaultMaxTokens(n int) Option {
 }
 
 func (c config) validate() error {
-	if c.apiKeyFunc == nil && c.apiKey == "" {
+	if c.credentials != nil && (c.apiKeySet || c.apiKeyFunc != nil) {
+		return fmt.Errorf("%w: Anthropic WithCredentials cannot be combined with WithAPIKey or WithAPIKeyFunc", llm.ErrBadRequest)
+	}
+	if c.apiKeyFunc == nil && c.apiKey == "" && c.credentials == nil {
 		return fmt.Errorf("%w: missing Anthropic API key; set WithAPIKey or %s", llm.ErrAuth, apiKeyEnv)
 	}
 	if c.httpClient == nil {
@@ -191,6 +222,9 @@ func New(opts ...Option) (*Provider, error) {
 	}
 	if err := cfg.validate(); err != nil {
 		return nil, err
+	}
+	if cfg.credentials != nil {
+		cfg.apiKeyFunc = storedAPIKey(cfg.credentials, cfg.apiKey)
 	}
 	client := sdk.NewClient(cfg.sdkOptions()...)
 	return &Provider{

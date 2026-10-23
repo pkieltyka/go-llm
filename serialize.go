@@ -12,7 +12,12 @@ import (
 )
 
 const (
-	messageEnvelopeVersion = 1
+	// messageEnvelopeVersion is the oldest envelope version; an envelope
+	// whose messages carry a positional part (SystemDeltaPart,
+	// ToolsDeltaPart) is written as positionalEnvelopeVersion, so readers
+	// that predate those parts reject it instead of dropping them.
+	messageEnvelopeVersion    = 1
+	positionalEnvelopeVersion = 2
 
 	partTypeText       = "text"
 	partTypeImage      = "image"
@@ -20,6 +25,8 @@ const (
 	partTypeToolCall   = "tool_call"
 	partTypeToolResult = "tool_result"
 	partTypeReasoning  = "reasoning"
+	partTypeSystem     = "system_delta"
+	partTypeTools      = "tools_delta"
 )
 
 var builtinPartTypes = map[string]struct{}{
@@ -29,6 +36,8 @@ var builtinPartTypes = map[string]struct{}{
 	partTypeToolCall:   {},
 	partTypeToolResult: {},
 	partTypeReasoning:  {},
+	partTypeSystem:     {},
+	partTypeTools:      {},
 }
 
 var partTypeRegistry = struct {
@@ -82,8 +91,17 @@ func RegisterPartType(name string, decode func(json.RawMessage) (Part, error)) e
 // MarshalMessages serializes messages in a versioned persistence envelope.
 func MarshalMessages(msgs []Message) ([]byte, error) {
 	var b bytes.Buffer
+	version := messageEnvelopeVersion
+	for _, msg := range msgs {
+		for _, part := range msg.Parts {
+			switch derefPart(part).(type) {
+			case SystemDeltaPart, ToolsDeltaPart:
+				version = positionalEnvelopeVersion
+			}
+		}
+	}
 	b.WriteString(`{"version":`)
-	b.WriteString(strconv.Itoa(messageEnvelopeVersion))
+	b.WriteString(strconv.Itoa(version))
 	b.WriteString(`,"messages":`)
 	rawMessages, err := marshalMessagesArray(msgs)
 	if err != nil {
@@ -108,7 +126,7 @@ func UnmarshalMessages(data []byte) ([]Message, error) {
 	if err := json.Unmarshal(data, &header); err != nil {
 		return nil, err
 	}
-	if header.Version != messageEnvelopeVersion {
+	if header.Version != messageEnvelopeVersion && header.Version != positionalEnvelopeVersion {
 		return nil, fmt.Errorf("%w: unsupported message envelope version %d", ErrBadRequest, header.Version)
 	}
 
@@ -356,6 +374,107 @@ type reasoningPartJSON struct {
 	Provider string          `json:"provider,omitempty"`
 }
 
+func (p SystemDeltaPart) MarshalJSON() ([]byte, error) {
+	return json.Marshal(systemDeltaPartJSON{
+		Type:    partTypeSystem,
+		Section: p.Section,
+		Text:    p.Text,
+		Cache:   cacheToJSON(p.Cache),
+	})
+}
+
+func (p *SystemDeltaPart) UnmarshalJSON(data []byte) error {
+	var wire systemDeltaPartJSON
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	*p = SystemDeltaPart{Section: wire.Section, Text: wire.Text, Cache: cacheFromJSON(wire.Cache)}
+	return nil
+}
+
+type systemDeltaPartJSON struct {
+	Type    string         `json:"type"`
+	Section string         `json:"section"`
+	Text    string         `json:"text,omitempty"`
+	Cache   *cacheHintJSON `json:"cache,omitempty"`
+}
+
+func (p ToolsDeltaPart) MarshalJSON() ([]byte, error) {
+	wire := toolsDeltaPartJSON{Type: partTypeTools, Removed: p.Removed, Cache: cacheToJSON(p.Cache)}
+	for _, tool := range p.Added {
+		encoded, err := toolToJSON(tool)
+		if err != nil {
+			return nil, err
+		}
+		wire.Added = append(wire.Added, encoded)
+	}
+	return json.Marshal(wire)
+}
+
+func (p *ToolsDeltaPart) UnmarshalJSON(data []byte) error {
+	var wire toolsDeltaPartJSON
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	out := ToolsDeltaPart{Removed: wire.Removed, Cache: cacheFromJSON(wire.Cache)}
+	for _, tool := range wire.Added {
+		out.Added = append(out.Added, tool.tool())
+	}
+	*p = out
+	return nil
+}
+
+type toolsDeltaPartJSON struct {
+	Type    string         `json:"type"`
+	Added   []toolJSON     `json:"added,omitempty"`
+	Removed []string       `json:"removed,omitempty"`
+	Cache   *cacheHintJSON `json:"cache,omitempty"`
+}
+
+// toolJSON is a Tool's canonical encoding. InputSchema reloads as
+// json.RawMessage.
+type toolJSON struct {
+	Name        string              `json:"name"`
+	Description string              `json:"description,omitempty"`
+	InputSchema json.RawMessage     `json:"input_schema,omitempty"`
+	Strict      bool                `json:"strict,omitempty"`
+	Annotations *toolAnnotationJSON `json:"annotations,omitempty"`
+}
+
+type toolAnnotationJSON struct {
+	ReadOnly    bool `json:"read_only,omitempty"`
+	Destructive bool `json:"destructive,omitempty"`
+	Idempotent  bool `json:"idempotent,omitempty"`
+	OpenWorld   bool `json:"open_world,omitempty"`
+}
+
+func toolToJSON(tool Tool) (toolJSON, error) {
+	out := toolJSON{Name: tool.Name, Description: tool.Description, Strict: tool.Strict}
+	if tool.InputSchema != nil {
+		schema, err := json.Marshal(tool.InputSchema)
+		if err != nil {
+			return toolJSON{}, fmt.Errorf("%w: tool %q input schema: %v", ErrBadRequest, tool.Name, err)
+		}
+		out.InputSchema = schema
+	}
+	if tool.Annotations != (ToolAnnotations{}) {
+		a := tool.Annotations
+		out.Annotations = &toolAnnotationJSON{ReadOnly: a.ReadOnly, Destructive: a.Destructive, Idempotent: a.Idempotent, OpenWorld: a.OpenWorld}
+	}
+	return out, nil
+}
+
+func (t toolJSON) tool() Tool {
+	out := Tool{Name: t.Name, Description: t.Description, Strict: t.Strict}
+	if len(t.InputSchema) > 0 {
+		out.InputSchema = cloneRaw(t.InputSchema)
+	}
+	if a := t.Annotations; a != nil {
+		out.Annotations = ToolAnnotations{ReadOnly: a.ReadOnly, Destructive: a.Destructive, Idempotent: a.Idempotent, OpenWorld: a.OpenWorld}
+	}
+	return out
+}
+
 // MarshalJSON supports ordinary encoding/json use. Use MarshalResponse when
 // raw replay payload bytes must be preserved exactly; encoding/json compacts
 // and HTML-escapes Marshaler output.
@@ -403,6 +522,7 @@ func (u Usage) MarshalJSON() ([]byte, error) {
 		TotalTokens:      u.TotalTokens,
 		CacheReadTokens:  u.CacheReadTokens,
 		CacheWriteTokens: u.CacheWriteTokens,
+		CacheWrite1h:     u.CacheWrite1hTokens,
 		ReasoningTokens:  u.ReasoningTokens,
 		CostUSD:          u.CostUSD,
 		CostSource:       u.CostSource,
@@ -415,26 +535,29 @@ func (u *Usage) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*u = Usage{
-		InputTokens:      wire.InputTokens,
-		OutputTokens:     wire.OutputTokens,
-		TotalTokens:      wire.TotalTokens,
-		CacheReadTokens:  wire.CacheReadTokens,
-		CacheWriteTokens: wire.CacheWriteTokens,
-		ReasoningTokens:  wire.ReasoningTokens,
-		CostUSD:          wire.CostUSD,
-		CostSource:       wire.CostSource,
+		InputTokens:        wire.InputTokens,
+		OutputTokens:       wire.OutputTokens,
+		TotalTokens:        wire.TotalTokens,
+		CacheReadTokens:    wire.CacheReadTokens,
+		CacheWriteTokens:   wire.CacheWriteTokens,
+		CacheWrite1hTokens: wire.CacheWrite1h,
+		ReasoningTokens:    wire.ReasoningTokens,
+		CostUSD:            wire.CostUSD,
+		CostSource:         wire.CostSource,
 	}
 	return nil
 }
 
-// usageJSON adds cost_source with omitempty: the canonical envelope is
-// forward-compatible for additive optional keys, so no version bump.
+// usageJSON adds cost_source and cache_write_1h_tokens with omitempty: the
+// canonical envelope is forward-compatible for additive optional keys, so no
+// version bump.
 type usageJSON struct {
 	InputTokens      int64    `json:"input_tokens"`
 	OutputTokens     int64    `json:"output_tokens"`
 	TotalTokens      int64    `json:"total_tokens"`
 	CacheReadTokens  int64    `json:"cache_read_tokens"`
 	CacheWriteTokens int64    `json:"cache_write_tokens"`
+	CacheWrite1h     int64    `json:"cache_write_1h_tokens,omitempty"`
 	ReasoningTokens  int64    `json:"reasoning_tokens"`
 	CostUSD          *float64 `json:"cost_usd,omitempty"`
 	CostSource       string   `json:"cost_source,omitempty"`
@@ -680,6 +803,10 @@ func marshalPart(part Part) (json.RawMessage, error) {
 		return p.MarshalJSON()
 	case UnknownPart:
 		return p.MarshalJSON()
+	case SystemDeltaPart:
+		return p.MarshalJSON()
+	case ToolsDeltaPart:
+		return p.MarshalJSON()
 	}
 
 	if isNilPart(part) {
@@ -830,6 +957,18 @@ func unmarshalPart(raw json.RawMessage) (Part, error) {
 		return part, nil
 	case partTypeReasoning:
 		var part ReasoningPart
+		if err := json.Unmarshal(raw, &part); err != nil {
+			return nil, err
+		}
+		return part, nil
+	case partTypeSystem:
+		var part SystemDeltaPart
+		if err := json.Unmarshal(raw, &part); err != nil {
+			return nil, err
+		}
+		return part, nil
+	case partTypeTools:
+		var part ToolsDeltaPart
 		if err := json.Unmarshal(raw, &part); err != nil {
 			return nil, err
 		}
