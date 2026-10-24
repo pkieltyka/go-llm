@@ -664,6 +664,8 @@ func testApp(provider llm.Provider, stdout, stderr io.Writer) app {
 		stdin:  strings.NewReader(""),
 		stdout: stdout,
 		stderr: stderr,
+		// Never consult the real user config directory.
+		configDir: func() (string, error) { return os.TempDir(), nil },
 		providerFactory: func(context.Context, providerConfig) (llm.Provider, error) {
 			return provider, nil
 		},

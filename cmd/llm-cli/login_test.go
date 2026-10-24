@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -69,7 +70,7 @@ func TestLoginStoresCredential(t *testing.T) {
 			return flow, nil
 		},
 	}
-	if err := a.run(context.Background(), []string{"login", "--auth-file", authPath}); err != nil {
+	if err := a.run(context.Background(), []string{"login", "openai", "--auth-file", authPath}); err != nil {
 		t.Fatalf("login = %v\n%s", err, stderr.String())
 	}
 	if !flow.cancelled {
@@ -94,7 +95,7 @@ func TestLoginStoresCredential(t *testing.T) {
 		deviceIDs = append(deviceIDs, deviceID)
 		return flow2, nil
 	}
-	if err := a.run(context.Background(), []string{"login", "--auth-file", authPath}); err != nil {
+	if err := a.run(context.Background(), []string{"login", "openai", "--auth-file", authPath}); err != nil {
 		t.Fatal(err)
 	}
 	if len(deviceIDs) != 2 || deviceIDs[0] != deviceIDs[1] || !uuidPattern.MatchString(deviceIDs[0]) {
@@ -112,7 +113,7 @@ func TestLoginStoresCredential(t *testing.T) {
 		return &fakeLoginFlow{}, nil
 	}
 	const given = "6f1e5a0e-2b7c-4c1d-9a3e-0b8f7d6c5e4a"
-	if err := a.run(context.Background(), []string{"login", "--auth-file", authPath, "--device-id", given}); err != nil || explicit != given {
+	if err := a.run(context.Background(), []string{"login", "openai", "--auth-file", authPath, "--device-id", given}); err != nil || explicit != given {
 		t.Fatalf("--device-id = %q, %v", explicit, err)
 	}
 }
@@ -130,16 +131,25 @@ func TestLoginRejectsBadInput(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A bad auth file fails before any sign-in starts.
-	if err := a.run(context.Background(), []string{"login", "--auth-file", notJSON}); err == nil || !strings.Contains(err.Error(), "auth file") {
+	if err := a.run(context.Background(), []string{"login", "openai", "--auth-file", notJSON}); err == nil || !strings.Contains(err.Error(), "auth file") {
 		t.Fatalf("unparsable auth file = %v", err)
 	}
-	if err := a.run(context.Background(), []string{"login", "--auth-file", "a.json", "extra"}); !errors.Is(err, errUsage) {
-		t.Fatalf("extra argument = %v", err)
+	for _, args := range [][]string{
+		{"login", "openai", "--auth-file", "a.json", "extra"},
+		{"logout", "openai", "extra"},
+		{"auth", "extra"},
+	} {
+		if err := a.run(context.Background(), args); !errors.Is(err, errUsage) {
+			t.Fatalf("%v = %v, want a usage error", args, err)
+		}
 	}
 	for _, args := range [][]string{
 		{"login"},
-		{"login", "-p", "anthropic", "--auth-file", "a.json"},
-		{"login", "--auth-file", "a.json", "--timeout", "-1s"},
+		{"login", "nope", "--auth-file", "a.json"},
+		{"login", "anthropic", "--auth", "oauth", "--auth-file", "a.json"},
+		{"login", "openai", "--auth", "password", "--auth-file", "a.json"},
+		{"login", "openai", "--auth-file", "a.json", "--timeout", "-1s"},
+		{"logout"},
 	} {
 		if err := a.run(context.Background(), args); !errors.Is(err, llm.ErrBadRequest) {
 			t.Fatalf("%v = %v, want ErrBadRequest", args, err)
@@ -153,7 +163,7 @@ func TestLoginRejectsBadInput(t *testing.T) {
 		t.Fatal(err)
 	}
 	a.configDir = func() (string, error) { return bad, nil }
-	if err := a.run(context.Background(), []string{"login", "--auth-file", "a.json"}); !errors.Is(err, llm.ErrBadRequest) {
+	if err := a.run(context.Background(), []string{"login", "openai", "--auth-file", filepath.Join(t.TempDir(), "a.json")}); !errors.Is(err, llm.ErrBadRequest) {
 		t.Fatalf("corrupt device id = %v", err)
 	}
 }
@@ -178,7 +188,7 @@ func TestLoginFlowErrors(t *testing.T) {
 	} {
 		a := base
 		a.loginFlowFactory = factory
-		if err := a.run(context.Background(), []string{"login", "--auth-file", authPath}); !errors.Is(err, llm.ErrServer) {
+		if err := a.run(context.Background(), []string{"login", "openai", "--auth-file", authPath}); !errors.Is(err, llm.ErrServer) {
 			t.Fatalf("%s failure = %v", name, err)
 		}
 	}
@@ -187,7 +197,7 @@ func TestLoginFlowErrors(t *testing.T) {
 	}
 	failingConfig := base
 	failingConfig.configDir = func() (string, error) { return "", errors.New("no home") }
-	if err := failingConfig.run(context.Background(), []string{"login", "--auth-file", authPath}); err == nil || !strings.Contains(err.Error(), "--device-id") {
+	if err := failingConfig.run(context.Background(), []string{"login", "openai", "--auth-file", authPath}); err == nil || !strings.Contains(err.Error(), "--device-id") {
 		t.Fatalf("missing config dir = %v", err)
 	}
 }
@@ -205,3 +215,131 @@ func (failingFlow) Complete(context.Context) (llm.AuthCredential, error) {
 }
 func (failingFlow) Submit(context.Context, string) error { return nil }
 func (failingFlow) Cancel()                              {}
+
+// TestLoginAPIKey: providers without OAuth default to an API key read from
+// stdin; openai takes one with --auth api-key or api_key; the value is stored
+// as pi stores it, and a reference stays a reference.
+func TestLoginAPIKey(t *testing.T) {
+	authPath := filepath.Join(t.TempDir(), "nested", "auth.json") // directory created on demand
+	run := func(stdin string, args ...string) (string, error) {
+		var stderr bytes.Buffer
+		a := app{stdin: strings.NewReader(stdin), stdout: &bytes.Buffer{}, stderr: &stderr,
+			configDir: func() (string, error) { return t.TempDir(), nil },
+			loginFlowFactory: func(string, time.Duration) (llm.LoginFlow, error) {
+				t.Fatal("API-key login started a browser flow")
+				return nil, nil
+			}}
+		err := a.run(context.Background(), append(args, "--auth-file", authPath))
+		return stderr.String(), err
+	}
+	out, err := run("sk-or-fake\n", "login", "-p", "openrouter") // -p works as an alias
+
+	if err != nil || !strings.Contains(out, "Saved API key for OpenRouter. Credentials saved to "+authPath) || strings.Contains(out, "sk-or-fake") {
+		t.Fatalf("openrouter login = %q, %v", out, err)
+	}
+	for _, spelling := range []string{"api-key", "api_key", "API-KEY"} {
+		if _, err := run("$OPENAI_API_KEY\n", "login", "openai", "--auth", spelling); err != nil {
+			t.Fatalf("--auth %s = %v", spelling, err)
+		}
+	}
+	if _, err := run("", "login", "anthropic"); !errors.Is(err, llm.ErrBadRequest) {
+		t.Fatalf("empty key = %v", err)
+	}
+	auth, err := llm.LoadAuthFile(authPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := auth["openrouter"]; got.Type != "api_key" || got.Key != "sk-or-fake" {
+		t.Fatalf("openrouter entry = %q", got.Type)
+	}
+	if got := auth["openai"]; got.Type != "api_key" || got.Key != "$OPENAI_API_KEY" {
+		t.Fatalf("openai entry kept a reference? type %q", got.Type)
+	}
+	if _, ok := auth["anthropic"]; ok {
+		t.Fatal("a failed login stored a credential")
+	}
+}
+
+// TestLogoutAndAuthStatus covers pi's /logout wording and the status table.
+func TestLogoutAndAuthStatus(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "env-key")
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("OPENROUTER_API_KEY", "")
+	authPath := filepath.Join(t.TempDir(), "auth.json")
+	payload := `{"openai":{"type":"oauth","access":"a","refresh":"r","expires":1},"openrouter":{"type":"api_key","key":"$OR_KEY"},"vllm":{"type":"api_key","key":"!op read x"},"chatcompletions":{"type":"oauth","access":"a"}}`
+	if err := os.WriteFile(authPath, []byte(payload), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	a := app{stdout: &stdout, stderr: &stderr}
+	if err := a.run(context.Background(), []string{"auth", "--auth-file", authPath}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"Auth file: " + authPath,
+		"openai", "subscription (default), API key", "✓ subscription configured",
+		"✓ env: ANTHROPIC_API_KEY",
+		"✓ API key configured (reference)",
+		"✓ API key configured (command)",
+		"✗ subscription stored, which Chat Completions does not accept here",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("auth status missing %q:\n%s", want, stdout.String())
+		}
+	}
+	for _, tc := range []struct{ provider, want string }{
+		{"openai", "Logged out of OpenAI"},
+		{"openrouter", "Removed stored API key for OpenRouter. Environment variables are unchanged."},
+		{"openrouter", "No stored credentials for OpenRouter"},
+	} {
+		stderr.Reset()
+		if err := a.run(context.Background(), []string{"logout", tc.provider, "--auth-file", authPath}); err != nil || !strings.Contains(stderr.String(), tc.want) {
+			t.Fatalf("logout %s = %q, %v", tc.provider, stderr.String(), err)
+		}
+	}
+	auth, err := llm.LoadAuthFile(authPath)
+	if err != nil || len(auth) != 2 || auth["vllm"].Type != "api_key" {
+		t.Fatalf("after logout = %d entries, %v", len(auth), err)
+	}
+}
+
+// TestDefaultAuthFile: without --auth-file, commands use $LLM_AUTH_FILE,
+// else llm-cli/auth.json in the user config directory; --api-key bypasses it.
+func TestDefaultAuthFile(t *testing.T) {
+	configDir := t.TempDir()
+	a := app{configDir: func() (string, error) { return configDir, nil }}
+	t.Setenv("LLM_AUTH_FILE", "")
+	if cfg, err := a.withAuthFile(providerConfig{name: "openai"}); err != nil || cfg.authFile != filepath.Join(configDir, "llm-cli", "auth.json") {
+		t.Fatalf("default = %q, %v", cfg.authFile, err)
+	}
+	t.Setenv("LLM_AUTH_FILE", "/elsewhere/auth.json")
+	if cfg, _ := a.withAuthFile(providerConfig{name: "openai"}); cfg.authFile != "/elsewhere/auth.json" {
+		t.Fatalf("env = %q", cfg.authFile)
+	}
+	if cfg, _ := a.withAuthFile(providerConfig{name: "openai", authFile: "flag.json"}); cfg.authFile != "flag.json" {
+		t.Fatalf("flag = %q", cfg.authFile)
+	}
+	if cfg, _ := a.withAuthFile(providerConfig{name: "openai", apiKey: "k"}); cfg.authFile != "" {
+		t.Fatalf("--api-key kept an auth file %q", cfg.authFile)
+	}
+}
+
+// TestLoginHint: an authentication failure without --api-key says how to
+// fix it; other errors and --api-key runs are unchanged.
+func TestLoginHint(t *testing.T) {
+	authErr := fmt.Errorf("%w: no openai API key is stored or configured", llm.ErrAuth)
+	err := withLoginHint("openai", "", authErr)
+	if !errors.Is(err, llm.ErrAuth) || !strings.Contains(err.Error(), "run 'llm-cli login openai' or set OPENAI_API_KEY") {
+		t.Fatalf("hint = %v", err)
+	}
+	if err := withLoginHint("vllm", "", authErr); !strings.Contains(err.Error(), "run 'llm-cli login vllm'") || strings.Contains(err.Error(), " or set ") {
+		t.Fatalf("self-hosted hint = %v", err)
+	}
+	if err := withLoginHint("openai", "k", authErr); err != authErr {
+		t.Fatalf("--api-key run rewrapped: %v", err)
+	}
+	other := errors.New("boom")
+	if err := withLoginHint("openai", "", other); err != other {
+		t.Fatalf("non-auth error rewrapped: %v", err)
+	}
+}

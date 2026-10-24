@@ -58,7 +58,7 @@ func main() {
 		fmt.Printf("\nspan %q (%s)\n", span.Name, span.SpanKind)
 		attrs := make([]string, 0, len(span.Attributes))
 		for _, kv := range span.Attributes {
-			attrs = append(attrs, fmt.Sprintf("  %s = %s", kv.Key, kv.Value.Emit()))
+			attrs = append(attrs, fmt.Sprintf("  %s = %s", kv.Key, kv.Value.String()))
 		}
 		sort.Strings(attrs)
 		for _, line := range attrs {

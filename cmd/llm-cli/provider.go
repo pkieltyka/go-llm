@@ -24,7 +24,7 @@ func newProvider(_ context.Context, cfg providerConfig) (llm.Provider, error) {
 	// --auth-file is a pi-compatible credential store: every request reads it
 	// and OAuth refreshes are written back under its lock.
 	if cfg.authFileCommands && cfg.authFile == "" {
-		return nil, fmt.Errorf("%w: --auth-file-commands applies only with --auth-file", llm.ErrBadRequest)
+		return nil, fmt.Errorf("%w: --auth-file-commands applies to the auth file, which --api-key bypasses", llm.ErrBadRequest)
 	}
 	var store llm.CredentialStore
 	if cfg.authFile != "" {

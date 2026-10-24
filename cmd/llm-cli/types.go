@@ -76,10 +76,19 @@ type modelsConfig struct {
 
 type loginConfig struct {
 	provider string
+	auth     string
 	authFile string
 	deviceID string
 	timeout  time.Duration
-	version  bool
+}
+
+type logoutConfig struct {
+	provider string
+	authFile string
+}
+
+type authStatusConfig struct {
+	authFile string
 }
 
 type requestBundle struct {

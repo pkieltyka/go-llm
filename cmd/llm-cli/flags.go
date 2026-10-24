@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	llm "github.com/pkieltyka/go-llm"
@@ -79,17 +80,73 @@ func parseModelsFlags(args []string, stderr io.Writer) (modelsConfig, error) {
 	return cfg, nil
 }
 
+// splitProvider takes a leading provider argument, as in pi's
+// "/login openai", so flags may follow it.
+func splitProvider(args []string) (string, []string) {
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		return args[0], args[1:]
+	}
+	return "", args
+}
+
+// trailingProvider accepts the provider after the flags instead, and
+// reports any further argument.
+func trailingProvider(fs *flag.FlagSet, provider *string, stderr io.Writer) error {
+	rest := fs.Args()
+	if *provider == "" && len(rest) > 0 {
+		*provider, rest = rest[0], rest[1:]
+	}
+	if len(rest) > 0 {
+		fmt.Fprintf(stderr, "%s: unexpected argument %q\n", fs.Name(), rest[0])
+		fmt.Fprintf(stderr, "Run '%s -h' for usage.\n", fs.Name())
+		return errUsage
+	}
+	return nil
+}
+
 func parseLoginFlags(args []string, stderr io.Writer) (loginConfig, error) {
 	var cfg loginConfig
+	cfg.provider, args = splitProvider(args)
 	fs := flag.NewFlagSet("llm-cli login", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() { loginUsage(fs) }
-	fs.StringVar(&cfg.provider, "p", "openai", "provider: openai (Sign in with ChatGPT)")
-	fs.StringVar(&cfg.provider, "provider", "openai", "provider: openai (Sign in with ChatGPT)")
-	fs.StringVar(&cfg.authFile, "auth-file", "", "pi-compatible auth.json to store the credential in (required)")
+	fs.StringVar(&cfg.provider, "p", cfg.provider, "provider (alternative to the positional argument)")
+	fs.StringVar(&cfg.provider, "provider", cfg.provider, "provider (alternative to the positional argument)")
+	fs.StringVar(&cfg.auth, "auth", "", "sign-in method: oauth (default where the provider has it) or api-key")
+	fs.StringVar(&cfg.authFile, "auth-file", "", "pi-compatible auth.json (default $LLM_AUTH_FILE, else the user config dir's llm-cli/auth.json)")
 	fs.StringVar(&cfg.deviceID, "device-id", "", "installation UUID sent to OpenAI (default: created once in the user config directory)")
 	fs.DurationVar(&cfg.timeout, "timeout", 0, "bound on the whole browser sign-in (default 5m)")
-	fs.BoolVar(&cfg.version, "version", false, "print version")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return cfg, errHelp
+		}
+		return cfg, errUsage
+	}
+	return cfg, trailingProvider(fs, &cfg.provider, stderr)
+}
+
+func parseLogoutFlags(args []string, stderr io.Writer) (logoutConfig, error) {
+	var cfg logoutConfig
+	cfg.provider, args = splitProvider(args)
+	fs := flag.NewFlagSet("llm-cli logout", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = func() { logoutUsage(fs) }
+	fs.StringVar(&cfg.authFile, "auth-file", "", "pi-compatible auth.json (default $LLM_AUTH_FILE, else the user config dir's llm-cli/auth.json)")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return cfg, errHelp
+		}
+		return cfg, errUsage
+	}
+	return cfg, trailingProvider(fs, &cfg.provider, stderr)
+}
+
+func parseAuthStatusFlags(args []string, stderr io.Writer) (authStatusConfig, error) {
+	var cfg authStatusConfig
+	fs := flag.NewFlagSet("llm-cli auth", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = func() { authStatusUsage(fs) }
+	fs.StringVar(&cfg.authFile, "auth-file", "", "pi-compatible auth.json (default $LLM_AUTH_FILE, else the user config dir's llm-cli/auth.json)")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return cfg, errHelp
@@ -97,8 +154,8 @@ func parseLoginFlags(args []string, stderr io.Writer) (loginConfig, error) {
 		return cfg, errUsage
 	}
 	if fs.NArg() > 0 {
-		fmt.Fprintf(stderr, "llm-cli login: unexpected argument %q\n", fs.Arg(0))
-		fmt.Fprintln(stderr, "Run 'llm-cli login -h' for usage.")
+		fmt.Fprintf(stderr, "llm-cli auth: unexpected argument %q\n", fs.Arg(0))
+		fmt.Fprintln(stderr, "Run 'llm-cli auth -h' for usage.")
 		return cfg, errUsage
 	}
 	return cfg, nil
@@ -106,51 +163,87 @@ func parseLoginFlags(args []string, stderr io.Writer) (loginConfig, error) {
 
 func loginUsage(fs *flag.FlagSet) {
 	w := fs.Output()
-	fmt.Fprint(w, `Usage: llm-cli login [flags]
+	fmt.Fprint(w, `Usage: llm-cli login <provider> [--auth oauth|api-key] [flags]
 
-Sign in with ChatGPT and store the credential under "openai" in a
-pi-compatible auth.json, so later runs use your ChatGPT plan with
---auth-file. Copy the printed URL into a browser; the sign-in completes
-through a loopback callback on 127.0.0.1:1455. When the browser runs on
-another machine (over SSH, say), paste the final redirect URL, as shown in
-its address bar, into this terminal. The credential is never printed.
+Store a credential for a provider in the auth file, as pi's /login does.
+openai signs in with ChatGPT by default (--auth oauth), using your ChatGPT
+plan; --auth api-key stores an API key instead. The other providers take an
+API key. A key is read at a hidden prompt, or from stdin when piped; a pi
+reference such as "$OPENAI_API_KEY" is stored as is and resolved when used.
+
+The ChatGPT sign-in prints a URL: open it in a browser. It completes through
+a loopback callback on 127.0.0.1:1455; when the browser runs on another
+machine (over SSH, say), paste the final redirect URL, as shown in its
+address bar, into this terminal. Credentials are never printed.
+
+Providers: `+loginProviderIDs()+`
 
 Flags:
 `)
 	fs.PrintDefaults()
 	fmt.Fprint(w, `
-Example:
-  llm-cli login --auth-file ~/.config/llm/auth.json
-  llm-cli -p openai --auth-file ~/.config/llm/auth.json -m gpt-5.5 "hello"
+Examples:
+  llm-cli login openai                     # Sign in with ChatGPT
+  llm-cli login openai --auth api-key      # store an OpenAI API key
+  echo "$KEY" | llm-cli login anthropic    # store a piped API key
+  llm-cli login openai --auth-file ~/.pi/agent/auth.json   # share with pi
 `)
+}
+
+func logoutUsage(fs *flag.FlagSet) {
+	w := fs.Output()
+	fmt.Fprint(w, `Usage: llm-cli logout <provider> [flags]
+
+Remove the provider's stored credential from the auth file, as pi's /logout
+does. Environment variables are unchanged.
+
+Flags:
+`)
+	fs.PrintDefaults()
+}
+
+func authStatusUsage(fs *flag.FlagSet) {
+	w := fs.Output()
+	fmt.Fprint(w, `Usage: llm-cli auth [flags]
+
+List each provider's sign-in methods and what is configured: a stored
+credential, an environment variable, or nothing. Key references are not
+resolved.
+
+Flags:
+`)
+	fs.PrintDefaults()
 }
 
 func chatUsage(fs *flag.FlagSet) {
 	w := fs.Output()
 	fmt.Fprint(w, `Usage: llm-cli [flags] [prompt]
        llm-cli models [flags]
-       llm-cli login [flags]
+       llm-cli login <provider> [--auth oauth|api-key]
+       llm-cli logout <provider>
+       llm-cli auth
 
 Single-shot chat against an LLM provider. The prompt comes from the
 positional argument, piped stdin, or both. The response streams to stdout
 by default; --schema (like --json and --no-stream) forces the
 non-streaming path.
 
-Credentials: --auth-file names a pi-compatible auth.json (for example
-~/.pi/agent/auth.json) holding an API key for any provider or a Sign in with
-ChatGPT OAuth credential for openai; OAuth refreshes are written back to it
-under a lock. An api_key value may reference environment variables
-("$OPENAI_API_KEY", "${VAR}") as in pi; a "!command" value runs only with
---auth-file-commands. Without --auth-file, providers read their usual environment variable
-(ANTHROPIC_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY). An --api-key value
-is exposed through shell history and process argv; prefer --auth-file or the
-environment on shared systems. 'llm-cli login' stores a Sign in with ChatGPT
-credential.
+Credentials, as in pi: a credential stored in the auth file wins; without
+one, providers read their usual environment variable (ANTHROPIC_API_KEY,
+OPENAI_API_KEY, OPENROUTER_API_KEY). The auth file is --auth-file, else
+$LLM_AUTH_FILE, else llm-cli/auth.json in the user config directory; use
+~/.pi/agent/auth.json to share credentials with pi. 'llm-cli login <provider>'
+stores one (Sign in with ChatGPT for openai, or an API key), 'llm-cli logout'
+removes it, and 'llm-cli auth' shows what is configured. OAuth refreshes are
+written back under the file's lock. An api_key value may reference
+environment variables ("$OPENAI_API_KEY", "${VAR}"); a "!command" value runs
+only with --auth-file-commands. --api-key bypasses the auth file; its value is
+exposed through shell history and process argv.
 
 Self-hosted servers: -p vllm or -p chatcompletions (Ollama, llama.cpp, any
 OpenAI Chat Completions server) with --base-url pointing at the server's /v1
-root. Their API key is optional and never read from the environment; with
---auth-file it is the "api_key" entry named after the provider, if any.
+root. Their API key is optional and never read from the environment; it is
+the auth file's "api_key" entry named after the provider, if any.
 
 Flags:
 `)

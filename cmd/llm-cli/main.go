@@ -43,6 +43,26 @@ func main() {
 }
 
 func (a app) run(ctx context.Context, args []string) error {
+	if len(args) > 0 && args[0] == "logout" {
+		cfg, err := parseLogoutFlags(args[1:], a.stderr)
+		if err != nil {
+			if errors.Is(err, errHelp) {
+				return nil
+			}
+			return err
+		}
+		return a.runLogout(ctx, cfg)
+	}
+	if len(args) > 0 && args[0] == "auth" {
+		cfg, err := parseAuthStatusFlags(args[1:], a.stderr)
+		if err != nil {
+			if errors.Is(err, errHelp) {
+				return nil
+			}
+			return err
+		}
+		return a.runAuthStatus(cfg)
+	}
 	if len(args) > 0 && args[0] == "login" {
 		cfg, err := parseLoginFlags(args[1:], a.stderr)
 		if err != nil {
@@ -50,9 +70,6 @@ func (a app) run(ctx context.Context, args []string) error {
 				return nil
 			}
 			return err
-		}
-		if cfg.version {
-			return printVersion(a.stdout)
 		}
 		return a.runLogin(ctx, cfg)
 	}
@@ -67,7 +84,7 @@ func (a app) run(ctx context.Context, args []string) error {
 		if cfg.version {
 			return printVersion(a.stdout)
 		}
-		return a.runModels(ctx, cfg)
+		return withLoginHint(cfg.provider, cfg.apiKey, a.runModels(ctx, cfg))
 	}
 
 	cfg, err := parseChatFlags(args, a.stderr)
@@ -87,7 +104,7 @@ func (a app) run(ctx context.Context, args []string) error {
 		}
 		cfg.stdinText = text
 	}
-	return a.runChat(ctx, cfg)
+	return withLoginHint(cfg.provider, cfg.apiKey, a.runChat(ctx, cfg))
 }
 
 // readAllContext reads r to EOF but abandons the read as soon as ctx is

@@ -447,15 +447,18 @@ go install github.com/pkieltyka/go-llm/cmd/llm-cli@latest
 llm-cli -p openai -m gpt-5.5 "write a short haiku about Go"
 echo "long input" | llm-cli -p anthropic -m claude-opus-4-8 -s "summarize stdin"
 llm-cli -p openrouter -m openai/gpt-5.5 --usage --json "return a JSON status"
-llm-cli -p openai --auth-file ~/.pi/agent/auth.json -m gpt-5.5 "review this diff"
+llm-cli -p openai --auth-file ~/.pi/agent/auth.json -m gpt-5.5 "review this diff"  # pi's credentials
 
 llm-cli models -p openrouter          # list models (table or --json)
 
 llm-cli -p vllm --base-url http://gpu-box:8000/v1 -m Qwen/Qwen3-8B "hello"
 llm-cli -p chatcompletions --base-url http://localhost:11434/v1 -m llama3.2 "hello"
 
-llm-cli login --auth-file ~/.config/llm/auth.json   # Sign in with ChatGPT
-llm-cli -p openai --auth-file ~/.config/llm/auth.json -m gpt-5.5 "hello"
+llm-cli login openai                  # Sign in with ChatGPT (subscription)
+llm-cli login openai --auth api-key   # or store an OpenAI API key
+llm-cli login openrouter              # API key: the only method it has
+llm-cli auth                          # what is configured, per provider
+llm-cli logout openai
 
 llm-cli -p openai -m gpt-5.5 --save chat.json "Start a checklist"
 llm-cli -p anthropic -m claude-opus-4-8 --load chat.json --save chat.json "Continue it"
@@ -476,23 +479,32 @@ another — the handoff described above, from the shell.
 Self-hosted servers use `-p vllm` (the vLLM preset) or `-p chatcompletions`
 (Ollama, llama.cpp, any Chat Completions server) with `--base-url` set to the
 server's `/v1` root. Their API key is optional and never read from the
-environment; with `--auth-file` it is the `api_key` entry named after the
-provider (`"vllm"` or `"chatcompletions"`), if any.
+environment; it is the auth file's `api_key` entry named after the provider
+(`"vllm"` or `"chatcompletions"`), if any.
 
-`llm-cli login` runs Sign in with ChatGPT in your browser and stores the
-credential under `"openai"` in the auth file, where `--auth-file` (and pi)
-pick it up. When the browser cannot reach the machine running the CLI (over
-SSH, say), paste the final redirect URL into the terminal. The installation's
-device ID is created once in your user config directory (`--device-id`
-overrides it).
+Credentials work as in pi. `llm-cli login <provider>` stores one credential
+per provider in a pi-compatible `auth.json`, and every command uses it; a
+stored credential wins, and without one a provider reads its usual
+environment variable. The auth file is `--auth-file`, else `LLM_AUTH_FILE`,
+else `llm-cli/auth.json` in your user config directory; point it at
+`~/.pi/agent/auth.json` to share credentials with pi.
 
-`--auth-file` names a pi-compatible `auth.json` credential store used by
-every provider (API keys, or Sign in with ChatGPT OAuth for `openai`); OAuth
-refreshes are written back to it under its lock. `$VAR` key references
-resolve as in pi; `!command` keys run only with `--auth-file-commands`.
-Without `--auth-file`, providers read their usual environment variable. `--api-key` is exclusive with
-`--auth-file`; its value is visible in process arguments and often shell
-history, so prefer the file or the environment.
+- `login` uses the provider's account sign-in when it has one (`openai`:
+  Sign in with ChatGPT, using your ChatGPT plan) and otherwise its API key.
+  `--auth api-key` (or `api_key`) stores an API key instead; `--auth oauth`
+  asks for the sign-in explicitly. A key is read at a hidden prompt, or from
+  stdin when piped.
+- The ChatGPT sign-in prints a URL to open. When the browser cannot reach
+  the machine running the CLI (over SSH, say), paste the final redirect URL
+  into the terminal. The installation's device ID is created once in your
+  user config directory (`--device-id` overrides it).
+- `logout <provider>` removes the stored credential; environment variables
+  are unchanged. `auth` lists what is configured for each provider.
+
+OAuth refreshes are written back to the auth file under its lock. `$VAR` key
+references resolve as in pi; `!command` keys run only with
+`--auth-file-commands`. `--api-key` bypasses the auth file; its value is
+visible in process arguments and often shell history, so prefer `login`.
 
 ## Testing your code
 

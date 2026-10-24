@@ -1608,8 +1608,9 @@ llm-cli models -p openrouter
   stderr), `--reasoning` (print reasoning deltas to stderr as they
   stream), `--cache-system` (set `SystemCache` — pair with `--usage` to
   observe cache hits), `--session-id`, `--debug` (wire capture to stderr
-  via `WireCaptureToLogger`), `--api-key`, `--auth-file` (a pi-compatible
-  credential store for every provider; exclusive with `--api-key`),
+  via `WireCaptureToLogger`), `--api-key` (bypasses the auth file),
+  `--auth-file` (the pi-compatible credential store; exclusive with
+  `--api-key`), `--auth-file-commands`,
   `--base-url`, `--timeout`, `--version`.
 - **Conversation files** — multi-turn the curl way (state in files, not
   the process): `--load <file>` prepends a saved conversation (canonical
@@ -1620,14 +1621,30 @@ llm-cli models -p openrouter
   for a provider (table; `--json` for machine output). The table exposes
   supported efforts, default effort, and positive reasoning-required claims;
   JSON uses optional `supported_efforts`, `default_effort`, and
-  `reasoning_required` fields.
-- **Credentials**: `--auth-file` opens an `authstore.File` (§17C) that every
-  provider reads per request: API keys for any provider, and Sign in with
-  ChatGPT OAuth for `openai`, refreshed and written back under the file's
-  cross-process lock. Without it, providers read their environment variable
-  (library convention), or `--api-key`, whose value is exposed through
-  process argv and shell history. Files are never read unless the flag is
-  supplied.
+  `reasoning_required` fields. `login <provider> [--auth oauth|api-key]`,
+  `logout <provider>` and `auth` manage stored credentials, mirroring pi's
+  `/login` and `/logout`:
+  - `login` defaults to the provider's account sign-in when it has one
+    (`openai`: Sign in with ChatGPT, `--auth oauth`) and otherwise to its
+    API key; `--auth api-key` (or pi's `api_key` spelling) picks the key.
+    The stored `type` is pi's `oauth` or `api_key`. A key is read at a
+    hidden prompt, or from stdin when piped, and stored as entered (a
+    `$VAR` reference stays a reference). The auth file is checked before
+    any sign-in starts. Messages follow pi: "Logged in to OpenAI" /
+    "Saved API key for OpenRouter. Credentials saved to <path>".
+  - `logout` removes the provider's entry; environment variables are
+    unchanged.
+  - `auth` lists each provider's sign-in methods and status ("✓
+    subscription configured", "✓ API key configured", "✓ env: NAME",
+    "• not configured") without resolving key references.
+- **Credentials**, as in pi: every command uses an `authstore.File` (§17C)
+  that providers read per request; a stored credential wins, and without
+  one a provider reads its environment variable. The file is `--auth-file`,
+  else `LLM_AUTH_FILE`, else `llm-cli/auth.json` in the user configuration
+  directory (`~/.pi/agent/auth.json` shares credentials with pi).
+  `--api-key` bypasses the file; its value is exposed through process argv
+  and shell history. Sign in with ChatGPT credentials are refreshed and
+  written back under the file's cross-process lock.
 - **Tool calls are printed, not executed**: with `--tool <file.json>`
   (repeatable tool declarations), a `tool_use` stop prints the tool calls
   as JSON and exits — execution loops are `go-agent` territory; the CLI
