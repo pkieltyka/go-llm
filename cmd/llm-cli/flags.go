@@ -80,6 +80,68 @@ func parseModelsFlags(args []string, stderr io.Writer) (modelsConfig, error) {
 	return cfg, nil
 }
 
+func parseClassifyFlags(args []string, stderr io.Writer) (classifyConfig, error) {
+	var cfg classifyConfig
+	fs := flag.NewFlagSet("llm-cli classify", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = func() { classifyUsage(fs) }
+	bindCommonFlags(fs, &cfg.provider, &cfg.apiKey, &cfg.authFile, &cfg.baseURL, &cfg.timeout, &cfg.version, &cfg.authFileCommands)
+	fs.StringVar(&cfg.model, "m", "", "classifier model ID (verbatim provider model name)")
+	fs.StringVar(&cfg.model, "model", "", "classifier model ID (verbatim provider model name)")
+	fs.StringVar(&cfg.state, "state", "", "state to classify: inline JSON object, a JSON file, or - for stdin (default: piped stdin)")
+	fs.StringVar(&cfg.questionsPath, "questions", "", "questions JSON file: pi's {name: {type, instructions, criteria}} object or a list")
+	fs.Var(&cfg.imagePaths, "image", "image file to classify with the state (repeatable)")
+	fs.BoolVar(&cfg.jsonOutput, "json", false, "emit the full ClassifyResult JSON")
+	fs.BoolVar(&cfg.usage, "usage", false, "print usage summary to stderr")
+	fs.BoolVar(&cfg.debug, "debug", false, "emit wire debug logs to stderr")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return cfg, errHelp
+		}
+		return cfg, errUsage
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(stderr, "llm-cli classify: unexpected argument %q\n", fs.Arg(0))
+		fmt.Fprintln(stderr, "Run 'llm-cli classify -h' for usage.")
+		return cfg, errUsage
+	}
+	return cfg, nil
+}
+
+func classifyUsage(fs *flag.FlagSet) {
+	w := fs.Output()
+	fmt.Fprint(w, `Usage: llm-cli classify -p <provider> -m <model> --questions <file> [--state <json|file|->] [flags]
+
+Ask a classifier (decision) model questions about a JSON state, such as a
+conversation or a document's fields, and print each answer with its
+probabilities. Question types: choice (one of several values), score (a
+position on ordered levels) and bool (a probability of true).
+
+Questions file, pi's form (names and choices keep their order):
+  {"category": {"type": "choice", "instructions": "Classify the message.",
+                "criteria": {"bug": "A defect report", "question": "A question"}},
+   "urgency":  {"type": "score", "instructions": "How urgent is it?",
+                "criteria": ["low", "medium", "high"]},
+   "approved": {"type": "bool", "instructions": "Does the user approve?",
+                "criteria": {"true": "Approval", "false": "No approval"}}}
+
+Providers: openrouter (Jev, Clef, Luna and others it lists), typesafe,
+cloudflare-workers-ai (CLOUDFLARE_API_KEY and CLOUDFLARE_ACCOUNT_ID),
+vercel-ai-gateway, opencode, openai (GPT-6 Luna over the Decisions API; API
+keys only), and systemone (any System One server, with --base-url).
+Credentials work as for chat; 'llm-cli login <provider>' stores one.
+
+Flags:
+`)
+	fs.PrintDefaults()
+	fmt.Fprint(w, `
+Examples:
+  llm-cli classify -p openrouter -m typesafe/jev-1.14 --questions q.json --state '{"message":"It crashes on save"}'
+  cat ticket.json | llm-cli classify -p typesafe -m jev-latest --questions q.json --json
+  llm-cli classify -p cloudflare-workers-ai -m @cf/cloudflare/clef --questions q.json --state ticket.json --image shot.png
+`)
+}
+
 // splitProvider takes a leading provider argument, as in pi's
 // "/login openai", so flags may follow it.
 func splitProvider(args []string) (string, []string) {
@@ -219,6 +281,7 @@ func chatUsage(fs *flag.FlagSet) {
 	w := fs.Output()
 	fmt.Fprint(w, `Usage: llm-cli [flags] [prompt]
        llm-cli models [flags]
+       llm-cli classify [flags]
        llm-cli login <provider> [--auth oauth|api-key]
        llm-cli logout <provider>
        llm-cli auth
@@ -279,12 +342,12 @@ Example:
 }
 
 func bindCommonFlags(fs *flag.FlagSet, provider, apiKey, authFile, baseURL *string, timeout *time.Duration, version, authFileCommands *bool) {
-	fs.StringVar(provider, "p", "", "provider: anthropic|openai|openrouter|vllm|chatcompletions")
-	fs.StringVar(provider, "provider", "", "provider: anthropic|openai|openrouter|vllm|chatcompletions")
+	fs.StringVar(provider, "p", "", "provider: anthropic|openai|openrouter|vllm|chatcompletions; classify also typesafe|cloudflare-workers-ai|vercel-ai-gateway|opencode|systemone")
+	fs.StringVar(provider, "provider", "", "provider (alias of -p)")
 	fs.StringVar(authFile, "auth-file", "", "pi-compatible auth.json credential store (API keys; Sign in with ChatGPT OAuth for openai)")
 	fs.BoolVar(authFileCommands, "auth-file-commands", false, `let --auth-file api_key values run shell commands ("!op read ..."), as pi does`)
 	fs.StringVar(apiKey, "api-key", "", "provider API key (exposed via argv; prefer --auth-file or the environment)")
-	fs.StringVar(baseURL, "base-url", "", "provider base URL (required for vllm and chatcompletions: the server's /v1 root)")
+	fs.StringVar(baseURL, "base-url", "", "provider base URL (required for vllm, chatcompletions and systemone: the server's /v1 root)")
 	fs.DurationVar(timeout, "timeout", 0, "provider call timeout")
 	fs.BoolVar(version, "version", false, "print version")
 }

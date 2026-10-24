@@ -73,6 +73,19 @@ func (a app) run(ctx context.Context, args []string) error {
 		}
 		return a.runLogin(ctx, cfg)
 	}
+	if len(args) > 0 && args[0] == "classify" {
+		cfg, err := parseClassifyFlags(args[1:], a.stderr)
+		if err != nil {
+			if errors.Is(err, errHelp) {
+				return nil
+			}
+			return err
+		}
+		if cfg.version {
+			return printVersion(a.stdout)
+		}
+		return withLoginHint(cfg.provider, cfg.apiKey, a.runClassify(ctx, cfg))
+	}
 	if len(args) > 0 && args[0] == "models" {
 		cfg, err := parseModelsFlags(args[1:], a.stderr)
 		if err != nil {

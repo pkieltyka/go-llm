@@ -28,6 +28,8 @@ verified with Go 1.26.6 or newer. Streaming uses standard iterators (`iter`).
 | OpenRouter | Shared OpenAI-compatible adapter (via `openai-go`), preset base URL + auth + typed extensions | `https://openrouter.ai/api/v1` |
 | vLLM | `providers/vllm` — current-stable v0.26.0 preset over the public `chatcompletions` engine; **host-first construction** (self-hosted: `http://host:8000/v1`, key optional via `--api-key` bearer) | Live-tested. Includes fuzzy model resolution and concrete-provider `/tokenize`, `/detokenize`, and `/tokenizer_info` extensions. Full upstream research: `vllm_research.md` |
 | Chat Completions-compatible servers (including Ollama) | `chatcompletions.New(baseURL, opts...)`, with quirks declared via the `Compat` struct | For local Ollama: `http://localhost:11434/v1`, `WithName("ollama")`, and `WithCompat(Compat{StreamIncludeUsage: true})`; shared engine is offline conformance-tested |
+| System One services (classifier models) | `providers/systemone` over an internal System One engine: `NewTypeSafe`, `NewVercelAIGateway`, `NewOpenCode`, `New(baseURL)` | Classify only (§13C); Chat and ChatStream fail with `ErrUnsupported` |
+| Cloudflare Workers AI (classifier models) | `providers/cloudflare` over the same engine, in Cloudflare's envelope | Classify only (§13C): Clef family and Jev; provider ID `cloudflare-workers-ai`, as in pi |
 | Custom | Public `Provider` interface — anyone can implement their own | |
 
 Decisions:
@@ -91,6 +93,8 @@ Decisions:
 - Self-hosted / OpenAI Chat Completions-compatible servers: public
   `chatcompletions.New(baseURL)` engine (key-optional, declarative
   `Compat`) + `providers/vllm` preset — §2
+- Classification with classifier (decision) models — the one non-chat
+  operation, an optional provider capability — §13C
 
 **Out of scope (v1):**
 
@@ -808,7 +812,9 @@ Cost sourcing:
   `tool-streaming`, `parallel-tools`, `strict-tools`, `json-schema`,
   `json-mode`, `reasoning`, `image-input`, `pdf-input`, `stop-sequences`,
   `prompt-caching`, `session-affinity`, `cost-reporting`, `models-listing`,
-  `positional-instructions`, `positional-tools` (advisory, §7A).
+  `positional-instructions`, `positional-tools` (advisory, §7A), `classify`
+  (the provider implements `llm.Classifier`; on a model row, the model is a
+  classifier, §13C).
 - `cost-reporting` means the provider NATIVELY reports the request's cost in
   its responses (e.g. OpenRouter's `usage.cost`); price-table cost
   *estimation* is universal, works for every provider, and is not
@@ -855,8 +861,12 @@ explicitly invoked; construction, chat, and streaming do not fetch catalogs.
 - Anthropic: `GET /v1/models` (rich capability data)
 - OpenAI: `GET /models` (IDs, minimal metadata)
 - OpenRouter: one `GET /models` per explicit call (rich: pricing, context
-  length, input modalities, supported parameters, and reasoning policy). No
-  models.dev or other fallback request is performed. Explicit catalog fields
+  length, input modalities, supported parameters, and reasoning policy),
+  plus `GET /models?output_modalities=decisions` for the classifier catalog
+  the default listing leaves out (rows deduplicated by ID; a classifier row
+  lists `CapabilityClassify`). A failed classifier listing (a mirror that
+  rejects the filter) leaves the chat catalog; only cancellation fails the
+  call. No models.dev or other fallback request is performed. Explicit catalog fields
   populate advisory tool, parallel-tool, reasoning, structured-output,
   image-input, and stop capabilities plus normalized supported/default effort
   and mandatory-reasoning metadata. Unknown or malformed advisory fields stay
@@ -989,6 +999,112 @@ canonical model's behavior, because the wire differs.
 - `PositionalInstructions`: `system` messages are accepted after the
   conversation starts (§7A).
 - `PositionalTools`: tool changes are accepted in place (§7A).
+
+## 13C. Classification
+
+Classifier models — "decision" models in models.dev (`type: "decision"`)
+and OpenRouter (the `decisions` output modality), the models behind
+OpenAI's Decisions API and TypeSafe's System One protocol — answer typed
+questions about structured state instead of generating text: TypeSafe's
+Jev, Cloudflare's Clef family, OpenAI's GPT-6 Luna, Perplexity's deciders,
+Liquid d1 and others. go-llm follows pi's names (classifier, `classify`).
+
+- **Capability.** A provider that classifies implements the optional
+  `llm.Classifier` interface (`Classify(ctx, *ClassifyRequest)
+  (*ClassifyResult, error)`) and advertises `CapabilityClassify`; a model
+  that classifies lists `CapabilityClassify` in `ModelInfo.Capabilities`.
+  Classification is per model, not a model type: one model ID can serve
+  chat, classification or both. `llm.Classify(ctx, p, req)` finds a
+  `Classifier` on `p` or the providers it wraps (`Unwrap() Provider`, as
+  `CountTokens` does) and returns `ErrUnsupported` otherwise; chat
+  middleware does not observe classification calls.
+- **Request.** `Model`; `State`, a JSON object; optional `Images`
+  (`ImagePart` with inline data and a media type), judged with the state;
+  `Questions`, an ordered list (names unique and non-empty); optional
+  `ProviderOptions`. Question types (`llm.ChoiceQuestion`,
+  `llm.ScoreQuestion`, `llm.BoolQuestion`):
+  - `choice`: `Instructions` and at least two `Choices` (unique `Value`,
+    optional `Description`);
+  - `score`: `Instructions` and at least two ordered `Levels`, lowest
+    first;
+  - `bool`: `Instructions` and the optional meanings of `True` and
+    `False`.
+  `ValidateClassifyRequest` checks all of this before any network I/O and
+  fails with `ErrBadRequest`.
+- **Result.** `Provider`; `Model` (the resolved model when the service
+  reports one); `ID` (the service's request ID, when given); `Answers`,
+  keyed by question name, one per requested question:
+  - choice: `Choice`, `Probabilities` (per value), `Confidence`;
+  - score: `Score` (the expected level index, fractional when uncertain),
+    `LevelProbabilities` (per level, when reported), `Confidence`;
+  - bool: `Probability` (of true).
+  An answer is valid when it has the requested type, finite numbers,
+  probabilities and confidence within [0, 1], a declared choice (and
+  probabilities only for declared values), a score within the level
+  indices [0, len(Levels)-1] and, when present, one level probability per
+  level; `CheckClassifyAnswers` enforces this and drops invalid and
+  unrequested answers, so `err == nil` means every requested answer is
+  valid, and on an error every answer left is valid.
+  `Usage` holds the tokens (OpenAI Decisions' cache reads and writes split
+  out of `input_tokens`, as for chat, §11) and cost: native when the service
+  reports it (OpenRouter's `usage.cost`); else estimated from the caller's
+  price table, or from an embedded catalog row that lists
+  `CapabilityClassify` — a chat row's price is never applied to a classify
+  call, so OpenAI Decisions' cost stays unknown without `WithPriceTable`;
+  else unknown. A billed response returns the result with its `Usage` and
+  the valid answers, together with an error, in this precedence: a refusal
+  of a requested question (OpenAI) wraps `ErrContentFiltered`; a malformed,
+  missing or invalid answer wraps `ErrServer`. Unrequested answers,
+  refusals included, are ignored.
+- **Bound model.** `llm.NewClassifierModel(p, model, opts...)` binds a
+  provider and model (and optionally default questions,
+  `WithClassifierQuestions`, and `WithClassifierProviderOptions`);
+  `Classify(ctx, state, questions...)` marshals `state` (any value that
+  encodes to a JSON object), using the bound questions when none are
+  passed; `ClassifyRequest(ctx, req)` fills in the model. It is immutable
+  and safe for concurrent use.
+- **Services.**
+  - System One (`POST <base>/systemone`, `bool` on the wire as `noul`):
+    `openrouter` (`Classify` beside chat; images as `image_url` parts in
+    the state), `systemone.NewTypeSafe` (images as `assets` behind
+    TypeSafe's opt-in header), `systemone.NewVercelAIGateway`,
+    `systemone.NewOpenCode` (text only), and `systemone.New(baseURL)` for
+    any System One server such as llama.cpp ≥ 0.6.0 (key optional, never
+    from the environment; images as an `images` list of data URLs, as
+    llama.cpp takes them). Asset names are `<image-N>` unless a caller
+    string (state, instructions, criteria) contains `<image-`, in which
+    case a deterministic unused prefix (`<image1-`, ...) is chosen, since
+    TypeSafe substitutes asset names wherever they occur. TypeSafe's
+    `max_tokens_exceeded` code is `ErrContextTooLong`.
+  - Cloudflare Workers AI (`cloudflare.New`): System One wrapped in
+    `POST <account base>/run` with `{model, input}` and Cloudflare's
+    response envelope; Clef takes images as data URLs, Jev as `assets`;
+    the API key and account ID resolve per field from options, the
+    auth-file entry (`key`, `env.CLOUDFLARE_ACCOUNT_ID`) and the
+    environment, from one credential read per request, and the account ID
+    must be one URL path segment (letters, digits, `-`, `_`). Clef's
+    documented limits are checked before I/O (at most 4 images, 64
+    questions, names of 1–100 letters, digits, `_`, `.`, `-`); native codes
+    5007, 3006 and 3007 map to `ErrNotFound`, `ErrContextTooLong` and
+    `ErrTimeout`, in HTTP errors and `success: false` envelopes alike. The
+    request shape (outer `{model, input}` on `/ai/run`, no gateway header or
+    inner model selector) follows pi's live-observed requests; it is not
+    verified here against Cloudflare's current documentation.
+  - OpenAI Decisions (`openai` `Classify`, `POST /v1/decisions`): API keys
+    only — a Sign in with ChatGPT credential fails with `ErrUnsupported`;
+    `bool` is a `predicate` whose meanings are appended to the
+    instructions; the documented limits (at most 400 questions, 255
+    choices, 10 score levels; pi's 128 images) are checked before I/O; a
+    refusal fails as above; a 504 gateway timeout is not retried.
+- **Provider options.** `ClassifyRequest.ProviderOptions` is carried for
+  providers that define classify options; none do yet. A System One
+  service's image form is provider-wide (`systemone.WithImageForm`).
+- **Catalog.** The embedded model table (§13) lists classifier rows from
+  OpenRouter's decisions catalog, models.dev's `type=decision` rows
+  (TypeSafe) and Vercel AI Gateway's evaluation models, each with
+  `CapabilityClassify`.
+- **Not supported (yet).** System One's `box` question (image
+  localization), temperature, and pi's logprob classifier for chat models.
 
 ## 14. Provider-Specific Extensions
 
@@ -1270,6 +1386,16 @@ code (and `go-agent`) can be tested offline:
 - Implements the full `Provider` interface — it is also a permanent
   dogfooding check that the interface stays implementable outside the
   built-in providers.
+- Implements `llm.Classifier` (§13C): `EnqueueClassifyResult`,
+  `EnqueueClassifyError(err, result)` (an error beside a partial result)
+  and `ClassifyRequests()`; requests are validated as providers validate
+  them.
+- Exports `RunClassifierConformance(t, newProvider)`, run by every
+  classifying provider: it implements `llm.Classifier` (found through
+  `llm.Wrap`), lists `CapabilityClassify`, rejects invalid requests before
+  any I/O and honours a canceled context. It is separate from
+  `RunConformance`, whose chat contract classifier-only providers do not
+  meet.
 - Exports `RunConformance`, so the Provider contract is machine-checked:
   every provider package (and `llmtest` itself) runs the suite offline
   against fixture servers — single-use streams, mid-stream cancellation
@@ -1382,7 +1508,13 @@ go-llm mirrors pi's authentication model (pi v1.4, `packages/ai/src/auth`).
 - **Credentials.** An `llm.AuthCredential` is pi's auth.json credential
   union: `{"type":"api_key","key"}` or `{"type":"oauth","access",
   "refresh","expires","clientId"?,"accountId"?}`, plus go-llm's optional
-  `model`/`base_url` configuration fields. `llm.LoadAuthFile` and
+  `model`/`base_url` configuration fields, and pi's entry `env` map
+  (`AuthCredential.Env`): provider configuration such as Cloudflare's
+  `CLOUDFLARE_ACCOUNT_ID`, and the first source for `$VAR` key references.
+  Because `Env` is a map, `AuthCredential` is not comparable with `==`
+  (compare with `reflect.DeepEqual`); `CloneEnv` copies it. `env` is a
+  field a credential write owns, so writers carry it over from the
+  credential they read (OAuth refresh does). `llm.LoadAuthFile` and
   `ParseAuthFile` read bare and `{"providers":...}`-wrapped files; unknown
   fields such as pi's `scopes` are ignored. `ClientID` is the OAuth client
   issued per login, which refresh requires.
@@ -1598,7 +1730,8 @@ llm-cli models -p openrouter
 
 - **Prompt sources**: positional arg, stdin (piped), or both (stdin
   appended as a text part) — curl-style composability.
-- **Flags**: `-p/--provider` (anthropic|openai|openrouter),
+- **Flags**: `-p/--provider` (anthropic|openai|openrouter|vllm|chatcompletions;
+  for `classify` also typesafe|cloudflare-workers-ai|vercel-ai-gateway|opencode|systemone),
   `-m/--model`, `-s/--system`, `--effort`, `--max-tokens`, `--temp`
   (alias `--temperature`), `--image <path|url>` / `--file <path|url>`
   (repeatable), `--schema <file.json>` (structured output; prints
@@ -1617,7 +1750,19 @@ llm-cli models -p openrouter
   envelope, §10A), `--save <file>` writes the updated conversation after
   the response. Loading with a *different* `-p` exercises cross-provider
   history replay directly from the shell.
-- **Commands**: default = chat; `models` = explicitly fetch and list models
+- **Commands**: default = chat; `classify` = ask a classifier model
+  (§13C): `-m`, `--questions <file>` in pi's object form (`{"<name>":
+  {"type": "choice"|"score"|"bool", "instructions", "criteria"}}`, choice
+  criteria mapping values to descriptions, score criteria listing the
+  levels, bool criteria `{"true", "false"}`; names and choices keep the
+  file's order) or a list of `llm.Question`, the state as `--state`
+  (inline JSON object, a file, or `-`) or piped stdin, repeatable
+  `--image <file>`, `--json` (the full `ClassifyResult`) and `--usage`;
+  text output is one line per question ("category: bug (p=0.900,
+  confidence 0.850)", "urgency: 1.800 ≈ high (confidence 0.800)",
+  "approved: p(true)=0.750"). A billed call that fails (a refusal, a
+  malformed answer) prints its valid answers ("name: no valid answer" for
+  the rest) and `--usage`, then exits 1 with the error. `models` = explicitly fetch and list models
   for a provider (table; `--json` for machine output). The table exposes
   supported efforts, default effort, and positive reasoning-required claims;
   JSON uses optional `supported_efforts`, `default_effort`, and
@@ -1632,6 +1777,12 @@ llm-cli models -p openrouter
     `$VAR` reference stays a reference). The auth file is checked before
     any sign-in starts. Messages follow pi: "Logged in to OpenAI" /
     "Saved API key for OpenRouter. Credentials saved to <path>".
+  - The classifier providers take API keys: `typesafe`,
+    `vercel-ai-gateway`, `opencode`, `systemone` (a key the
+    server may not need: classify works without a stored one, as for
+    vllm), and `cloudflare-workers-ai`, which then asks for the account ID (a
+    visible prompt, or the second piped line) and stores it as the entry's
+    `env.CLOUDFLARE_ACCOUNT_ID`, as pi's login does.
   - `logout` removes the provider's entry; environment variables are
     unchanged.
   - `auth` lists each provider's sign-in methods and status ("✓

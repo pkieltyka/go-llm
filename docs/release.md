@@ -133,6 +133,12 @@ atomically, and refuses destructive changes unless `--allow-destructive` is
 explicitly supplied after review. ZAI is not in the current snapshot provider
 set.
 
+Classifier (decision) model rows come from three further sources, captured
+beside the others and required all together or not at all: OpenRouter's
+`/models?output_modalities=decisions`, models.dev's `models.json?type=decision`
+(the `typesafe/` rows) and Vercel AI Gateway's `/v1/models` (its
+`evaluation` models). Their rows carry `capabilities: ["classify", ...]`.
+
 Every snapshot records schema and generator versions plus ordered source IDs,
 URLs, and SHA-256 content digests. The exact models.dev and OpenRouter response
 bytes are retained as deterministic gzip files under the dated
@@ -162,6 +168,9 @@ with `-coverpkg` through its real facade/provider consumers.
 | `providers/vllm` | 84% |
 | `providers/internal/responsesapi` | 77% |
 | `providers/internal/provideroauth` | 71% |
+| `providers/internal/systemone` | 83% |
+| `providers/systemone` | 75% |
+| `providers/cloudflare` | 78% |
 | `otelllm` | 86% |
 | `internal/schemajson` (owned group) | 82% |
 | `providers/internal/providerutil` (owned group) | 76% |

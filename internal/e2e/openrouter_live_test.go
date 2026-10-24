@@ -43,6 +43,8 @@ const (
 	// and continues the tool loop on a different model family.
 	openRouterSwitchProducerModel = "anthropic/claude-haiku-4.5"
 	openRouterSwitchConsumerModel = "openai/gpt-5-mini"
+	// The classify scenario asks a classifier (decision) model.
+	openRouterClassifierModel = "typesafe/jev-1.14"
 )
 
 func TestLiveOpenRouter(t *testing.T) {
@@ -224,6 +226,7 @@ func openRouterLiveScenarioRunners(reasoningModel, cacheModel, parallelToolsMode
 		livePromptCacheScenario(ctx, t, p, cacheModel)
 	}
 	runners["cost_reporting"] = liveOpenRouterCostScenario
+	runners["classify"] = liveClassifyScenario(openRouterClassifierModel)
 	runners["error_mapping"] = func(ctx context.Context, t *testing.T, p llm.Provider, model string) {
 		liveOpenRouterErrorMappingScenario(ctx, t, p, model, baseURL)
 	}

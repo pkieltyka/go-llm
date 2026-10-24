@@ -22,7 +22,8 @@ import (
 // read, so table rows exercise exactly the configured resolution path.
 func clearProviderEnv(t *testing.T) {
 	t.Helper()
-	for _, key := range []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"} {
+	for _, key := range []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY",
+		"TYPESAFE_API_KEY", "AI_GATEWAY_API_KEY", "OPENCODE_API_KEY", "CLOUDFLARE_API_KEY", "CLOUDFLARE_ACCOUNT_ID"} {
 		t.Setenv(key, "")
 	}
 }

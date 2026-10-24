@@ -74,6 +74,24 @@ type modelsConfig struct {
 	authFileCommands bool
 }
 
+type classifyConfig struct {
+	provider      string
+	model         string
+	state         string
+	questionsPath string
+	imagePaths    repeatableString
+	jsonOutput    bool
+	usage         bool
+	apiKey        string
+	authFile      string
+	baseURL       string
+	timeout       time.Duration
+	debug         bool
+	version       bool
+
+	authFileCommands bool
+}
+
 type loginConfig struct {
 	provider string
 	auth     string

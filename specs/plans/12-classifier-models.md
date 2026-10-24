@@ -1,6 +1,7 @@
 ---
-status: ready
+status: implemented
 ratified_date: 2026-10-24
+implemented_date: 2026-10-24
 planned_at: e077bd6
 planned_at_date: 2026-10-24
 ---
@@ -466,6 +467,82 @@ OpenRouter), an OpenAI *Sign in with ChatGPT* credential (which Decisions
 rejects, so probe 4's Decisions part needs an OpenAI API key), and no
 TypeSafe, Cloudflare, Vercel or OpenCode credentials.
 
+#### Phase 1 results (2026-10-24, through OpenRouter)
+
+No probe contradicted the recorded shapes; several add to them.
+
+- **Request.** `POST https://openrouter.ai/api/v1/systemone` with `{ model,
+  state, questions }` as recorded. The wire's question types are `noul`,
+  `choice`, `score` and `box`; `bool` is rejected (400, "Invalid
+  discriminator value. Expected 'noul' | 'choice' | 'score' | 'box'"), which
+  confirms the `bool` → `noul` mapping. A one-option `choice` is accepted
+  (local validation still requires two).
+- **Response.** `{ model, answers, usage, id, provider }`:
+  - `model` is the resolved snapshot (`typesafe/jev-1.14-20261014`,
+    `openai/gpt-6-luna-decisions-20261006`), `provider` the upstream
+    (`TypeSafe`, `OpenAI`, `Perplexity`, `PrimeIntellect`, `SiliconFlow`),
+    `id` a generation ID (`gen-dec-…`);
+  - choice: `{ type, choice, probabilities: { value: p }, confidence }`;
+  - **score adds to pi's shape**: `{ type, score, legend: { "0": level, … },
+    probabilities: { "0": p, … }, confidence }`, and `score` is the
+    expected level index, fractional when uncertain (`1.8352`);
+  - noul: `{ type: "noul", noul: p }`;
+  - **usage adds `cost`**: `{ input_tokens, output_tokens, cost }`, the
+    native charge in USD.
+- **Models.** Jev 1.14, Clef Flash, `openai/gpt-6-luna-decisions`,
+  `perplexity/pplx-decider-flash-v1.2` and `jaredpalmer/kev-4b` all answered
+  the same three-question request in the same shape. `liquid/d1` returned an
+  upstream 502 (transient). A chat model ID is a 400 ("Model … does not
+  exist").
+- **Images.** `state-image-urls` works on Clef Flash (a red image classified
+  red at 0.98). Jev 1.14 on OpenRouter rejects 2×2 and 256×256 PNGs with
+  400 "Invalid image dimensions"; its size requirement is unknown and the
+  error is passed through. `assets` is dropped silently, as pi documents.
+  PrimeIntellect-served Clef rejects `image_url` parts ("does not accept
+  \"image_url\" parts in state"), so image support also depends on the
+  upstream OpenRouter routes to.
+- **`box` (not in pi).** A fourth question type returning `{ type: "box",
+  box: { top, bottom, left, right }, confidence }`, coordinates in [0, 1]: an
+  image localization question. Answered for text state with near-zero
+  confidence. *Deferred* (see Deferred): pi does not support it, and with
+  Jev's image input failing here it cannot be validated end to end.
+- **Catalogs.**
+  - OpenRouter `GET /api/v1/models?output_modalities=decisions` lists 30
+    classifier models with `context_length`, `architecture.input_modalities`
+    (`image` where supported), and per-token `pricing.prompt`
+    (`completion` 0, sometimes `input_cache_read`): Jev 1.13/1.14/latest,
+    Clef, Clef Flash, Clef Omni, GPT-6 Luna Decisions, Perplexity deciders,
+    Liquid d1 and d1-ultra, Upstage Solar Decide, Microsoft Decision-1,
+    Inception Mercury Decide, Nace Drex, Respan Span, ScaleDown Classify,
+    Baseten Elephant/Mammoth, Together tev1, Kev 4B.
+  - models.dev `models.json?type=decision` lists 8 canonical rows
+    (`typesafe/jev-latest`, `typesafe/jev-1.14.0`, `cloudflare/clef`,
+    `cloudflare/clef-flash`, `liquid/d1`, …) with context windows and input
+    modalities but **no pricing** and no serving provider.
+  - Vercel AI Gateway `GET /v1/models` lists 14 `type: "evaluation"` models
+    with per-token `pricing.input` and `context_window`
+    (`typesafe-ai/jev`, `typesafe-ai/jev-1.14.0`, `liquid/d1`,
+    `openai/gpt-6-luna-decisions`, `perplexity/pplx-decider-v1.2`, …); `vision`
+    in `tags` marks image input.
+- **Not probed** (no credentials): TypeSafe, Cloudflare Workers AI, Vercel
+  AI Gateway and OpenCode classification, and OpenAI's own `/v1/decisions`
+  (the stored OpenAI credential is a Sign in with ChatGPT login). They ship
+  against pi's recorded shapes and the System One shapes above.
+
+Consequences for the design:
+
+- `Answer` gains `LevelProbabilities []float64` (score, by level index,
+  from `probabilities` keyed `"0"…`); `Score` is a `float64` expected index.
+- Usage takes OpenRouter's `usage.cost` as a native cost (`CostSource`
+  native), as chat already does; elsewhere cost is estimated.
+- `ClassifyResult` gains `ID` (the generation ID when the service returns
+  one) and keeps the resolved `Model` from the response.
+- The catalog's classifier rows come from OpenRouter's decisions listing
+  (with pricing), Vercel's evaluation models (with pricing) and the
+  `typesafe/*` rows of models.dev's decision listing for the `typesafe`
+  provider (no pricing). These are upstream catalogs, not hand-listed rows,
+  so decision 7 holds.
+
 ### Phase 2: core types, validation, `llm.Classify`, `llmtest`
 
 Types, constructors, validation, `llm.Classify`, the bound
@@ -504,8 +581,57 @@ captured sources, OpenRouter's live listing, the capability in
 `examples/classify` with its smoke test; `llm-cli classify`; login and auth
 rows; README and spec sections.
 
+## Implementation notes (2026-10-24)
+
+All phases landed on `next`. Where the result differs from the text above:
+
+- Conformance: a separate `llmtest.RunClassifierConformance` (Classifier
+  found through `Wrap`, `CapabilityClassify`, validation before I/O,
+  cancellation) instead of a section in `RunConformance`, whose chat
+  contract classifier-only providers cannot meet. Answer-type checks and
+  usage-with-malformed-answers are covered per provider.
+- `ClassifyRequest.ProviderOptions` is carried but no provider defines
+  classify options yet; a System One service's image form is provider-wide
+  (`systemone.WithImageForm`), not per request.
+- CLI and auth IDs follow pi: `cloudflare-workers-ai`, not `cloudflare`.
+  `llm-cli login systemone` stores the optional key of a System One server.
+- OpenCode's base URL is `https://opencode.ai/inference/v1`, as pi's model
+  data and tests have it (pi's code comment says `/zen/v1`); unverified live,
+  as no OpenCode credential was available.
+- A Cloudflare base URL without `{account}` (a proxy) needs no account ID.
+- OpenRouter's `Models` tolerates a failed decisions listing.
+- An OpenAI Decisions refusal keeps the other questions' answers.
+- `AuthCredential` gained `Env` (pi's entry `env`), so it is no longer
+  comparable with `==`; OAuth refresh carries `Env` over.
+- Live scenarios: `classify` on OpenRouter (Jev 1.14) and OpenAI (GPT-6
+  Luna; skipped with a Sign in with ChatGPT credential). TypeSafe,
+  Cloudflare, Vercel and OpenCode have no credentials in `gollm-test.json`
+  and are covered offline by golden requests.
+
+### After the Codex plan review (`reviews/review-of-plan-12-from-codex.md`)
+
+Adopted: classifier cost only from classifier evidence (DC-1); answer range,
+declared-choice and level checks that drop invalid answers, with refusal
+precedence (DC-2/3); Decisions cache reads/writes split out of input tokens
+(DC-8); collision-free asset names (DC-9); documented Decisions and Clef
+limits as per-service preflight, the four-image limit moved out of the
+shared encoder (DC-10/22); TypeSafe `max_tokens_exceeded` and Cloudflare
+5007/3006/3007 codes (DC-11); one Cloudflare credential read per request
+and a path-safe account ID (DC-12); the Cloudflare route recorded as pi's
+observed shape, unverified (DC-13); CLI partial output and incomplete
+Cloudflare auth status (DC-18/19); 504 and beta wording (DC-21).
+`systemone.New` now defaults to llama.cpp's `images` data URLs, per its
+server README. Already covered by the implementation: DC-4, DC-6, DC-7,
+DC-14–DC-17. Not adopted: classify-specific `ProviderOptions` validation
+(DC-5; no provider defines classify options) and a public
+`ModelInfo.Classification` slot (DC-1's larger option; the narrower
+evidence rule suffices while no catalog source gives one model separate
+chat and classifier prices).
+
 ## Deferred
 
+- The System One `box` question type (image localization), found in Phase 1;
+  pi does not support it yet.
 - `llama-cpp-classify`, pi's logprob classifier for chat models.
 - `temperature`, until an implementation can apply it.
 - A classify middleware seam for `UsageTracker`/`otelllm`.
@@ -515,7 +641,7 @@ rows; README and spec sections.
 
 ## Risks
 
-- **Young APIs.** OpenAI Decisions is a public beta and System One image
+- **Young APIs.** OpenAI Decisions is new and System One image
   input is experimental on TypeSafe; wire shapes may move. Golden fixtures
   make drift visible; the live scenarios catch it.
 - **Overloaded model IDs.** `gpt-6-luna` is a chat model to most catalogs
