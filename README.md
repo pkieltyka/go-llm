@@ -12,73 +12,19 @@ where they exist and pulled in only by the provider package you import.
 
 ## Highlights
 
-- **One `llm.Provider` interface** — blocking `Chat` and streaming
-  `ChatStream` (`iter.Seq2` iterators), the same request/response model
-  everywhere, per-provider escape hatches down to the raw SDK client.
-- **Providers**: Anthropic (API key), OpenAI
-  (Responses API; API key or Sign in with ChatGPT), OpenRouter, and
-  self-hosted vLLM. First-party presets run the shared offline
-  conformance suite, and credentialed presets have capability-driven live
-  scenarios. `chatcompletions.New(baseURL)` covers any other
-  OpenAI Chat Completions-compatible server (Ollama, llama.cpp, Groq,
-  Together, ...).
-- **Credentials, the pi way**: a `llm.CredentialStore` (in memory, or a
-  pi-compatible `auth.json` via `authstore.NewFile`) owns each provider's
-  credential. Sign in with ChatGPT tokens refresh inside the store's locked
-  `Modify`, so concurrent requests and processes refresh exactly once.
-- **Tools**: parallel calls, streamed arguments, and a defined contract for
-  malformed tool calls — rescue what's rescuable, drop the rest *visibly*
-  (`ToolCallDropped`), with an opt-in `llm.RetryDroppedToolCalls` middleware.
-  No-argument tool schemas are sent with an explicit empty `properties: {}`
-  (OpenAI-compatible `parameters`, Anthropic `input_schema`); non-object
-  `properties` values fail locally.
-- **Cache-stable prompt changes**: a `system` message with
-  `SystemDeltaPart`/`ToolsDeltaPart` changes the instructions or tools
-  mid-conversation without rewriting the cached prefix. Models that take it
-  in place (per-model `behavior` in `models.json`, as pi tracks it) get
-  Anthropic `tool_addition`/`tool_removal` or OpenAI `additional_tools`;
-  everything else folds deterministically into the system prompt.
-- **Structured output**: `llm.Parse[T]` decodes model output straight into
-  your struct (native JSON-schema mode where supported, forced-tool or
-  JSON-mode fallback elsewhere), and `schema.For[T]` generates JSON Schema
-  from Go types for tool inputs, with `schema.ValidateArgs` for checking
-  model-emitted arguments.
-- **Reasoning**: one `Effort` dial across providers; reasoning output is
-  normalized, and raw provider payloads (signed thinking blocks, encrypted
-  reasoning items) round-trip so same-provider replay just works.
-- **Persistence & portability**: canonical, versioned JSON for messages and
-  responses. A tool-using conversation started on one provider can be
-  serialized and *continued on another* — cross-provider handoff is part of
-  the live test matrix, not a hope.
-- **Usage & cost**: normalized tokens (including cache reads/writes and
-  reasoning tokens), `CostUSD` from native provider reporting (OpenRouter) or
-  estimated from an embedded, refreshable [models.dev](https://models.dev)
-  price table, including request-wide long-context pricing tiers — with
-  provenance in `CostSource` (`native` vs `estimated`) — plus `ContextUsage`
-  for context-window accounting. Live model catalogs preserve independent
-  input/output/cache-read/cache-write availability, so unknown rates are not
-  displayed as free while explicit zero rates remain visible. Anthropic
-  one-hour cache writes are tracked separately (`CacheWrite1hTokens`); no
-  price table publishes their rate, so an estimated cost containing them is
-  reported as unknown rather than understated.
-- **Capabilities**: provider-wide `Capabilities()` discovery with pre-flight
-  request validation, plus advisory per-model capabilities from rich live
-  catalogs such as OpenRouter. Unsupported provider features fail
-  fast with `ErrUnsupported`; incomplete model metadata never blocks a call.
-- **Conveniences**: `Session` (auto-managed history, session tools with
-  `AddToolResults` + `Continue`, cumulative usage), `History`,
-  `PromptTemplate`, `llm.Ptr` for optional scalar fields, middleware via
-  `llm.Wrap`, and observability built in but silent by default (`slog`
-  logging, `UsageTracker`, wire capture via `WithWireCapture`), plus an
-  optional, content-free OpenTelemetry middleware in the `otelllm`
-  package (GenAI semantic conventions; OpenTelemetry is pulled in only when
-  you import it). Sensitive
-  headers are always redacted; captured URLs and bodies remain
-  application-sensitive data. Built-in failure logs use safe provider-error
-  summaries and never emit provider-controlled bodies or metadata.
-- **Testing**: `llmtest` — like `net/http/httptest`, but for code that
-  consumes go-llm.
-- **CLI**: `llm-cli`, a curl-like frontend built entirely on the public API.
+- **One `llm.Provider` interface**: blocking `Chat`, streaming `ChatStream` (`iter.Seq2`), one request/response model, and the raw SDK client when you need it.
+- **Providers**: Anthropic, OpenAI (API key or Sign in with ChatGPT), OpenRouter, vLLM, and any Chat Completions server (Ollama, llama.cpp, ...).
+- **Credentials the pi way**: a pi-compatible `auth.json` store, shared safely with pi, with refreshes done once across processes.
+- **Tools** with parallel calls, streamed arguments, and malformed calls dropped *visibly*.
+- **Structured output** into Go structs with `llm.Parse[T]`, and JSON Schema from Go types.
+- **Cache-stable prompt changes**: change instructions or tools mid-conversation without breaking the prompt cache.
+- **Reasoning** behind one `Effort` dial, with provider payloads round-tripped for replay.
+- **Portable conversations**: versioned JSON you can save and continue on another provider.
+- **Usage, cost and context fitting**: normalized tokens, native or estimated cost, token counting and a context guard.
+- **Observability** built in and silent by default, plus OpenTelemetry middleware in `otelllm`.
+- **Testing** with `llmtest`, like `net/http/httptest` for code that uses go-llm, and **`llm-cli`**, a curl-like CLI.
+
+See [Details](#details) for the precise contracts behind each of these.
 
 ## Install
 
@@ -153,17 +99,20 @@ _, _ = summary, resp
 
 | Package | Auth | Notes |
 |---|---|---|
-| `providers/anthropic` | `ANTHROPIC_API_KEY` or `WithAPIKey` | Messages API |
+| `providers/anthropic` | `ANTHROPIC_API_KEY`, `WithAPIKey`, or `WithCredentials` (API key) | Messages API |
 | `providers/openai` | `OPENAI_API_KEY`, `WithAPIKey`, or `WithCredentials` (API key or Sign in with ChatGPT) | Responses API — reasoning survives across tool-call turns |
-| `providers/openrouter` | `OPENROUTER_API_KEY` or `WithAPIKey` | Chat Completions; routing/plugins, explicit rich model discovery, and native per-request cost reporting |
+| `providers/openrouter` | `OPENROUTER_API_KEY`, `WithAPIKey`, or `WithCredentials` (API key) | Chat Completions; routing/plugins, explicit rich model discovery, and native per-request cost reporting |
 | `providers/vllm` | optional `WithAPIKey` (vLLM `--api-key`) | Self-hosted vLLM preset: host-first, era-aware, live-tested |
-| `providers/chatcompletions` | optional `WithAPIKey` | Common entry point for OpenAI Chat Completions-compatible servers, including Ollama: `New(baseURL, ...)` + declarative `Compat` quirks |
+| `providers/chatcompletions` | optional `WithAPIKey` | Common entry point for OpenAI Chat Completions-compatible servers (Ollama, llama.cpp, Groq, Together, ...): `New(baseURL, ...)` + declarative `Compat` quirks |
 
 ```go
 anthropic.New()  // ANTHROPIC_API_KEY
 openai.New()     // OPENAI_API_KEY
 openrouter.New() // OPENROUTER_API_KEY
 ```
+
+First-party presets run the shared offline conformance suite, and
+credentialed presets have capability-driven live scenarios.
 
 OpenAI Responses callers can select the user-visible reasoning-summary detail
 without adding an OpenAI-specific field to `llm.Request`:
@@ -341,7 +290,8 @@ neutral history into its own wire shape (and drops what only the original
 provider can accept, like signed thinking blocks), a saved conversation can
 be continued on a *different* provider: mid-conversation failover,
 cheap-model tool loops handed to a stronger model for synthesis, or histories
-that simply outlive your vendor choice. Reasoning is replayed only to the
+that simply outlive your vendor choice. Cross-provider handoff is part of
+the live test matrix, not a hope. Reasoning is replayed only to the
 model that produced it. On a model switch, even within one provider (an
 OpenRouter hop from `anthropic/*` to `openai/*`, or Opus to Haiku), the
 previous model's reasoning payloads are dropped. Keep `Message.Model`
@@ -427,7 +377,67 @@ deterministic, calibrated estimates (within roughly 0.95–1.17× of exact
 counts, leaning high). `llm.FitMaxTokens` and `llm.EstimateCostBound` are
 pure helpers. Nothing here runs implicitly.
 
+## Details
+
+### Tools
+
+Parallel calls, streamed arguments, and a defined contract for malformed
+tool calls: rescue what's rescuable, drop the rest *visibly*
+(`ToolCallDropped`), with an opt-in `llm.RetryDroppedToolCalls` middleware.
+No-argument tool schemas are sent with an explicit empty `properties: {}`
+(OpenAI-compatible `parameters`, Anthropic `input_schema`); non-object
+`properties` values fail locally.
+
+### Structured output
+
+`llm.Parse[T]` decodes model output straight into your struct (native
+JSON-schema mode where supported, forced-tool or JSON-mode fallback
+elsewhere), and `schema.For[T]` generates JSON Schema from Go types for tool
+inputs, with `schema.ValidateArgs` for checking model-emitted arguments.
+
+### Reasoning
+
+One `Effort` dial across providers; reasoning output is normalized, and raw
+provider payloads (signed thinking blocks, encrypted reasoning items)
+round-trip so same-provider replay just works.
+
+### Usage and cost
+
+Normalized tokens (including cache reads/writes and reasoning tokens),
+`CostUSD` from native provider reporting (OpenRouter) or estimated from an
+embedded, refreshable [models.dev](https://models.dev) price table, including
+request-wide long-context pricing tiers — with provenance in `CostSource`
+(`native` vs `estimated`) — plus `ContextUsage` for context-window
+accounting. Live model catalogs preserve independent
+input/output/cache-read/cache-write availability, so unknown rates are not
+displayed as free while explicit zero rates remain visible. Anthropic
+one-hour cache writes are tracked separately (`CacheWrite1hTokens`); no price
+table publishes their rate, so an estimated cost containing them is reported
+as unknown rather than understated.
+
+### Capabilities
+
+Provider-wide `Capabilities()` discovery with pre-flight request validation,
+plus advisory per-model capabilities from rich live catalogs such as
+OpenRouter. Unsupported provider features fail fast with `ErrUnsupported`;
+incomplete model metadata never blocks a call.
+
+### Conveniences and observability
+
+`Session` (auto-managed history, session tools with `AddToolResults` +
+`Continue`, cumulative usage), `History`, `PromptTemplate`, `llm.Ptr` for
+optional scalar fields, and middleware via `llm.Wrap`. Observability is built
+in but silent by default (`slog` logging, `UsageTracker`, wire capture via
+`WithWireCapture`), plus optional, content-free OpenTelemetry middleware in
+the `otelllm` package (GenAI semantic conventions; OpenTelemetry is pulled in
+only when you import it; see [`examples/otel`](examples/otel)). Sensitive
+headers are always redacted; captured URLs and bodies remain
+application-sensitive data. Built-in failure logs use safe provider-error
+summaries and never emit provider-controlled bodies or metadata.
+
 ## CLI
+
+`llm-cli` is a curl-like frontend built entirely on the public API.
 
 ```sh
 go install github.com/pkieltyka/go-llm/cmd/llm-cli@latest
@@ -532,7 +542,7 @@ make e2e-test
 
 Every program in [`examples/`](examples/) is **dual-mode**: it runs offline
 out of the box (against the scripted `llmtest` provider, or an in-process
-server for `self-hosted`), and switches to the real API when its
+server for `self-hosted` and `credentials`), and switches to the real API when its
 credentials or server are set — `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`,
 or `LLM_BASE_URL`.
 
@@ -551,6 +561,9 @@ ANTHROPIC_API_KEY=... go run ./examples/chat  # same program, real API
 | [`self-hosted`](examples/self-hosted) | vLLM or any Chat Completions server (Ollama, llama.cpp) via `LLM_BASE_URL`; offline it runs against an in-process server |
 | [`history-replay`](examples/history-replay) | Serialize a conversation and continue it on another provider (a real Anthropic→OpenRouter handoff when both keys are set) |
 | [`observability`](examples/observability) | `UsageTracker`, logging, and cost via `llm.Wrap` middleware |
+| [`otel`](examples/otel) | OpenTelemetry spans and GenAI metrics with `otelllm.Middleware` |
+| [`context-guard`](examples/context-guard) | Keeping a growing conversation inside the window with `llm.ContextGuard`: near-full hook, compaction, retry |
+| [`credentials`](examples/credentials) | A pi-compatible `auth.json` store with a `$VAR` key reference, read by a provider on every request |
 | [`provider-selection`](examples/provider-selection) | Choosing a provider at runtime: env keys, an `LLM_AUTH_FILE` credential store (including Sign in with ChatGPT), or the offline fake |
 | [`testing`](examples/testing) | Unit-testing *your* code with `llmtest`: request assertions, streaming, error paths (`go test ./examples/testing/`) |
 
