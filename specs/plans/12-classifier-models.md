@@ -232,6 +232,8 @@ stays deferred; llama.cpp's native `/v1/systemone` is covered.
    `CountTokens`. In this plan chat middleware (`UsageTracker`, `otelllm`,
    `ContextGuard`) does not see classification calls; a classify middleware
    seam is future work. *Ratified*, to keep the first version small.
+   *Follow-up (2026-10-24):* the seam landed after the plan —
+   `Middleware.Classify`, with `UsageTracker` and `otelllm` handlers.
 
 ## Design
 
@@ -634,7 +636,6 @@ chat and classifier prices).
   pi does not support it yet.
 - `llama-cpp-classify`, pi's logprob classifier for chat models.
 - `temperature`, until an implementation can apply it.
-- A classify middleware seam for `UsageTracker`/`otelllm`.
 - Chat models on Cloudflare Workers AI.
 - go-agent integration (a classifier-backed routing or guard tool), after
   this ships.

@@ -3,7 +3,9 @@
 //
 // Names follow the OpenTelemetry GenAI semantic conventions as published in
 // semconv v1.41.0 (development status): one CLIENT span per Chat or
-// ChatStream call named "chat {model}", gen_ai.* request, response, and usage
+// ChatStream call named "chat {model}", and per Classify call (FS §13C)
+// named "classify {model}" with operation name "classify", which the
+// conventions do not define; gen_ai.* request, response, and usage
 // attributes, and the gen_ai.client.operation.duration,
 // gen_ai.client.token.usage, and gen_ai.client.operation.time_to_first_chunk
 // metrics. Concepts the conventions lack use go_llm.* names: cost, cost
@@ -72,6 +74,8 @@ const (
 	attrGoLLMBlockIndex     = "go_llm.block.index"
 	attrGoLLMBlockChars     = "go_llm.block.chars"
 	attrGoLLMBlockTool      = "go_llm.block.tool"
+	attrGoLLMQuestions      = "go_llm.request.questions"
+	attrGoLLMImages         = "go_llm.request.images"
 	eventFirstChunk         = "go_llm.first_chunk"
 	eventBlock              = "go_llm.block"
 	metricOperationDuration = "gen_ai.client.operation.duration"
@@ -80,6 +84,7 @@ const (
 	metricCost              = "go_llm.client.cost"
 
 	operationChat     = "chat"
+	operationClassify = "classify"
 	errorTypeOther    = "_OTHER"
 	maxStatusDescSize = 500
 )
@@ -111,7 +116,7 @@ func WithMeterProvider(mp metric.MeterProvider) Option {
 }
 
 // Middleware returns llm.Wrap middleware that records one span and the GenAI
-// client metrics per Chat or ChatStream call. Place it outermost (first among
+// client metrics per Chat, ChatStream or Classify call. Place it outermost (first among
 // the Wrap arguments) to measure the whole call, including other middleware
 // such as retries.
 func Middleware(opts ...Option) llm.Middleware {
@@ -176,6 +181,14 @@ func Middleware(opts ...Option) llm.Middleware {
 					}
 				}
 			},
+			Classify: func(next llm.ClassifyFunc) llm.ClassifyFunc {
+				return func(ctx context.Context, req *llm.ClassifyRequest) (*llm.ClassifyResult, error) {
+					ctx, call := t.startClassify(ctx, req)
+					result, err := next(ctx, req)
+					call.endClassify(result, err)
+					return result, err
+				}
+			},
 		}
 	}}
 }
@@ -215,6 +228,7 @@ type call struct {
 	ctx        context.Context
 	span       trace.Span
 	start      time.Time
+	operation  string
 	model      string
 	firstChunk time.Duration
 	sawChunk   bool
@@ -254,7 +268,59 @@ func (t *telemetry) start(ctx context.Context, req *llm.Request, stream bool) (c
 		name += " " + model
 	}
 	ctx, span := t.tracer.Start(ctx, name, trace.WithSpanKind(trace.SpanKindClient), trace.WithAttributes(attrs...))
-	return ctx, &call{t: t, ctx: ctx, span: span, start: time.Now(), model: model}
+	return ctx, &call{t: t, ctx: ctx, span: span, start: time.Now(), operation: operationChat, model: model}
+}
+
+func (t *telemetry) startClassify(ctx context.Context, req *llm.ClassifyRequest) (context.Context, *call) {
+	model := ""
+	attrs := []attribute.KeyValue{
+		attribute.String(attrOperationName, operationClassify),
+		attribute.String(attrProviderName, t.providerName),
+		attribute.String(attrGoLLMProvider, t.providerName),
+	}
+	if req != nil {
+		model = req.Model
+		attrs = append(attrs, attribute.Int(attrGoLLMQuestions, len(req.Questions)))
+		if len(req.Images) > 0 {
+			attrs = append(attrs, attribute.Int(attrGoLLMImages, len(req.Images)))
+		}
+	}
+	attrs = append(attrs, attribute.String(attrRequestModel, model))
+	name := operationClassify
+	if model != "" {
+		name += " " + model
+	}
+	ctx, span := t.tracer.Start(ctx, name, trace.WithSpanKind(trace.SpanKindClient), trace.WithAttributes(attrs...))
+	return ctx, &call{t: t, ctx: ctx, span: span, start: time.Now(), operation: operationClassify, model: model}
+}
+
+// endClassify records a classify result. A failed but billed call (a
+// refusal, a malformed answer) carries its usage beside the error, and it
+// is recorded too.
+func (c *call) endClassify(result *llm.ClassifyResult, err error) {
+	if result == nil {
+		c.finish("", nil, err)
+		return
+	}
+	usage := result.Usage
+	var attrs []attribute.KeyValue
+	if prompt := usage.InputTokens + usage.CacheReadTokens + usage.CacheWriteTokens; prompt > 0 || usage.OutputTokens > 0 {
+		attrs = append(attrs, attribute.Int64(attrInputTokens, prompt), attribute.Int64(attrOutputTokens, usage.OutputTokens))
+	}
+	if usage.CacheReadTokens > 0 {
+		attrs = append(attrs, attribute.Int64(attrCacheReadTokens, usage.CacheReadTokens))
+	}
+	if result.ID != "" {
+		attrs = append(attrs, attribute.String(attrResponseID, result.ID))
+	}
+	if result.Model != "" {
+		attrs = append(attrs, attribute.String(attrResponseModel, result.Model))
+	}
+	if usage.CostUSD != nil {
+		attrs = append(attrs, attribute.Float64(attrGoLLMCostUSD, *usage.CostUSD), attribute.String(attrGoLLMCostSource, usage.CostSource))
+	}
+	c.span.SetAttributes(attrs...)
+	c.finish(result.Model, &usage, err)
 }
 
 // observe records the first content chunk of a stream. Content is never read
@@ -287,18 +353,6 @@ func (c *call) observe(event llm.Event) {
 }
 
 func (c *call) end(resp *llm.Response, err error, abandoned bool) {
-	elapsed := time.Since(c.start)
-	metricAttrs := []attribute.KeyValue{
-		attribute.String(attrOperationName, operationChat),
-		attribute.String(attrProviderName, c.t.providerName),
-		attribute.String(attrRequestModel, c.model),
-	}
-	if resp != nil && resp.Model != "" {
-		metricAttrs = append(metricAttrs, attribute.String(attrResponseModel, resp.Model))
-	}
-	// error.type is defined for the duration metric only.
-	durationAttrs := metricAttrs
-
 	if resp != nil {
 		c.recordResponse(resp)
 	}
@@ -308,6 +362,26 @@ func (c *call) end(resp *llm.Response, err error, abandoned bool) {
 	if abandoned {
 		c.span.SetAttributes(attribute.Bool(attrGoLLMAbandoned, true))
 	}
+	if resp == nil {
+		c.finish("", nil, err)
+		return
+	}
+	c.finish(resp.Model, &resp.Usage, err)
+}
+
+// finish records the error status and the metrics, then ends the span.
+func (c *call) finish(responseModel string, usage *llm.Usage, err error) {
+	elapsed := time.Since(c.start)
+	metricAttrs := []attribute.KeyValue{
+		attribute.String(attrOperationName, c.operation),
+		attribute.String(attrProviderName, c.t.providerName),
+		attribute.String(attrRequestModel, c.model),
+	}
+	if responseModel != "" {
+		metricAttrs = append(metricAttrs, attribute.String(attrResponseModel, responseModel))
+	}
+	// error.type is defined for the duration metric only.
+	durationAttrs := metricAttrs
 
 	switch {
 	case err == nil:
@@ -329,8 +403,7 @@ func (c *call) end(resp *llm.Response, err error, abandoned bool) {
 	if c.sawChunk {
 		c.t.inst.ttfc.Record(c.ctx, c.firstChunk.Seconds(), set)
 	}
-	if resp != nil {
-		usage := resp.Usage
+	if usage != nil {
 		prompt := usage.InputTokens + usage.CacheReadTokens + usage.CacheWriteTokens
 		if prompt > 0 || usage.OutputTokens > 0 {
 			c.t.inst.tokens.Record(c.ctx, prompt, metric.WithAttributeSet(attribute.NewSet(append(metricAttrs, attribute.String(attrTokenType, "input"))...)))

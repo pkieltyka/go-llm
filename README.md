@@ -329,7 +329,9 @@ the result, its valid answers and its cost beside `ErrContentFiltered` or
 `ErrServer`. Cost is native where reported (OpenRouter), else estimated only
 from classifier pricing: your `WithPriceTable`, or a catalog row marked
 `CapabilityClassify`; a chat model's price is never assumed.
-OpenRouter's `Models` includes its classifier catalog (output modality
+Wrapped with `llm.Wrap`, a classifier stays one: `Middleware.Classify` sees
+each call, so `UsageTracker` counts classification cost and `otelllm` records a
+`classify {model}` span. OpenRouter's `Models` includes its classifier catalog (output modality
 `decisions`), marked with `CapabilityClassify`, and the embedded model table
 does the same for TypeSafe and Vercel AI Gateway. See
 [`examples/classify`](examples/classify).

@@ -76,7 +76,8 @@ func NewUsageTracker() *UsageTracker {
 	return &UsageTracker{buckets: make(map[string]usageAccumulator)}
 }
 
-// Middleware returns middleware that observes Chat and ChatStream calls.
+// Middleware returns middleware that observes Chat, ChatStream and Classify
+// calls.
 func (t *UsageTracker) Middleware() Middleware {
 	if t == nil {
 		return Middleware{}
@@ -110,6 +111,29 @@ func (t *UsageTracker) middlewareForProvider(defaultProvider string) Middleware 
 			return func(ctx context.Context, req *Request) iter.Seq2[Event, error] {
 				events := next(ctx, req)
 				return t.trackStream(defaultProvider, req, events)
+			}
+		},
+		Classify: func(next ClassifyFunc) ClassifyFunc {
+			return func(ctx context.Context, req *ClassifyRequest) (*ClassifyResult, error) {
+				start := time.Now()
+				result, err := next(ctx, req)
+				provider, model, usage := defaultProvider, "", Usage{}
+				if req != nil {
+					model = req.Model
+				}
+				// A failed but billed call (a refusal, a malformed answer)
+				// returns its usage beside the error; it is counted.
+				if result != nil {
+					if result.Provider != "" {
+						provider = result.Provider
+					}
+					if result.Model != "" {
+						model = result.Model
+					}
+					usage = result.Usage
+				}
+				t.record(provider, model, usage, err != nil, time.Since(start), nil)
+				return result, err
 			}
 		},
 	}

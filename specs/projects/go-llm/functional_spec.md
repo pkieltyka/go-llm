@@ -667,9 +667,10 @@ ordinary JSON interop because the standard library compacts and HTML-escapes
 
 A single, minimal interceptor seam:
 
-- `Middleware` provides optional wrappers for `Chat` and `ChatStream`
-  (wrapping a stream iterator is a plain function decoration — no teeing
-  machinery).
+- `Middleware` provides optional wrappers for `Chat`, `ChatStream` and
+  `Classify` (wrapping a stream iterator is a plain function decoration —
+  no teeing machinery). `Classify` applies when the wrapped provider
+  classifies (§13C); the wrapped provider is then a `Classifier` itself.
 - Applied by **composition**, not provider support:
   `llm.Wrap(provider, mw...)` returns a decorated `Provider`. Adapters know
   nothing about middleware. The stream a wrapped provider returns is
@@ -1016,8 +1017,12 @@ Liquid d1 and others. go-llm follows pi's names (classifier, `classify`).
   Classification is per model, not a model type: one model ID can serve
   chat, classification or both. `llm.Classify(ctx, p, req)` finds a
   `Classifier` on `p` or the providers it wraps (`Unwrap() Provider`, as
-  `CountTokens` does) and returns `ErrUnsupported` otherwise; chat
-  middleware does not observe classification calls.
+  `CountTokens` does) and returns `ErrUnsupported` otherwise. Wrapping a
+  classifier with `llm.Wrap` yields a `Classifier` whose calls run through
+  `Middleware.Classify` (§10B): `UsageTracker` counts them (a billed
+  failure with its usage, as an error) and `otelllm` records a "classify
+  {model}" span and the GenAI metrics. `ContextGuard` and the chat-only
+  middleware leave classification untouched.
 - **Request.** `Model`; `State`, a JSON object; optional `Images`
   (`ImagePart` with inline data and a media type), judged with the state;
   `Questions`, an ordered list (names unique and non-empty); optional

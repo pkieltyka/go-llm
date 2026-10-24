@@ -413,12 +413,14 @@ Middleware is a **Provider decorator** — adapters have zero middleware
 awareness:
 
 ```go
-type ChatFunc   func(ctx context.Context, req *Request) (*Response, error)
-type StreamFunc func(ctx context.Context, req *Request) iter.Seq2[Event, error]
+type ChatFunc     func(ctx context.Context, req *Request) (*Response, error)
+type StreamFunc   func(ctx context.Context, req *Request) iter.Seq2[Event, error]
+type ClassifyFunc func(ctx context.Context, req *ClassifyRequest) (*ClassifyResult, error)
 
 type Middleware struct {
-    Chat   func(next ChatFunc) ChatFunc     // optional
-    Stream func(next StreamFunc) StreamFunc // optional
+    Chat     func(next ChatFunc) ChatFunc         // optional
+    Stream   func(next StreamFunc) StreamFunc     // optional
+    Classify func(next ClassifyFunc) ClassifyFunc // optional; applies when p classifies
     // Bind makes middleware provider-aware: Wrap calls it once with the
     // wrapped provider and composes the returned Middleware instead.
     // UsageTracker.Middleware binds this way; third-party middleware can too.
@@ -426,7 +428,9 @@ type Middleware struct {
 }
 
 // Wrap composes middleware around a Provider (first mw = outermost).
-// Name/Capabilities/Models delegate untouched.
+// Name/Capabilities/Models delegate untouched. When p classifies
+// (FindClassifier), Wrap returns a Classifier whose Classify runs the
+// Classify chain.
 func Wrap(p Provider, mw ...Middleware) Provider
 ```
 

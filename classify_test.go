@@ -292,3 +292,48 @@ func TestAnswerJSONKeepsZeros(t *testing.T) {
 		}
 	}
 }
+
+// TestWrapDecoratesClassify: Wrap of a classifier is a Classifier whose
+// calls pass through Middleware.Classify, outermost first; Wrap of a
+// chat-only provider is not a Classifier.
+func TestWrapDecoratesClassify(t *testing.T) {
+	fake := llmtest.New(llmtest.WithName("fake"))
+	fake.EnqueueClassifyResult(&llm.ClassifyResult{Provider: "fake", Model: "m", Answers: map[string]llm.Answer{
+		"approved": {Type: llm.QuestionBool, Probability: 0.9}}, Usage: llm.Usage{InputTokens: 10, TotalTokens: 10}})
+	var order []string
+	tag := func(name string) llm.Middleware {
+		return llm.Middleware{Classify: func(next llm.ClassifyFunc) llm.ClassifyFunc {
+			return func(ctx context.Context, req *llm.ClassifyRequest) (*llm.ClassifyResult, error) {
+				order = append(order, name)
+				return next(ctx, req)
+			}
+		}}
+	}
+	tracker := llm.NewUsageTracker()
+	wrapped := llm.Wrap(llm.Wrap(fake, tag("inner")), tag("outer"), tracker.Middleware())
+	if _, ok := wrapped.(llm.Classifier); !ok {
+		t.Fatal("Wrap of a classifier is not a Classifier")
+	}
+	req := &llm.ClassifyRequest{Model: "m", State: json.RawMessage(`{}`), Questions: []llm.Question{llm.BoolQuestion("approved", "?", "", "")}}
+	if _, err := llm.Classify(context.Background(), wrapped, req); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(order, ",") != "outer,inner" {
+		t.Fatalf("order = %v", order)
+	}
+	if stats := tracker.Stats(); stats.Calls != 1 || stats.Usage.InputTokens != 10 {
+		t.Fatalf("tracker = %+v", stats)
+	}
+	if _, ok := llm.Wrap(chatOnly{}, tag("x")).(llm.Classifier); ok {
+		t.Fatal("Wrap of a chat-only provider is a Classifier")
+	}
+
+	// A billed failure is counted with its usage and as an error.
+	fake.EnqueueClassifyError(llm.ErrServer, &llm.ClassifyResult{Provider: "fake", Model: "m", Usage: llm.Usage{InputTokens: 5, TotalTokens: 5}})
+	if _, err := llm.Classify(context.Background(), wrapped, req); !errors.Is(err, llm.ErrServer) {
+		t.Fatalf("err = %v", err)
+	}
+	if stats := tracker.Stats(); stats.Calls != 2 || stats.Errors != 1 || stats.Usage.InputTokens != 15 {
+		t.Fatalf("tracker after error = %+v", stats)
+	}
+}
