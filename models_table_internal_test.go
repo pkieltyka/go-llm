@@ -237,3 +237,33 @@ const modelTableTestSources = `[{"id":"models.dev","url":"fixture:models.dev","s
 func catalogJSONAt(generatedAt, rows string) string {
 	return `{"schema_version":1,"generator":"go-llm-model-snapshot/v1","generated_at":"` + generatedAt + `","sources":` + modelTableTestSources + `,"models":[` + rows + `]}`
 }
+
+func TestEmbeddedClassifierRows(t *testing.T) {
+	for _, tc := range []struct{ provider, id string }{
+		{"openrouter", "typesafe/jev-1.14"},
+		{"openrouter", "cloudflare/clef-flash"},
+		{"typesafe", "jev-latest"},
+		{"vercel-ai-gateway", "typesafe-ai/jev"},
+	} {
+		info, ok := LookupModelInfo(tc.provider, tc.id)
+		if !ok {
+			t.Fatalf("%s/%s missing from the embedded table", tc.provider, tc.id)
+		}
+		found := false
+		for _, c := range info.Capabilities {
+			found = found || c == CapabilityClassify
+		}
+		if !found {
+			t.Fatalf("%s/%s lacks CapabilityClassify: %v", tc.provider, tc.id, info.Capabilities)
+		}
+	}
+	if info, ok := LookupModelInfo("openrouter", "typesafe/jev-1.14"); !ok || info.Pricing == nil || info.Pricing.InputPerMTok <= 0 {
+		t.Fatalf("OpenRouter Jev pricing = %+v", info.Pricing)
+	}
+	bad := []byte(`{"schema_version":1,"generator":"go-llm-model-snapshot/v1","generated_at":"2026-10-24T00:00:00Z","sources":[` +
+		`{"id":"models.dev","url":"u","sha256":"` + strings.Repeat("a", 64) + `"},{"id":"openrouter","url":"u","sha256":"` + strings.Repeat("b", 64) + `"},{"id":"overrides","url":"u","sha256":"` + strings.Repeat("c", 64) + `"}],` +
+		`"models":[{"provider":"openrouter","id":"x","capabilities":["telepathy"]}]}`)
+	if _, err := parseModelTable(bad); err == nil || !strings.Contains(err.Error(), "unknown capability") {
+		t.Fatalf("unknown capability = %v", err)
+	}
+}

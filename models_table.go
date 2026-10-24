@@ -48,15 +48,18 @@ const (
 )
 
 type modelTableRow struct {
-	Provider         string              `json:"provider"`
-	ID               string              `json:"id"`
-	CanonicalID      string              `json:"canonical_id,omitempty"`
-	DisplayName      string              `json:"display_name,omitempty"`
-	ContextWindow    *int                `json:"context_window,omitempty"`
-	MaxOutputTokens  *int                `json:"max_output_tokens,omitempty"`
-	Pricing          *modelTablePricing  `json:"pricing,omitempty"`
-	SupportedEfforts []string            `json:"supported_efforts,omitempty"`
-	Behavior         *modelTableBehavior `json:"behavior,omitempty"`
+	Provider         string             `json:"provider"`
+	ID               string             `json:"id"`
+	CanonicalID      string             `json:"canonical_id,omitempty"`
+	DisplayName      string             `json:"display_name,omitempty"`
+	ContextWindow    *int               `json:"context_window,omitempty"`
+	MaxOutputTokens  *int               `json:"max_output_tokens,omitempty"`
+	Pricing          *modelTablePricing `json:"pricing,omitempty"`
+	SupportedEfforts []string           `json:"supported_efforts,omitempty"`
+	// Capabilities are per-model capabilities the catalogs state; today
+	// classifier rows ("classify", "image-input").
+	Capabilities []string            `json:"capabilities,omitempty"`
+	Behavior     *modelTableBehavior `json:"behavior,omitempty"`
 }
 
 // modelTableBehavior is a row's per-model behavior, written by the
@@ -172,16 +175,28 @@ func parseModelTable(raw []byte) (parsedModelTable, error) {
 		if err := validateModelTableEfforts(key, row.SupportedEfforts); err != nil {
 			return parsedModelTable{}, err
 		}
+		for _, capability := range row.Capabilities {
+			if Capability(capability) != CapabilityClassify && Capability(capability) != CapabilityImageInput {
+				return parsedModelTable{}, fmt.Errorf("model table %s has unknown capability %q", key, capability)
+			}
+		}
 		table.ByKey[key] = row.modelInfo()
 		previousKey = key
 	}
 	return table, nil
 }
 
+// classifierSourceIDs are the classifier catalogs, which follow the three
+// chat sources all or none (FS §13C).
+var classifierSourceIDs = []string{"openrouter-decisions", "models.dev-decisions", "vercel-ai-gateway"}
+
 func validateModelTableSources(sources []modelTableSource) error {
-	expected := [...]string{"models.dev", "openrouter", "overrides"}
+	expected := []string{"models.dev", "openrouter", "overrides"}
+	if len(sources) == len(expected)+len(classifierSourceIDs) {
+		expected = append(expected, classifierSourceIDs...)
+	}
 	if len(sources) != len(expected) {
-		return fmt.Errorf("model table sources must contain models.dev, openrouter, and overrides")
+		return fmt.Errorf("model table sources must contain models.dev, openrouter, and overrides, optionally followed by %s", strings.Join(classifierSourceIDs, ", "))
 	}
 	for index, id := range expected {
 		source := sources[index]
@@ -398,6 +413,9 @@ func (row modelTableRow) modelInfo() ModelInfo {
 		for i, effort := range row.SupportedEfforts {
 			info.SupportedEfforts[i] = Effort(effort)
 		}
+	}
+	for _, capability := range row.Capabilities {
+		info.Capabilities = append(info.Capabilities, Capability(capability))
 	}
 	return info
 }
