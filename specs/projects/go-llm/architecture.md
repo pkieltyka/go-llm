@@ -37,6 +37,7 @@ go-llm/
 ├── usage.go, wiretap.go, retrylog.go             # usage tracking, wire capture, retry logging
 ├── prompt.go                                     # PromptTemplate (minimal text/template wrapper)
 ├── parse.go                                      # Parse[T] structured-output helper
+├── classify.go                                   # Classifier, Classify, ClassifierModel (FS §13C)
 ├── schema/                                       # public schema facade (stdlib-only API)
 ├── internal/schemajson/                          # schema generation + validation engine
 ├── llmtest/                                      # scriptable fake Provider
@@ -47,7 +48,10 @@ go-llm/
 │   ├── openai/                                   # wraps openai-go Responses API (direct)
 │   ├── openrouter/                               # chatcompletions + OpenRouter dialect
 │   ├── vllm/                                     # chatcompletions + vLLM dialect (self-hosted, key-optional — §3.3)
-│   └── chatcompletions/                          # public shared chat-completions engine (§3.3)
+│   ├── chatcompletions/                          # public shared chat-completions engine (§3.3)
+│   ├── systemone/                                # classifier-only: TypeSafe, Vercel AI Gateway, OpenCode, any System One server (§3.5)
+│   ├── cloudflare/                               # classifier-only: Cloudflare Workers AI (§3.5)
+│   └── internal/systemone/                       # stdlib System One engine shared by the above and openrouter (§3.5)
 └── go.mod
 ```
 
@@ -269,6 +273,11 @@ Design notes:
   first pair. Early `break` triggers iterator cleanup (range-over-func
   defer semantics) which closes the underlying SSE connection. Context
   cancellation likewise terminates the sequence.
+- Classification is the optional `Classifier` interface
+  (`Classify(ctx, *ClassifyRequest) (*ClassifyResult, error)`, FS §13C),
+  found by `llm.Classify` through `Unwrap() Provider`. Classifier-only
+  providers implement `Provider` too, with `Chat`/`ChatStream` failing
+  `ErrUnsupported`, so they compose with `Wrap`, stores and the CLI.
 - Batch APIs later attach as a separate optional interface
   (`interface{ Batch() BatchClient }` shape) without touching `Provider`.
 - Raw-client escape hatch is per-package via type assertion:
@@ -404,12 +413,14 @@ Middleware is a **Provider decorator** — adapters have zero middleware
 awareness:
 
 ```go
-type ChatFunc   func(ctx context.Context, req *Request) (*Response, error)
-type StreamFunc func(ctx context.Context, req *Request) iter.Seq2[Event, error]
+type ChatFunc     func(ctx context.Context, req *Request) (*Response, error)
+type StreamFunc   func(ctx context.Context, req *Request) iter.Seq2[Event, error]
+type ClassifyFunc func(ctx context.Context, req *ClassifyRequest) (*ClassifyResult, error)
 
 type Middleware struct {
-    Chat   func(next ChatFunc) ChatFunc     // optional
-    Stream func(next StreamFunc) StreamFunc // optional
+    Chat     func(next ChatFunc) ChatFunc         // optional
+    Stream   func(next StreamFunc) StreamFunc     // optional
+    Classify func(next ClassifyFunc) ClassifyFunc // optional; applies when p classifies
     // Bind makes middleware provider-aware: Wrap calls it once with the
     // wrapped provider and composes the returned Middleware instead.
     // UsageTracker.Middleware binds this way; third-party middleware can too.
@@ -417,7 +428,9 @@ type Middleware struct {
 }
 
 // Wrap composes middleware around a Provider (first mw = outermost).
-// Name/Capabilities/Models delegate untouched.
+// Name/Capabilities/Models delegate untouched. When p classifies
+// (FindClassifier), Wrap returns a Classifier whose Classify runs the
+// Classify chain.
 func Wrap(p Provider, mw ...Middleware) Provider
 ```
 
@@ -1022,6 +1035,38 @@ transport error. The flow returns the minted credential without writing it;
 the caller stores it (typically `store.Modify(ctx, "openai", ...)`) before
 provider use.
 
+### 3.5 Classifier models (System One, Cloudflare, OpenAI Decisions)
+
+`providers/internal/systemone` is a stdlib-only engine for TypeSafe's System
+One protocol (`POST <base>/systemone`): it validates a request before I/O,
+encodes questions in order (`orderedObject`, so map-shaped wire objects keep
+the caller's order; HTML escaping off, so `<image-N>` asset names survive),
+adds images in one of three forms (`ImageAssets` with TypeSafe's opt-in
+header, `ImageDataURLs` for Clef and llama.cpp, `ImageStateURLs` for OpenRouter), posts
+through `ObservedHTTPClient` + `SafeRetryHTTPClient` with a replayable body,
+and parses answers after recording usage (`ParseOutput`). `Config` hooks
+adapt it per service: `Endpoint` (Cloudflare's per-account URL and key from
+one credential read), `Payload` and `Output` (Cloudflare's `{model, input}`
+request and envelope), `APIKey` (resolved per request), `ImageForm(model)`,
+`TextOnly`, `Preflight` (documented service limits) and `ErrorKind` (native
+error codes). Classifier cost estimates go through
+`providerutil.EstimateClassifierCost`: the caller's table, else only a
+catalog row with `CapabilityClassify`. Error bodies in
+the OpenAI, bare, FastAPI, TypeSafe and Cloudflare shapes become
+`ProviderError`s through the shared status table.
+
+- `providers/systemone`: the presets (`NewTypeSafe`, `NewVercelAIGateway`,
+  `NewOpenCode`) and `New(baseURL)`; keys from options, `WithCredentials`
+  or the preset's environment variable, read in each constructor.
+- `providers/cloudflare`: provider ID `cloudflare-workers-ai`; the token and
+  account resolve per request and per field (options → the stored entry's
+  `key` and `env.CLOUDFLARE_ACCOUNT_ID` → the environment), as pi does.
+- `providers/openrouter`: the same engine beside chat, on the provider's
+  base URL and attribution headers; `Models` adds the decisions catalog.
+- `providers/openai`: the Decisions API through the SDK client's generic
+  `Post` (`decisions.go`), so retries, auth and errors match chat; OAuth
+  credentials are refused before I/O.
+
 ## 4. Request Pipeline (all providers)
 
 ```
@@ -1223,6 +1268,10 @@ func (p *Provider) EnqueueError(err error)
 func (p *Provider) Requests() []*llm.Request // copies of every request received
 ```
 
+`Provider` also implements `llm.Classifier` (`EnqueueClassifyResult`,
+`EnqueueClassifyError`, `ClassifyRequests`), and
+`llmtest.RunClassifierConformance` checks a classifying provider offline.
+
 Steps are consumed FIFO by `Chat`/`ChatStream`; an exhausted queue fails the
 test loudly. `ChatStream` yields enqueued events as a real
 `iter.Seq2[Event, error]` (honoring context cancellation) so consumer
@@ -1256,7 +1305,9 @@ Design per FS §19. Structure: a single `main` package —
 `main.go` (flag parsing, provider construction from `-p` via a small
 factory switch), `run.go` (chat: build `Request` from flags/stdin, stream
 via `llm.StreamText` or collect for `--json`/`--no-stream`), `models.go`
-(models subcommand, table output). Rules:
+(models subcommand, table output), `classify.go` (classify subcommand:
+pi-form questions decoded in order with `json.Decoder` tokens, state from a
+flag, a file or stdin), `login.go` (login/logout/auth). Rules:
 
 - Imports **only the public go-llm API** (root `llm`, `providers/*`,
   `schema`) — the CLI doubles as a public-API-sufficiency check; needing

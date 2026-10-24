@@ -882,8 +882,9 @@ func TestOpenRouterAmbientAuthorizationBoundary(t *testing.T) {
 	if _, err := p.Models(context.Background()); err != nil {
 		t.Fatalf("Models returned error: %v", err)
 	}
-	if len(headers) != 3 {
-		t.Fatalf("requests = %d, want 3", len(headers))
+	// Chat, ChatStream, and Models' chat and decisions listings.
+	if len(headers) != 4 {
+		t.Fatalf("requests = %d, want 4", len(headers))
 	}
 	for i, header := range headers {
 		if got := header.Get("Authorization"); got != "Bearer environment-secret" {

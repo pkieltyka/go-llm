@@ -20,6 +20,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const fixtureMinimums: SourceMinimums = {
   modelsDev: { anthropic: 1, openai: 1, openrouter: 1 },
   openRouter: 1,
+  classifiers: { openRouterDecisions: 1, typesafe: 1, vercel: 1 },
 };
 
 async function fixture(name: string): Promise<unknown> {
@@ -567,4 +568,180 @@ test("behavior rules mark positional models and leave others unset", async () =>
   const row = (id: string) => snapshot.models.find((entry) => entry.provider === "anthropic" && entry.id === id)!;
   assert.deepEqual(row("claude-haiku-5-5").behavior, { positional_instructions: true, positional_tools: true });
   assert.equal("behavior" in row("claude-fixture"), false);
+});
+
+test("adds classifier rows from the three classifier catalogs", async () => {
+  const snapshot = buildSnapshot(
+    await fixture("models-dev.json"),
+    await fixture("openrouter-models.json"),
+    await fixture("overrides.json"),
+    {
+      generatedAt: "2026-10-24T00:00:00.000Z",
+      minimums: fixtureMinimums,
+      classifiers: {
+        openRouterDecisions: await fixture("openrouter-decisions.json"),
+        modelsDevDecisions: await fixture("models-dev-decisions.json"),
+        vercel: await fixture("vercel-models.json"),
+      },
+    },
+  );
+  const rows = new Map(snapshot.models.map((row) => [`${row.provider}/${row.id}`, row]));
+  // Per-token prices convert to per-million like the chat rows do,
+  // floating-point artifacts included.
+  const near = (actual: number | undefined, expected: number) =>
+    assert.ok(actual !== undefined && Math.abs(actual - expected) < 1e-12, `${actual} ≉ ${expected}`);
+  const jev = rows.get("openrouter/typesafe/jev-1.14");
+  near(jev?.pricing?.input_per_mtok, 0.042);
+  assert.equal(jev?.pricing?.output_per_mtok, 0);
+  assert.deepEqual({ ...jev, pricing: undefined }, {
+    provider: "openrouter",
+    id: "typesafe/jev-1.14",
+    canonical_id: "typesafe/jev-1.14",
+    display_name: "TypeSafe: Jev 1.14",
+    context_window: 262144,
+    pricing: undefined,
+    capabilities: ["classify", "image-input"],
+  });
+  assert.deepEqual(rows.get("openrouter/jaredpalmer/kev-4b")?.capabilities, ["classify"]);
+  assert.deepEqual(rows.get("typesafe/jev-latest"), {
+    provider: "typesafe",
+    id: "jev-latest",
+    display_name: "Jev",
+    context_window: 64000,
+    capabilities: ["classify", "image-input"],
+  });
+  assert.equal(rows.has("typesafe/d1"), false, "only the typesafe/ namespace maps to the typesafe provider");
+  const vercelJev = rows.get("vercel-ai-gateway/typesafe-ai/jev");
+  near(vercelJev?.pricing?.input_per_mtok, 0.042);
+  assert.deepEqual({ ...vercelJev, pricing: undefined }, {
+    provider: "vercel-ai-gateway",
+    id: "typesafe-ai/jev",
+    display_name: "Jev",
+    context_window: 32000,
+    pricing: undefined,
+    capabilities: ["classify"],
+  });
+  const luna = rows.get("vercel-ai-gateway/openai/gpt-6-luna-decisions")?.pricing;
+  near(luna?.input_per_mtok, 0.1);
+  assert.equal(luna?.output_per_mtok, undefined, "an absent rate stays unknown");
+  assert.equal(rows.has("vercel-ai-gateway/openai/gpt-5.5"), false, "only evaluation models are classifier rows");
+  assert.deepEqual(
+    snapshot.sources.map((source) => source.id),
+    ["models.dev", "openrouter", "overrides", "openrouter-decisions", "models.dev-decisions", "vercel-ai-gateway"],
+  );
+});
+
+test("rejects classifier catalogs below their minimums", async () => {
+  const base = [await fixture("models-dev.json"), await fixture("openrouter-models.json"), await fixture("overrides.json")] as const;
+  const classifiers = {
+    openRouterDecisions: await fixture("openrouter-decisions.json"),
+    modelsDevDecisions: await fixture("models-dev-decisions.json"),
+    vercel: await fixture("vercel-models.json"),
+  };
+  for (const [name, broken] of [
+    ["openRouterDecisions", { data: [] }],
+    // The ordinary chat listing, given by mistake: no row lists decisions output.
+    ["openRouterDecisions", await fixture("openrouter-models.json")],
+    ["modelsDevDecisions", { "liquid/d1": { type: "decision" } }],
+    ["vercel", { data: [{ id: "x", type: "language" }] }],
+  ] as const) {
+    assert.throws(
+      () =>
+        buildSnapshot(...base, {
+          minimums: fixtureMinimums,
+          classifiers: { ...classifiers, [name]: broken },
+        }),
+      /want at least 1/,
+      name,
+    );
+  }
+});
+
+test("admits OpenRouter decision rows only with decisions output", async () => {
+  const decisions = (await fixture("openrouter-decisions.json")) as { data: unknown[] };
+  decisions.data.push({
+    id: "openai/gpt-chat",
+    architecture: { input_modalities: ["text"], output_modalities: ["text"] },
+    pricing: { prompt: "0.000001", completion: "0.000002" },
+  });
+  const snapshot = buildSnapshot(
+    await fixture("models-dev.json"),
+    await fixture("openrouter-models.json"),
+    await fixture("overrides.json"),
+    {
+      minimums: fixtureMinimums,
+      classifiers: {
+        openRouterDecisions: decisions,
+        modelsDevDecisions: await fixture("models-dev-decisions.json"),
+        vercel: await fixture("vercel-models.json"),
+      },
+    },
+  );
+  const ids = snapshot.models.filter((row) => row.capabilities?.includes("classify")).map((row) => row.id);
+  assert.ok(ids.includes("typesafe/jev-1.14"));
+  assert.equal(ids.includes("openai/gpt-chat"), false, "a text-output row is not a classifier");
+});
+
+test("guards classifier-only providers against destructive updates", () => {
+  const previous: SnapshotDocument = {
+    generated_at: "before",
+    models: Array.from({ length: 8 }, (_, index) => ({
+      provider: "typesafe",
+      id: `jev-${index + 1}`,
+      context_window: 64000,
+      pricing: { input_per_mtok: 0.042 },
+      capabilities: ["classify"],
+    })),
+  };
+  const replacement: SnapshotDocument = {
+    generated_at: "after",
+    models: previous.models.map((row) => ({ ...row, id: `replacement/${row.id}` })),
+  };
+  assert.throws(() => assertNonDestructive(previous, replacement), /typesafe: all 8 previous model IDs/);
+  const stripped: SnapshotDocument = {
+    generated_at: "after",
+    models: previous.models.map(({ provider, id, capabilities }) => ({ provider, id, capabilities })),
+  };
+  assert.throws(() => assertNonDestructive(previous, stripped), /typesafe: lost context_window for 8\/8/);
+  const uncapable: SnapshotDocument = {
+    generated_at: "after",
+    models: previous.models.map(({ capabilities: _, ...row }) => row),
+  };
+  assert.throws(() => assertNonDestructive(previous, uncapable), /typesafe: lost capabilities for 8\/8/);
+});
+
+test("overrides can correct classifier-only provider rows", async () => {
+  const snapshot = buildSnapshot(
+    await fixture("models-dev.json"),
+    await fixture("openrouter-models.json"),
+    { models: [{ provider: "typesafe", id: "jev-latest", pricing: { input_per_mtok: 0.1 } }] },
+    {
+      minimums: fixtureMinimums,
+      classifiers: {
+        openRouterDecisions: await fixture("openrouter-decisions.json"),
+        modelsDevDecisions: await fixture("models-dev-decisions.json"),
+        vercel: await fixture("vercel-models.json"),
+      },
+    },
+  );
+  const jev = snapshot.models.find((row) => row.provider === "typesafe" && row.id === "jev-latest");
+  assert.equal(jev?.pricing?.input_per_mtok, 0.1);
+  assert.deepEqual(jev?.capabilities, ["classify", "image-input"]);
+  // An override cannot invent a classifier row: its price would never apply.
+  const [modelsDev, openRouter] = [await fixture("models-dev.json"), await fixture("openrouter-models.json")];
+  const classifiers = {
+    openRouterDecisions: await fixture("openrouter-decisions.json"),
+    modelsDevDecisions: await fixture("models-dev-decisions.json"),
+    vercel: await fixture("vercel-models.json"),
+  };
+  assert.throws(
+    () =>
+      buildSnapshot(
+        modelsDev,
+        openRouter,
+        { models: [{ provider: "typesafe", id: "brand-new", pricing: { input_per_mtok: 0.2 } }] },
+        { minimums: fixtureMinimums, classifiers },
+      ),
+    /typesafe\/brand-new is not in a classifier catalog/,
+  );
 });

@@ -12,8 +12,10 @@ import (
 	"github.com/pkieltyka/go-llm/authstore"
 	"github.com/pkieltyka/go-llm/providers/anthropic"
 	"github.com/pkieltyka/go-llm/providers/chatcompletions"
+	"github.com/pkieltyka/go-llm/providers/cloudflare"
 	"github.com/pkieltyka/go-llm/providers/openai"
 	"github.com/pkieltyka/go-llm/providers/openrouter"
+	"github.com/pkieltyka/go-llm/providers/systemone"
 	"github.com/pkieltyka/go-llm/providers/vllm"
 )
 
@@ -120,11 +122,66 @@ func newProvider(_ context.Context, cfg providerConfig) (llm.Provider, error) {
 			opts = append(opts, chatcompletions.WithLogger(logger), chatcompletions.WithWireCapture(llm.WireCaptureToLogger(logger)))
 		}
 		return chatcompletions.New(cfg.baseURL, opts...)
+	case "typesafe", "vercel-ai-gateway", "opencode", "systemone":
+		return newSystemOneProvider(cfg, store)
+	case "cloudflare-workers-ai":
+		opts := []cloudflare.Option{}
+		if store != nil {
+			opts = append(opts, cloudflare.WithCredentials(store))
+		} else if cfg.apiKey != "" {
+			opts = append(opts, cloudflare.WithAPIKey(cfg.apiKey))
+		}
+		if cfg.baseURL != "" {
+			opts = append(opts, cloudflare.WithBaseURL(cfg.baseURL))
+		}
+		if cfg.timeout > 0 {
+			opts = append(opts, cloudflare.WithTimeout(cfg.timeout))
+		}
+		if logger := debugLogger(cfg); logger != nil {
+			opts = append(opts, cloudflare.WithLogger(logger), cloudflare.WithWireCapture(llm.WireCaptureToLogger(logger)))
+		}
+		return cloudflare.New(opts...)
 	case "":
 		return nil, fmt.Errorf("%w: missing provider; set -p/--provider", llm.ErrBadRequest)
 	default:
 		return nil, fmt.Errorf("%w: unknown provider %q", llm.ErrBadRequest, cfg.name)
 	}
+}
+
+// newSystemOneProvider builds the classifier-only System One services:
+// TypeSafe, Vercel AI Gateway, OpenCode Zen, or any System One server
+// (-p systemone with --base-url; its key is optional, as for vllm).
+func newSystemOneProvider(cfg providerConfig, store llm.CredentialStore) (llm.Provider, error) {
+	opts := []systemone.Option{}
+	switch {
+	case cfg.name == "systemone" && store != nil:
+		opts = append(opts, systemone.WithAPIKeyFunc(storedAPIKey(store, cfg.name)))
+	case store != nil:
+		opts = append(opts, systemone.WithCredentials(store))
+	case cfg.apiKey != "":
+		opts = append(opts, systemone.WithAPIKey(cfg.apiKey))
+	}
+	if cfg.baseURL != "" && cfg.name != "systemone" {
+		opts = append(opts, systemone.WithBaseURL(cfg.baseURL))
+	}
+	if cfg.timeout > 0 {
+		opts = append(opts, systemone.WithTimeout(cfg.timeout))
+	}
+	if logger := debugLogger(cfg); logger != nil {
+		opts = append(opts, systemone.WithLogger(logger), systemone.WithWireCapture(llm.WireCaptureToLogger(logger)))
+	}
+	switch cfg.name {
+	case "typesafe":
+		return systemone.NewTypeSafe(opts...)
+	case "vercel-ai-gateway":
+		return systemone.NewVercelAIGateway(opts...)
+	case "opencode":
+		return systemone.NewOpenCode(opts...)
+	}
+	if err := checkServerURL(cfg.name, cfg.baseURL, "http://localhost:8080/v1"); err != nil {
+		return nil, err
+	}
+	return systemone.New(cfg.baseURL, opts...)
 }
 
 // checkServerURL requires a self-hosted server's --base-url to be an
@@ -179,6 +236,20 @@ func providerConfigFromChat(cfg chatConfig, stderr io.Writer) providerConfig {
 }
 
 func providerConfigFromModels(cfg modelsConfig, stderr io.Writer) providerConfig {
+	return providerConfig{
+		name:     cfg.provider,
+		apiKey:   cfg.apiKey,
+		authFile: cfg.authFile,
+
+		authFileCommands: cfg.authFileCommands,
+		baseURL:          cfg.baseURL,
+		timeout:          cfg.timeout,
+		debug:            cfg.debug,
+		stderr:           stderr,
+	}
+}
+
+func providerConfigFromClassify(cfg classifyConfig, stderr io.Writer) providerConfig {
 	return providerConfig{
 		name:     cfg.provider,
 		apiKey:   cfg.apiKey,

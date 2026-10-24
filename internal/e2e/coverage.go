@@ -39,6 +39,7 @@ var liveCapabilityCoverage = []capabilityCoverage{
 	{llm.CapabilityCostReporting, []string{"cost_reporting"}},
 	{llm.CapabilityPositionalInstructions, []string{"positional_changes"}},
 	{llm.CapabilityPositionalTools, []string{"positional_changes"}},
+	{llm.CapabilityClassify, []string{"classify"}},
 	{llm.Capability("openrouter/routing"), nil},
 	{llm.Capability("openrouter/plugins"), nil},
 }
@@ -97,6 +98,7 @@ var liveScenarioOrder = []string{
 	"cost_reporting",
 	"error_mapping",
 	"cross_provider_handoff",
+	"classify",
 	"structured_choice",
 	"structured_regex",
 	"tokenize",

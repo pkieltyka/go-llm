@@ -31,6 +31,10 @@ const (
 	// cannot take in place (FS §7A).
 	CapabilityPositionalInstructions Capability = "positional-instructions"
 	CapabilityPositionalTools        Capability = "positional-tools"
+	// CapabilityClassify means the provider implements Classifier; a model
+	// that answers classifier questions lists it in ModelInfo.Capabilities
+	// (FS §13C).
+	CapabilityClassify Capability = "classify"
 )
 
 var standardCapabilities = map[Capability]struct{}{
@@ -53,6 +57,7 @@ var standardCapabilities = map[Capability]struct{}{
 
 	CapabilityPositionalInstructions: {},
 	CapabilityPositionalTools:        {},
+	CapabilityClassify:               {},
 }
 
 // CustomCapabilities returns provider-specific capabilities in declaration order.

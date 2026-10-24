@@ -31,7 +31,27 @@ export type ModelRow = {
   max_output_tokens?: number;
   pricing?: Pricing;
   supported_efforts?: string[];
+  // capabilities lists per-model capabilities the catalogs state
+  // positively; today only classifier rows carry it ("classify", plus
+  // "image-input" when the catalog lists image input).
+  capabilities?: string[];
   behavior?: ModelBehavior;
+};
+
+// ClassifierSources are the catalogs of classifier (decision) models, which
+// the chat catalogs leave out (FS §13C): OpenRouter's decisions listing,
+// models.dev's decision models (for the typesafe provider) and Vercel AI
+// Gateway's evaluation models.
+export type ClassifierSources = {
+  openRouterDecisions: unknown;
+  modelsDevDecisions: unknown;
+  vercel: unknown;
+};
+
+export type ClassifierMinimums = {
+  openRouterDecisions: number;
+  typesafe: number;
+  vercel: number;
 };
 
 export type SnapshotDocument = {
@@ -52,6 +72,7 @@ export type SnapshotSource = {
 export type SourceMinimums = {
   modelsDev: Record<Provider, number>;
   openRouter: number;
+  classifiers?: ClassifierMinimums;
 };
 
 export type ReadJSONOptions = {
@@ -65,14 +86,23 @@ type JSONRecord = Record<string, unknown>;
 
 const currentProviders = ["anthropic", "openai", "openrouter"] as const;
 const currentProviderSet = new Set<string>(currentProviders);
+// classifierProviders serve only classifier rows, from ClassifierSources.
+const classifierProviders = ["typesafe", "vercel-ai-gateway"] as const;
+// outputProviders are every provider the snapshot holds rows for.
+const outputProviders = [...currentProviders, ...classifierProviders] as const;
+type OutputProvider = (typeof outputProviders)[number];
+const outputProviderSet = new Set<string>(outputProviders);
 const productionMinimums: SourceMinimums = {
   modelsDev: { anthropic: 5, openai: 10, openrouter: 50 },
   openRouter: 50,
+  classifiers: { openRouterDecisions: 5, typesafe: 1, vercel: 3 },
 };
 const fixtureMinimums: SourceMinimums = {
   modelsDev: { anthropic: 1, openai: 1, openrouter: 1 },
   openRouter: 1,
+  classifiers: { openRouterDecisions: 1, typesafe: 1, vercel: 1 },
 };
+const classifierSourceIDs = ["openrouter-decisions", "models.dev-decisions", "vercel-ai-gateway"] as const;
 const maximumIdentityLossRatio = 0.25;
 const minimumMaterialIdentityLoss = 2;
 const maximumMetadataLossRatio = 0.5;
@@ -92,6 +122,7 @@ type BuildOptions = {
   generatedAt?: string;
   minimums?: SourceMinimums;
   sources?: SnapshotSource[];
+  classifiers?: ClassifierSources;
 };
 
 type CLIOptions = {
@@ -107,6 +138,12 @@ type CLIOptions = {
   modelsDevURL: string;
   openRouterURL: string;
   overridesURL: string;
+  openRouterDecisionsSource: string;
+  modelsDevDecisionsSource: string;
+  vercelSource: string;
+  openRouterDecisionsURL: string;
+  modelsDevDecisionsURL: string;
+  vercelURL: string;
   captureDirectory?: string;
 };
 
@@ -119,29 +156,48 @@ const snapshotSchemaVersion = 1;
 const snapshotGenerator = "go-llm-model-snapshot/v1";
 const modelsDevURL = "https://models.dev/api.json";
 const openRouterURL = "https://openrouter.ai/api/v1/models";
+const openRouterDecisionsURL = "https://openrouter.ai/api/v1/models?output_modalities=decisions";
+const modelsDevDecisionsURL = "https://models.dev/models.json?type=decision";
+const vercelURL = "https://ai-gateway.vercel.sh/v1/models";
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
-  const [modelsDev, openRouter, overrides] = await Promise.all([
+  const [modelsDev, openRouter, overrides, openRouterDecisions, modelsDevDecisions, vercel] = await Promise.all([
     loadJSON(options.modelsDevSource),
     loadJSON(options.openRouterSource),
     loadJSON(options.overridesSource),
+    loadJSON(options.openRouterDecisionsSource),
+    loadJSON(options.modelsDevDecisionsSource),
+    loadJSON(options.vercelSource),
   ]);
   const previous = await readSnapshot(options.outputPath);
   const document = buildSnapshot(modelsDev.value, openRouter.value, overrides.value, {
     generatedAt: options.generatedAt ?? (options.verify ? previous?.generated_at : undefined),
     minimums: options.minimums,
+    classifiers: {
+      openRouterDecisions: openRouterDecisions.value,
+      modelsDevDecisions: modelsDevDecisions.value,
+      vercel: vercel.value,
+    },
     sources: [
       provenance("models.dev", options.modelsDevURL, modelsDev),
       provenance("openrouter", options.openRouterURL, openRouter),
       provenance("overrides", options.overridesURL, overrides),
+      provenance("openrouter-decisions", options.openRouterDecisionsURL, openRouterDecisions),
+      provenance("models.dev-decisions", options.modelsDevDecisionsURL, modelsDevDecisions),
+      provenance("vercel-ai-gateway", options.vercelURL, vercel),
     ],
   });
   assertNonDestructive(previous, document, options.allowDestructive);
   if (options.captureDirectory) {
+    const capture = (name: string, loaded: LoadedJSON) =>
+      atomicWriteBytes(resolve(options.captureDirectory!, name), gzipSync(loaded.bytes, { level: 9 }));
     await Promise.all([
-      atomicWriteBytes(resolve(options.captureDirectory, "models-dev.json.gz"), gzipSync(modelsDev.bytes, { level: 9 })),
-      atomicWriteBytes(resolve(options.captureDirectory, "openrouter-models.json.gz"), gzipSync(openRouter.bytes, { level: 9 })),
+      capture("models-dev.json.gz", modelsDev),
+      capture("openrouter-models.json.gz", openRouter),
+      capture("openrouter-decisions.json.gz", openRouterDecisions),
+      capture("models-dev-decisions.json.gz", modelsDevDecisions),
+      capture("vercel-models.json.gz", vercel),
     ]);
   }
 
@@ -175,6 +231,16 @@ export function buildSnapshot(
   for (const row of rowsFromOpenRouter(openRouter, minimums.openRouter)) {
     rows.set(key(row), mergeRow(rows.get(key(row)), row));
   }
+  if (options.classifiers) {
+    const classifierMinimums = minimums.classifiers ?? productionMinimums.classifiers!;
+    for (const row of [
+      ...rowsFromOpenRouterDecisions(options.classifiers.openRouterDecisions, classifierMinimums.openRouterDecisions),
+      ...rowsFromModelsDevDecisions(options.classifiers.modelsDevDecisions, classifierMinimums.typesafe),
+      ...rowsFromVercel(options.classifiers.vercel, classifierMinimums.vercel),
+    ]) {
+      rows.set(key(row), mergeRow(rows.get(key(row)), row));
+    }
+  }
   for (const row of rowsFromOverrides(overrides)) {
     rows.set(key(row), mergeRow(rows.get(key(row)), row));
   }
@@ -188,7 +254,7 @@ export function buildSnapshot(
     schema_version: snapshotSchemaVersion,
     generator: snapshotGenerator,
     generated_at: options.generatedAt ?? new Date().toISOString(),
-    sources: options.sources ?? inMemoryProvenance(modelsDev, openRouter, overrides),
+    sources: options.sources ?? inMemoryProvenance(modelsDev, openRouter, overrides, options.classifiers),
     models,
   };
   validateSnapshotDocument(document);
@@ -199,12 +265,25 @@ function provenance(id: string, url: string, loaded: LoadedJSON): SnapshotSource
   return { id, url, sha256: sha256(loaded.bytes) };
 }
 
-function inMemoryProvenance(modelsDev: unknown, openRouter: unknown, overrides: unknown): SnapshotSource[] {
-  return [
+function inMemoryProvenance(
+  modelsDev: unknown,
+  openRouter: unknown,
+  overrides: unknown,
+  classifiers?: ClassifierSources,
+): SnapshotSource[] {
+  const sources = [
     memoryProvenance("models.dev", modelsDev),
     memoryProvenance("openrouter", openRouter),
     memoryProvenance("overrides", overrides),
   ];
+  if (classifiers) {
+    sources.push(
+      memoryProvenance("openrouter-decisions", classifiers.openRouterDecisions),
+      memoryProvenance("models.dev-decisions", classifiers.modelsDevDecisions),
+      memoryProvenance("vercel-ai-gateway", classifiers.vercel),
+    );
+  }
+  return sources;
 }
 
 function memoryProvenance(id: string, value: unknown): SnapshotSource {
@@ -228,7 +307,7 @@ export function assertNonDestructive(
   if (!previous) return;
 
   const problems: string[] = [];
-  for (const provider of currentProviders) {
+  for (const provider of outputProviders) {
     const before = rowsByID(previous.models, provider);
     const after = rowsByID(next.models, provider);
     if (before.size === 0) continue;
@@ -273,10 +352,11 @@ const metadataFields = [
   ["pricing.cache_write_per_mtok", (row: ModelRow) => row.pricing?.cache_write_per_mtok !== undefined],
   ["pricing.tiers", (row: ModelRow) => row.pricing?.tiers !== undefined],
   ["supported_efforts", (row: ModelRow) => row.supported_efforts !== undefined],
+  ["capabilities", (row: ModelRow) => row.capabilities !== undefined],
 ] as const;
 
 function metadataLossProblems(
-  provider: Provider,
+  provider: OutputProvider,
   before: Map<string, ModelRow>,
   after: Map<string, ModelRow>,
   retained: string[],
@@ -317,7 +397,7 @@ function metadataLossProblems(
   return [];
 }
 
-function rowsByID(rows: ModelRow[], provider: Provider): Map<string, ModelRow> {
+function rowsByID(rows: ModelRow[], provider: OutputProvider): Map<string, ModelRow> {
   return new Map(rows.filter((row) => row.provider === provider).map((row) => [row.id, row]));
 }
 
@@ -432,6 +512,111 @@ function rowsFromOpenRouter(input: unknown, minimumRows: number): ModelRow[] {
   });
 }
 
+// classifierCapabilities is "classify", plus "image-input" when the catalog
+// lists image input.
+function classifierCapabilities(inputModalities: unknown): string[] {
+  const capabilities = ["classify"];
+  if (Array.isArray(inputModalities) && inputModalities.includes("image")) capabilities.push("image-input");
+  return capabilities;
+}
+
+function rowsFromOpenRouterDecisions(input: unknown, minimumRows: number): ModelRow[] {
+  const source = objectValue(input, "OpenRouter decisions root");
+  if (!Array.isArray(source.data)) throw new Error("OpenRouter decisions root.data must be an array");
+  // Only a row that lists decisions output is classifier evidence: a mirror
+  // that ignores the listing's filter, or the chat capture passed by
+  // mistake, must not turn chat rows (and their prices) into classifiers.
+  const rows: ModelRow[] = [];
+  source.data.forEach((value, index) => {
+    const label = `OpenRouter decisions data[${index}]`;
+    const record = objectValue(value, label);
+    const id = requiredString(record, "id", label);
+    const architecture = optionalObject(record, "architecture", label);
+    const outputs = architecture?.output_modalities;
+    if (!Array.isArray(outputs) || !outputs.includes("decisions")) return;
+    const topProvider = optionalObject(record, "top_provider", label);
+    rows.push(compactRow({
+      provider: "openrouter",
+      id,
+      canonical_id: canonicalFromOpenRouterID(id),
+      display_name: optionalString(record, "name", label),
+      context_window:
+        optionalAvailablePositiveNumber(record, ["context_length"]) ??
+        optionalAvailablePositiveNumber(topProvider, ["context_length"]),
+      pricing: pricingFromOpenRouter(optionalObject(record, "pricing", label)),
+      capabilities: classifierCapabilities(architecture?.input_modalities),
+    }));
+  });
+  if (rows.length < minimumRows) {
+    throw new Error(`OpenRouter decisions: ${rows.length} decision models, want at least ${minimumRows}`);
+  }
+  return rows;
+}
+
+// rowsFromModelsDevDecisions maps models.dev's canonical decision models
+// under the "typesafe/" namespace to the typesafe provider, whose API names
+// them without it (pi does the same for jev-latest). Other namespaces have
+// no go-llm provider serving those IDs and are skipped.
+function rowsFromModelsDevDecisions(input: unknown, minimumRows: number): ModelRow[] {
+  const source = objectValue(input, "models.dev decisions root");
+  const rows: ModelRow[] = [];
+  for (const [canonical, value] of Object.entries(source)) {
+    if (!canonical.startsWith("typesafe/")) continue;
+    const label = `models.dev decisions ${canonical}`;
+    const record = objectValue(value, label);
+    if (optionalString(record, "type", label) !== "decision") continue;
+    const id = canonical.slice("typesafe/".length);
+    if (id === "") continue;
+    const limit = optionalObject(record, "limit", label);
+    const modalities = optionalObject(record, "modalities", label);
+    rows.push(
+      compactRow({
+        provider: "typesafe",
+        id,
+        display_name: optionalString(record, "name", label),
+        context_window: optionalAvailablePositiveNumber(limit, ["context"]),
+        pricing: pricingFromUpstreamRecord(optionalObject(record, "cost", label), `${label}.cost`),
+        capabilities: classifierCapabilities(modalities?.input),
+      }),
+    );
+  }
+  if (rows.length < minimumRows) {
+    throw new Error(`models.dev decisions: ${rows.length} typesafe models, want at least ${minimumRows}`);
+  }
+  return rows;
+}
+
+// rowsFromVercel maps Vercel AI Gateway's "evaluation" models, served over
+// System One. Its classifier models take text only (as pi records), so no
+// image-input capability is claimed.
+function rowsFromVercel(input: unknown, minimumRows: number): ModelRow[] {
+  const source = objectValue(input, "Vercel AI Gateway root");
+  if (!Array.isArray(source.data)) throw new Error("Vercel AI Gateway root.data must be an array");
+  const rows: ModelRow[] = [];
+  source.data.forEach((value, index) => {
+    const label = `Vercel AI Gateway data[${index}]`;
+    const record = objectValue(value, label);
+    if (optionalString(record, "type", label) !== "evaluation") return;
+    const pricing = optionalObject(record, "pricing", label);
+    rows.push(
+      compactRow({
+        provider: "vercel-ai-gateway",
+        id: requiredString(record, "id", label),
+        display_name: optionalString(record, "name", label),
+        context_window: optionalAvailablePositiveNumber(record, ["context_window"]),
+        pricing: pricingFromOpenRouter(
+          pricing ? { prompt: pricing.input, completion: pricing.output } : undefined,
+        ),
+        capabilities: ["classify"],
+      }),
+    );
+  });
+  if (rows.length < minimumRows) {
+    throw new Error(`Vercel AI Gateway: ${rows.length} evaluation models, want at least ${minimumRows}`);
+  }
+  return rows;
+}
+
 function rowsFromOverrides(input: unknown): ModelRow[] {
   const source = objectValue(input, "overrides root");
   if (source.models === undefined) return [];
@@ -440,7 +625,7 @@ function rowsFromOverrides(input: unknown): ModelRow[] {
     const label = `overrides.models[${index}]`;
     const record = objectValue(value, label);
     const provider = requiredString(record, "provider", label);
-    if (!currentProviderSet.has(provider)) {
+    if (!outputProviderSet.has(provider)) {
       throw new Error(`${label}.provider ${JSON.stringify(provider)} is not a current provider`);
     }
     const pricing = optionalObject(record, "pricing", label);
@@ -679,8 +864,20 @@ function validateOutputProviders(rows: ModelRow[]): void {
     }
   }
   for (const provider of counts.keys()) {
-    if (!currentProviderSet.has(provider)) {
+    if (!outputProviderSet.has(provider)) {
       throw new Error(`snapshot contains deferred or unknown provider ${provider}`);
+    }
+  }
+  for (const row of rows) {
+    for (const capability of row.capabilities ?? []) {
+      if (capability !== "classify" && capability !== "image-input") {
+        throw new Error(`${key(row)} has unknown capability ${capability}`);
+      }
+    }
+    // A classifier-only provider's row without "classify" would never be
+    // priced (an override for an ID no classifier catalog lists, say).
+    if ((classifierProviders as readonly string[]).includes(row.provider) && !row.capabilities?.includes("classify")) {
+      throw new Error(`${key(row)} is not in a classifier catalog`);
     }
   }
   for (const row of rows) {
@@ -933,6 +1130,7 @@ async function readSnapshot(path: string): Promise<SnapshotDocument | undefined>
       max_output_tokens: optionalPositiveNumber(record, ["max_output_tokens"], label),
       pricing: pricingFromRecord(pricing, label, false),
       supported_efforts: optionalEffortList(record, "supported_efforts", label),
+      capabilities: Array.isArray(record.capabilities) ? (record.capabilities as string[]) : undefined,
     });
   });
   const sources = Array.isArray(source.sources)
@@ -977,9 +1175,13 @@ function validateSnapshotDocument(document: SnapshotDocument): void {
       !Number.isFinite(Date.parse(document.generated_at))) {
     throw new Error("snapshot generated_at must be an RFC3339 timestamp");
   }
-  const expectedIDs = ["models.dev", "openrouter", "overrides"];
+  // The classifier catalogs follow the original three, all or none.
+  const expectedIDs: string[] = ["models.dev", "openrouter", "overrides"];
+  if (document.sources.length === expectedIDs.length + classifierSourceIDs.length) {
+    expectedIDs.push(...classifierSourceIDs);
+  }
   if (document.sources.length !== expectedIDs.length) {
-    throw new Error(`snapshot sources must contain ${expectedIDs.join(", ")}`);
+    throw new Error(`snapshot sources must contain ${expectedIDs.join(", ")}, optionally followed by ${classifierSourceIDs.join(", ")}`);
   }
   for (let index = 0; index < expectedIDs.length; index++) {
     const source = document.sources[index];
@@ -1027,6 +1229,12 @@ function parseArgs(args: string[]): CLIOptions {
     modelsDevURL,
     openRouterURL,
     overridesURL: "file:scripts/overrides.json",
+    openRouterDecisionsSource: openRouterDecisionsURL,
+    modelsDevDecisionsSource: modelsDevDecisionsURL,
+    vercelSource: vercelURL,
+    openRouterDecisionsURL,
+    modelsDevDecisionsURL,
+    vercelURL,
   };
   for (let index = 0; index < args.length; index++) {
     const arg = args[index];
@@ -1040,6 +1248,12 @@ function parseArgs(args: string[]): CLIOptions {
     else if (arg === "--models-dev-url") options.modelsDevURL = requiredArg(args, ++index, arg);
     else if (arg === "--openrouter-url") options.openRouterURL = requiredArg(args, ++index, arg);
     else if (arg === "--overrides-url") options.overridesURL = requiredArg(args, ++index, arg);
+    else if (arg === "--openrouter-decisions") options.openRouterDecisionsSource = sourcePath(requiredArg(args, ++index, arg));
+    else if (arg === "--openrouter-decisions-url") options.openRouterDecisionsURL = requiredArg(args, ++index, arg);
+    else if (arg === "--models-dev-decisions") options.modelsDevDecisionsSource = sourcePath(requiredArg(args, ++index, arg));
+    else if (arg === "--models-dev-decisions-url") options.modelsDevDecisionsURL = requiredArg(args, ++index, arg);
+    else if (arg === "--vercel") options.vercelSource = sourcePath(requiredArg(args, ++index, arg));
+    else if (arg === "--vercel-url") options.vercelURL = requiredArg(args, ++index, arg);
     else if (arg === "--generated-at") options.generatedAt = requiredArg(args, ++index, arg);
     else if (arg === "--capture-dir") options.captureDirectory = resolve(root, requiredArg(args, ++index, arg));
     else if (arg === "--output") options.outputPath = resolve(root, requiredArg(args, ++index, arg));
@@ -1060,7 +1274,7 @@ function requiredArg(args: string[], index: number, flag: string): string {
 
 function snapshotSummary(document: SnapshotDocument, verb: string): string {
   const counts = providerCounts(document.models);
-  return `${verb} ${document.models.length} models (${currentProviders
+  return `${verb} ${document.models.length} models (${[...currentProviders, ...classifierProviders]
     .map((provider) => `${provider}: ${counts.get(provider) ?? 0}`)
     .join(", ")})`;
 }

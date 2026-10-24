@@ -3,7 +3,8 @@
 One clean Go interface to chat LLMs — Anthropic, OpenAI, ChatGPT
 subscription plans, OpenRouter, and self-hosted servers (vLLM, Ollama, any
 OpenAI-compatible endpoint) — with normalized streaming, tool calling,
-structured output, reasoning, usage, cost, and errors.
+structured output, reasoning, usage, cost, and errors. It also speaks to
+classifier (decision) models such as Jev, Clef and GPT-6 Luna.
 
 `go-llm` is a low-level **provider client library**: it does one layer well
 and stops there. No agent loops, no prompt frameworks, no magic. The core
@@ -15,6 +16,7 @@ where they exist and pulled in only by the provider package you import.
 - **One `llm.Provider` interface**: blocking `Chat`, streaming `ChatStream` (`iter.Seq2`), one request/response model, and the raw SDK client when you need it.
 - **Providers**: Anthropic, OpenAI (API key or Sign in with ChatGPT), OpenRouter, vLLM, and any Chat Completions server (Ollama, llama.cpp, ...).
 - **Credentials the pi way**: a pi-compatible `auth.json` store, shared safely with pi, with refreshes done once across processes.
+- **Classifier models** (Jev, Clef, GPT-6 Luna) behind `llm.Classify`: typed choice, score and bool questions answered with probabilities, through OpenRouter, TypeSafe, Cloudflare Workers AI, Vercel AI Gateway, OpenCode Zen, OpenAI or any System One server.
 - **Tools** with parallel calls, streamed arguments, and malformed calls dropped *visibly*.
 - **Structured output** into Go structs with `llm.Parse[T]`, and JSON Schema from Go types.
 - **Cache-stable prompt changes**: change instructions or tools mid-conversation without breaking the prompt cache.
@@ -104,12 +106,17 @@ _, _ = summary, resp
 | `providers/openrouter` | `OPENROUTER_API_KEY`, `WithAPIKey`, or `WithCredentials` (API key) | Chat Completions; routing/plugins, explicit rich model discovery, and native per-request cost reporting |
 | `providers/vllm` | optional `WithAPIKey` (vLLM `--api-key`) | Self-hosted vLLM preset: host-first, era-aware, live-tested |
 | `providers/chatcompletions` | optional `WithAPIKey` | Common entry point for OpenAI Chat Completions-compatible servers (Ollama, llama.cpp, Groq, Together, ...): `New(baseURL, ...)` + declarative `Compat` quirks |
+| `providers/systemone` | `TYPESAFE_API_KEY`, `AI_GATEWAY_API_KEY`, `OPENCODE_API_KEY`, `WithAPIKey`, or `WithCredentials` | [Classifier models](#classifier-models) only, over TypeSafe's System One protocol: `NewTypeSafe`, `NewVercelAIGateway`, `NewOpenCode`, or `New(baseURL)` for any System One server (llama.cpp) |
+| `providers/cloudflare` | `CLOUDFLARE_API_KEY` + `CLOUDFLARE_ACCOUNT_ID`, options, or `WithCredentials` | Classifier models only, on Cloudflare Workers AI (Clef, Clef Flash, Clef Omni, Jev) |
 
 ```go
 anthropic.New()  // ANTHROPIC_API_KEY
 openai.New()     // OPENAI_API_KEY
 openrouter.New() // OPENROUTER_API_KEY
 ```
+
+OpenRouter and OpenAI (GPT-6 Luna over the Decisions API, API keys only) also
+classify beside chat.
 
 First-party presets run the shared offline conformance suite, and
 credentialed presets have capability-driven live scenarios.
@@ -281,6 +288,63 @@ anthropic.WithAPIKey("dummy"))` completes chats with usage and even maps
 Qwen thinking output to reasoning parts (vLLM emits Anthropic-style thinking
 blocks there).
 
+## Classifier models
+
+A classifier (decision) model, such as TypeSafe's Jev, Cloudflare's Clef or
+OpenAI's GPT-6 Luna, answers typed questions about a JSON state with
+probabilities instead of prose:
+
+- a **choice** among labelled values (the choice, each value's probability,
+  a confidence);
+- a **score** on ordered levels (the expected level index, each level's
+  probability, a confidence);
+- a **bool**, the probability that the statement is true.
+
+They are much cheaper and faster than asking a chat model for a label, and
+the answer is calibrated. `llm.NewClassifierModel` binds the provider, the
+model and the questions once; each call then passes only the state:
+
+```go
+p, _ := openrouter.New() // OpenRouter serves Jev, Clef, Luna and others
+triage := llm.NewClassifierModel(p, "typesafe/jev-1.14", llm.WithClassifierQuestions(
+	llm.ChoiceQuestion("category", "Classify the support message.",
+		llm.Choice{Value: "bug", Description: "A defect report"},
+		llm.Choice{Value: "question", Description: "A how-to question"}),
+	llm.ScoreQuestion("urgency", "How urgent is it?", "low", "medium", "high"),
+	llm.BoolQuestion("satisfied", "Is the user satisfied?", "Satisfied", "Not satisfied"),
+))
+result, err := triage.Classify(ctx, map[string]string{"message": "It crashes when I save!"})
+// result.Answers["category"].Choice == "bug"; .Probabilities["bug"] ≈ 1
+// result.Answers["urgency"].Score ≈ 1.99 (high); result.Usage has the cost
+```
+
+`llm.Classify(ctx, p, req)` is the one-shot form with a full
+`ClassifyRequest`, which can also carry images. A provider classifies when it
+implements `llm.Classifier`, found through middleware, and lists
+`CapabilityClassify`; others fail with `ErrUnsupported`. Requests are
+validated before any I/O, with each service's documented limits. Answers are
+checked (declared choices, probabilities in [0, 1], scores within the levels),
+and usage is recorded first, so a refusal or a malformed answer still returns
+the result, its valid answers and its cost beside `ErrContentFiltered` or
+`ErrServer`. Cost is native where reported (OpenRouter), else estimated only
+from classifier pricing: your `WithPriceTable`, or a catalog row marked
+`CapabilityClassify`; a chat model's price is never assumed.
+Wrapped with `llm.Wrap`, a classifier stays one: `Middleware.Classify` sees
+each call, so `UsageTracker` counts classification cost and `otelllm` records a
+`classify {model}` span. OpenRouter's `Models` includes its classifier catalog (output modality
+`decisions`), marked with `CapabilityClassify`, and the embedded model table
+does the same for TypeSafe and Vercel AI Gateway. See
+[`examples/classify`](examples/classify).
+
+| Service | Constructor | Images |
+|---|---|---|
+| OpenRouter | `openrouter.New` | as image parts before the state |
+| TypeSafe | `systemone.NewTypeSafe` | PNG/JPEG assets |
+| Cloudflare Workers AI | `cloudflare.New` | Clef: up to 4 data URLs; Jev: assets |
+| Vercel AI Gateway, OpenCode Zen | `systemone.NewVercelAIGateway`, `systemone.NewOpenCode` | text only |
+| OpenAI Decisions (GPT-6 Luna) | `openai.New` (API key) | up to 128 images |
+| Any System One server (llama.cpp) | `systemone.New(baseURL)` | data URLs (`images`); `WithImageForm` changes it |
+
 ## Persistence and cross-provider handoff
 
 `llm.MarshalMessages` / `llm.UnmarshalMessages` give you a canonical,
@@ -451,12 +515,16 @@ llm-cli -p openai --auth-file ~/.pi/agent/auth.json -m gpt-5.5 "review this diff
 
 llm-cli models -p openrouter          # list models (table or --json)
 
+llm-cli classify -p openrouter -m typesafe/jev-1.14 --questions q.json \
+  --state '{"message":"It crashes when I save!"}'      # classifier models
+
 llm-cli -p vllm --base-url http://gpu-box:8000/v1 -m Qwen/Qwen3-8B "hello"
 llm-cli -p chatcompletions --base-url http://localhost:11434/v1 -m llama3.2 "hello"
 
 llm-cli login openai                  # Sign in with ChatGPT (subscription)
 llm-cli login openai --auth api-key   # or store an OpenAI API key
 llm-cli login openrouter              # API key: the only method it has
+llm-cli login cloudflare-workers-ai   # API key, then the account ID
 llm-cli auth                          # what is configured, per provider
 llm-cli logout openai
 
@@ -475,6 +543,18 @@ caller's `Request.Effort`.
 
 The last pair saves a conversation with one provider and continues it with
 another — the handoff described above, from the shell.
+
+`llm-cli classify` asks a [classifier model](#classifier-models) the
+questions in `--questions`, a JSON file in pi's form
+(`{"<name>": {"type": "choice"|"score"|"bool", "instructions": "...",
+"criteria": ...}}`, where choice criteria map values to descriptions, score
+criteria list the levels and bool criteria are `{"true": ..., "false": ...}`)
+or a list of `llm.Question`. The state is `--state` (inline JSON, a file, or
+`-`) or piped stdin; `--image` adds images and `--json` prints the full
+result. Its providers are `openrouter`, `openai`, `typesafe`,
+`cloudflare-workers-ai`, `vercel-ai-gateway`, `opencode` and `systemone`
+(with `--base-url`); `llm-cli login` stores their keys, and for Cloudflare
+also the account ID (in the entry's `env`, as pi stores it).
 
 Self-hosted servers use `-p vllm` (the vLLM preset) or `-p chatcompletions`
 (Ollama, llama.cpp, any Chat Completions server) with `--base-url` set to the
@@ -569,6 +649,7 @@ ANTHROPIC_API_KEY=... go run ./examples/chat  # same program, real API
 | [`stream`](examples/stream) | Streaming deltas with `llm.StreamText` |
 | [`tools`](examples/tools) | A full tool round trip: call → local execution → result → answer |
 | [`parse`](examples/parse) | `llm.Parse[T]` structured output into a Go struct |
+| [`classify`](examples/classify) | A classifier model (Jev over OpenRouter) bound with `llm.NewClassifierModel`: choice, score and bool answers with probabilities |
 | [`prompt-deltas`](examples/prompt-deltas) | Changing instructions and tools mid-conversation with `SystemDeltaPart`/`ToolsDeltaPart`, and what `llm.FoldPositional` sends models without in-place support |
 | [`self-hosted`](examples/self-hosted) | vLLM or any Chat Completions server (Ollama, llama.cpp) via `LLM_BASE_URL`; offline it runs against an in-process server |
 | [`history-replay`](examples/history-replay) | Serialize a conversation and continue it on another provider (a real Anthropic→OpenRouter handoff when both keys are set) |

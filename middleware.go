@@ -13,10 +13,18 @@ type ChatFunc func(ctx context.Context, req *Request) (*Response, error)
 // StreamFunc is the function shape middleware uses to decorate ChatStream.
 type StreamFunc func(ctx context.Context, req *Request) iter.Seq2[Event, error]
 
-// Middleware optionally decorates Chat and ChatStream.
+// ClassifyFunc is the function shape middleware uses to decorate Classify
+// (FS §13C).
+type ClassifyFunc func(ctx context.Context, req *ClassifyRequest) (*ClassifyResult, error)
+
+// Middleware optionally decorates Chat, ChatStream and Classify.
 type Middleware struct {
 	Chat   func(next ChatFunc) ChatFunc
 	Stream func(next StreamFunc) StreamFunc
+	// Classify decorates classification. It applies only when the wrapped
+	// provider classifies (FindClassifier); a classify result may carry
+	// usage beside an error, which a decorator should keep.
+	Classify func(next ClassifyFunc) ClassifyFunc
 	// Bind makes middleware provider-aware: when set, Wrap calls it once
 	// with the provider being wrapped and composes the returned Middleware
 	// instead (its own Bind is ignored). Use it when handlers need the
@@ -28,9 +36,11 @@ type Middleware struct {
 
 // Wrap returns p decorated by middleware. The first middleware argument is
 // outermost. Name, Capabilities, and Models delegate to p unchanged, and the
-// returned provider has an Unwrap() Provider method returning p. Wrap also
-// binds provider-aware middleware (Middleware.Bind) to p once before
-// composing handlers.
+// returned provider has an Unwrap() Provider method returning p. When p
+// classifies (FindClassifier), the returned provider is a Classifier too,
+// so llm.Classify runs through the Classify handlers. Wrap also binds
+// provider-aware middleware (Middleware.Bind) to p once before composing
+// handlers.
 func Wrap(p Provider, mw ...Middleware) Provider {
 	if p == nil || len(mw) == 0 {
 		return p
@@ -52,13 +62,34 @@ func Wrap(p Provider, mw ...Middleware) Provider {
 			stream = bound[i].Stream(stream)
 		}
 	}
-	return &wrappedProvider{provider: p, chat: chat, stream: stream}
+	wrapped := &wrappedProvider{provider: p, chat: chat, stream: stream}
+	classifier, ok := FindClassifier(p)
+	if !ok {
+		return wrapped
+	}
+	classify := ClassifyFunc(classifier.Classify)
+	for i := len(bound) - 1; i >= 0; i-- {
+		if bound[i].Classify != nil {
+			classify = bound[i].Classify(classify)
+		}
+	}
+	return &wrappedClassifier{wrappedProvider: wrapped, classify: classify}
 }
 
 type wrappedProvider struct {
 	provider Provider
 	chat     ChatFunc
 	stream   StreamFunc
+}
+
+// wrappedClassifier is a wrapped provider whose inner provider classifies.
+type wrappedClassifier struct {
+	*wrappedProvider
+	classify ClassifyFunc
+}
+
+func (p *wrappedClassifier) Classify(ctx context.Context, req *ClassifyRequest) (*ClassifyResult, error) {
+	return p.classify(ctx, req)
 }
 
 // Unwrap returns the provider this one decorates, so optional extensions

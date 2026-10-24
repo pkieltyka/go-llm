@@ -3,9 +3,14 @@
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/png"
 	"strings"
 	"testing"
 
@@ -28,6 +33,77 @@ func commonLiveScenarioRunners() map[string]ScenarioRun {
 		"usage":                  liveUsageScenario,
 		"cross_provider_handoff": liveCrossProviderHandoffScenario,
 	}
+}
+
+// liveClassifyScenario asks a classifier model (FS §13C) one question of
+// each type about an unambiguous state and checks the answers' shape,
+// direction and usage.
+func liveClassifyScenario(model string) ScenarioRun {
+	return func(ctx context.Context, t *testing.T, p llm.Provider, _ string) {
+		t.Helper()
+		classifier := llm.NewClassifierModel(p, model, llm.WithClassifierQuestions(
+			llm.ChoiceQuestion("category", "Classify the support message.",
+				llm.Choice{Value: "bug", Description: "A defect report"},
+				llm.Choice{Value: "praise", Description: "Positive feedback"}),
+			llm.ScoreQuestion("urgency", "How urgent is the message?", "low", "medium", "high"),
+			llm.BoolQuestion("satisfied", "Is the user satisfied?", "Satisfied", "Not satisfied"),
+		))
+		result, err := classifier.Classify(ctx, map[string]string{"message": "The app crashes every time I press save and I lose all my work!"})
+		if err != nil {
+			t.Fatalf("Classify(%s): %v", model, err)
+		}
+		category, urgency, satisfied := result.Answers["category"], result.Answers["urgency"], result.Answers["satisfied"]
+		if category.Type != llm.QuestionChoice || category.Choice != "bug" || category.Probabilities["bug"] < 0.5 {
+			t.Fatalf("category = %+v", category)
+		}
+		if urgency.Type != llm.QuestionScore || urgency.Score < 1 || urgency.Score > 2 {
+			t.Fatalf("urgency = %+v", urgency)
+		}
+		if satisfied.Type != llm.QuestionBool || satisfied.Probability > 0.5 {
+			t.Fatalf("satisfied = %+v", satisfied)
+		}
+		if result.Usage.InputTokens <= 0 {
+			t.Fatalf("usage = %+v", result.Usage)
+		}
+	}
+}
+
+// liveClassifyImagesScenario asks a classifier model the dominant color of
+// a solid red and a solid blue 512x512 PNG, so the answer must follow the
+// image rather than merely succeed.
+func liveClassifyImagesScenario(model string) func(context.Context, *testing.T, llm.Provider) {
+	return func(ctx context.Context, t *testing.T, p llm.Provider) {
+		t.Helper()
+		classifier := llm.NewClassifierModel(p, model)
+		question := llm.ChoiceQuestion("color", "What is the dominant color of the attached image?",
+			llm.Choice{Value: "red", Description: "Mostly red"},
+			llm.Choice{Value: "blue", Description: "Mostly blue"},
+			llm.Choice{Value: "green", Description: "Mostly green"})
+		for name, fill := range map[string]color.RGBA{"red": {R: 220, G: 20, B: 20, A: 255}, "blue": {R: 20, G: 40, B: 220, A: 255}} {
+			result, err := classifier.ClassifyRequest(ctx, &llm.ClassifyRequest{
+				State:     json.RawMessage(`{"task":"Describe the image"}`),
+				Images:    []llm.ImagePart{{Data: solidPNG(t, fill), MediaType: "image/png"}},
+				Questions: []llm.Question{question},
+			})
+			if err != nil {
+				t.Fatalf("Classify(%s, %s image): %v", model, name, err)
+			}
+			if got := result.Answers["color"]; got.Choice != name {
+				t.Fatalf("%s image classified as %+v", name, got)
+			}
+		}
+	}
+}
+
+func solidPNG(t *testing.T, fill color.RGBA) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 512, 512))
+	draw.Draw(img, img.Bounds(), &image.Uniform{C: fill}, image.Point{}, draw.Src)
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
 }
 
 func requireLiveProviderConfig(t *testing.T, provider string, cfg ProviderConfig) {

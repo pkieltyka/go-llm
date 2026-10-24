@@ -30,6 +30,7 @@ var _ llm.CredentialStore = (*Memory)(nil)
 func NewMemory(initial llm.AuthFile) *Memory {
 	m := &Memory{credentials: map[string]llm.AuthCredential{}, locks: map[string]chan struct{}{}}
 	for id, cred := range initial {
+		cred.Env = cred.CloneEnv()
 		m.credentials[id] = cred
 	}
 	return m
@@ -49,6 +50,7 @@ func (m *Memory) Read(ctx context.Context, providerID string) (llm.AuthCredentia
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cred, ok := m.credentials[providerID]
+	cred.Env = cred.CloneEnv()
 	return cred, ok, nil
 }
 
@@ -65,16 +67,23 @@ func (m *Memory) Modify(ctx context.Context, providerID string, fn func(llm.Auth
 	defer release()
 	m.mu.Lock()
 	current, ok := m.credentials[providerID]
+	current.Env = current.CloneEnv()
 	m.mu.Unlock()
-	next, write, err := fn(current, ok)
+	// fn gets its own Env, so an edit it declines to write does not leak
+	// into the returned credential.
+	staged := current
+	staged.Env = current.CloneEnv()
+	next, write, err := fn(staged, ok)
 	if err != nil {
 		return llm.AuthCredential{}, false, err
 	}
 	if !write {
 		return current, ok, nil
 	}
+	stored := next
+	stored.Env = next.CloneEnv()
 	m.mu.Lock()
-	m.credentials[providerID] = next
+	m.credentials[providerID] = stored
 	m.mu.Unlock()
 	return next, true, nil
 }

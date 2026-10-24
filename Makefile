@@ -3,7 +3,7 @@ PNPM ?= pnpm
 GOLANGCI_LINT_VERSION ?= v2.14.0
 GOVULNCHECK_VERSION ?= v1.5.0
 GO_MIN_VERSION ?= 1.26.0
-MODEL_SOURCE_DIR ?= scripts/model-sources/2026-10-23
+MODEL_SOURCE_DIR ?= scripts/model-sources/2026-10-24
 MODEL_ARGS ?=
 PATCH_BASE ?= HEAD
 
@@ -78,6 +78,12 @@ check-models-reproducible:
 		--models-dev-url https://models.dev/api.json \
 		--openrouter $(MODEL_SOURCE_DIR)/openrouter-models.json.gz \
 		--openrouter-url https://openrouter.ai/api/v1/models \
+		--openrouter-decisions $(MODEL_SOURCE_DIR)/openrouter-decisions.json.gz \
+		--openrouter-decisions-url 'https://openrouter.ai/api/v1/models?output_modalities=decisions' \
+		--models-dev-decisions $(MODEL_SOURCE_DIR)/models-dev-decisions.json.gz \
+		--models-dev-decisions-url 'https://models.dev/models.json?type=decision' \
+		--vercel $(MODEL_SOURCE_DIR)/vercel-models.json.gz \
+		--vercel-url https://ai-gateway.vercel.sh/v1/models \
 		--output models.json --verify
 
 check-live:

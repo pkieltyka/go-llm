@@ -274,11 +274,40 @@ func validCost(value float64) bool {
 	return value >= 0 && !math.IsNaN(value) && !math.IsInf(value, 0)
 }
 
+// Models lists the chat catalog and the classifier (decisions) catalog,
+// which OpenRouter's default listing leaves out (FS §13C). A failed
+// decisions listing (a proxy or mirror that rejects the filter) leaves the
+// chat catalog alone; only cancellation fails the call.
 func (dialect) Models(ctx context.Context, p *chatcompletions.Provider) ([]llm.ModelInfo, error) {
+	chat, err := listModels(ctx, p, "/models")
+	if err != nil {
+		return nil, err
+	}
+	classifiers, err := listModels(ctx, p, "/models?output_modalities=decisions")
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, err
+		}
+		return chat, nil
+	}
+	seen := make(map[string]bool, len(chat))
+	for _, info := range chat {
+		seen[info.ID] = true
+	}
+	for _, info := range classifiers {
+		if !seen[info.ID] {
+			chat = append(chat, info)
+			seen[info.ID] = true
+		}
+	}
+	return chat, nil
+}
+
+func listModels(ctx context.Context, p *chatcompletions.Provider, path string) ([]llm.ModelInfo, error) {
 	var payload struct {
 		Data []json.RawMessage `json:"data"`
 	}
-	if err := p.DoJSON(ctx, http.MethodGet, "/models", nil, &payload); err != nil {
+	if err := p.DoJSON(ctx, http.MethodGet, path, nil, &payload); err != nil {
 		return nil, err
 	}
 	models := make([]llm.ModelInfo, 0, len(payload.Data))
@@ -289,7 +318,8 @@ func (dialect) Models(ctx context.Context, p *chatcompletions.Provider) ([]llm.M
 			ContextLength       int      `json:"context_length"`
 			SupportedParameters []string `json:"supported_parameters"`
 			Architecture        struct {
-				InputModalities []string `json:"input_modalities"`
+				InputModalities  []string `json:"input_modalities"`
+				OutputModalities []string `json:"output_modalities"`
 			} `json:"architecture"`
 			TopProvider struct {
 				MaxCompletionTokens int `json:"max_completion_tokens"`
@@ -309,6 +339,12 @@ func (dialect) Models(ctx context.Context, p *chatcompletions.Provider) ([]llm.M
 			CanonicalID:     row.CanonicalSlug,
 			Capabilities:    openRouterModelCapabilities(row.SupportedParameters, row.Architecture.InputModalities),
 			Raw:             append(json.RawMessage(nil), rawRow...),
+		}
+		for _, modality := range row.Architecture.OutputModalities {
+			if strings.TrimSpace(modality) == "decisions" {
+				info.Capabilities = append(info.Capabilities, llm.CapabilityClassify)
+				break
+			}
 		}
 		if pricing := parsePricing(row.Pricing); pricing != nil {
 			info.Pricing = pricing

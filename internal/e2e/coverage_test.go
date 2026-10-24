@@ -88,3 +88,19 @@ func (p *coverageProvider) Chat(context.Context, *llm.Request) (*llm.Response, e
 func (p *coverageProvider) ChatStream(context.Context, *llm.Request) iter.Seq2[llm.Event, error] {
 	return nil
 }
+
+func TestClassifyCapabilityHasALiveScenario(t *testing.T) {
+	for _, providerID := range []string{"openai", "openrouter"} {
+		names, _, err := capabilityScenarioNames(providerID, []llm.Capability{llm.CapabilityClassify})
+		if err != nil {
+			t.Fatalf("%s classify coverage: %v", providerID, err)
+		}
+		found := false
+		for _, name := range names {
+			found = found || name == "classify"
+		}
+		if !found {
+			t.Fatalf("%s scenarios %v lack classify", providerID, names)
+		}
+	}
+}

@@ -14,10 +14,12 @@ import (
 	llm "github.com/pkieltyka/go-llm"
 )
 
-// credentialKeys are the entry fields a credential write owns. Every other
-// key in an entry (pi's "scopes", go-llm's "model"/"base_url", future
-// fields) is preserved, unless the credential type changes.
-var credentialKeys = []string{"type", "key", "access", "refresh", "expires", "accountId", "clientId"}
+// credentialKeys are the entry fields a credential write owns, pi's "env"
+// included, so a writer must carry Env over from the credential it read
+// (provideroauth's refresh merge does). Every other key in an entry (pi's "scopes", go-llm's
+// "model"/"base_url", future fields) is preserved, unless the credential
+// type changes.
+var credentialKeys = []string{"type", "key", "access", "refresh", "expires", "accountId", "clientId", "env"}
 
 // configKeys survive even a credential type change: they configure the
 // provider, not the credential.
@@ -83,11 +85,7 @@ func (f *File) Read(ctx context.Context, providerID string) (llm.AuthCredential,
 	// pi's api_key indirection ("$VAR", "${VAR}", "!command") resolves on
 	// read only: Modify and the file keep the raw value, so a resolved
 	// secret is never written back.
-	env, err := doc.entryEnv(providerID)
-	if err != nil {
-		return llm.AuthCredential{}, false, err
-	}
-	key, err := f.resolveKey(ctx, providerID, cred.Key, env)
+	key, err := f.resolveKey(ctx, providerID, cred.Key, cred.Env)
 	if err != nil {
 		return llm.AuthCredential{}, false, err
 	}
@@ -123,7 +121,11 @@ func (f *File) Modify(ctx context.Context, providerID string, fn func(llm.AuthCr
 		if err != nil {
 			return false, err
 		}
-		next, write, err := fn(current, ok)
+		// fn gets its own Env, so an edit it declines to write does not
+		// leak into the returned credential.
+		staged := current
+		staged.Env = current.CloneEnv()
+		next, write, err := fn(staged, ok)
 		if err != nil {
 			return false, err
 		}
@@ -374,6 +376,11 @@ func (doc *authDocument) setCredential(providerID string, cred llm.AuthCredentia
 	}
 	if cred.Expires != 0 {
 		if err := set("expires", cred.Expires); err != nil {
+			return err
+		}
+	}
+	if len(cred.Env) > 0 {
+		if err := set("env", cred.Env); err != nil {
 			return err
 		}
 	}

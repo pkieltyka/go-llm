@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"reflect"
 	"testing"
 	"time"
 
@@ -55,6 +56,7 @@ func TestResolverRefreshesCredentialWithoutExpiry(t *testing.T) {
 func TestRefreshKeepsFieldsTheResponseOmits(t *testing.T) {
 	store := authstore.NewMemory(llm.AuthFile{testProvider: {
 		Type: "oauth", Access: "old", Refresh: "r1", AccountID: "acct", ClientID: "client", Model: "m", BaseURL: "u",
+		Env: map[string]string{"A": "b"},
 	}})
 	resolver := &Resolver{Store: store, ProviderID: testProvider, Refresh: func(context.Context, llm.AuthCredential) (llm.AuthCredential, error) {
 		return llm.AuthCredential{Access: "new", Expires: inAnHour()}, nil
@@ -66,8 +68,8 @@ func TestRefreshKeepsFieldsTheResponseOmits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := llm.AuthCredential{Type: "oauth", Access: "new", Refresh: "r1", AccountID: "acct", ClientID: "client", Model: "m", BaseURL: "u", Expires: got.Expires}
-	if got != want {
+	want := llm.AuthCredential{Type: "oauth", Access: "new", Refresh: "r1", AccountID: "acct", ClientID: "client", Model: "m", BaseURL: "u", Env: map[string]string{"A": "b"}, Expires: got.Expires}
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("stored = %+v, want %+v", got, want)
 	}
 }

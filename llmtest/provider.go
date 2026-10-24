@@ -18,6 +18,9 @@ type Provider struct {
 	models       []llm.ModelInfo
 	steps        []step
 	requests     []*llm.Request
+
+	classifySteps    []classifyStep
+	classifyRequests []*llm.ClassifyRequest
 }
 
 type stepKind int

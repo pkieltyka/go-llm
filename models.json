@@ -1,22 +1,37 @@
 {
   "schema_version": 1,
   "generator": "go-llm-model-snapshot/v1",
-  "generated_at": "2026-10-23T13:27:36.033Z",
+  "generated_at": "2026-10-24T18:17:59.017Z",
   "sources": [
     {
       "id": "models.dev",
       "url": "https://models.dev/api.json",
-      "sha256": "1a6a85fbf2d7a79673ecb94933f16091534a8e6824ac7a231c202ab02cbd68b8"
+      "sha256": "85e9fb36d78edf12eb2194501aa7e5d95e8a19571be23fe59cd527266790ee75"
     },
     {
       "id": "openrouter",
       "url": "https://openrouter.ai/api/v1/models",
-      "sha256": "c83085e039f3f311fb4acf721971680db8dfc46200b7a867fbd04c145258b9c0"
+      "sha256": "511846fb093dd695c7f9117b9f3ae023ebd51a8e89190e26574447b08dd63454"
     },
     {
       "id": "overrides",
       "url": "file:scripts/overrides.json",
       "sha256": "c8cdda2058dfad73596cb9baef30bb2a825485859ad54c8d9cf5a10a457b0c8c"
+    },
+    {
+      "id": "openrouter-decisions",
+      "url": "https://openrouter.ai/api/v1/models?output_modalities=decisions",
+      "sha256": "70fd4faaeaa0834279675f1aabc2a8ebe783c52564dec026478b54dff2bca87c"
+    },
+    {
+      "id": "models.dev-decisions",
+      "url": "https://models.dev/models.json?type=decision",
+      "sha256": "990f5c578ec3aa957a3e12fb0cb06681212251e0a01f4a3383d1f962cb5f0385"
+    },
+    {
+      "id": "vercel-ai-gateway",
+      "url": "https://ai-gateway.vercel.sh/v1/models",
+      "sha256": "28e21d04fae90b7fdd5fe38d53a2e9c8a15e0b395f4f461e9d8c84b7e5590f82"
     }
   ],
   "models": [
@@ -2029,6 +2044,34 @@
     },
     {
       "provider": "openrouter",
+      "id": "baseten/elephant-1:free",
+      "canonical_id": "baseten/elephant-1:free",
+      "display_name": "Baseten: Elephant 1 (free)",
+      "context_window": 16384,
+      "capabilities": [
+        "classify"
+      ],
+      "pricing": {
+        "input_per_mtok": 0,
+        "output_per_mtok": 0
+      }
+    },
+    {
+      "provider": "openrouter",
+      "id": "baseten/mammoth-1:free",
+      "canonical_id": "baseten/mammoth-1:free",
+      "display_name": "Baseten: Mammoth 1 (free)",
+      "context_window": 16384,
+      "capabilities": [
+        "classify"
+      ],
+      "pricing": {
+        "input_per_mtok": 0,
+        "output_per_mtok": 0
+      }
+    },
+    {
+      "provider": "openrouter",
       "id": "bytedance-seed/seed-1.6",
       "display_name": "ByteDance Seed: Seed 1.6",
       "context_window": 262144,
@@ -2166,6 +2209,51 @@
         "cache_read_per_mtok": 0.09999999999999999
       },
       "canonical_id": "bytedance/ui-tars-1.5-7b"
+    },
+    {
+      "provider": "openrouter",
+      "id": "cloudflare/clef",
+      "canonical_id": "cloudflare/clef",
+      "display_name": "Cloudflare: Clef",
+      "context_window": 65537,
+      "capabilities": [
+        "classify",
+        "image-input"
+      ],
+      "pricing": {
+        "input_per_mtok": 0.24,
+        "output_per_mtok": 0
+      }
+    },
+    {
+      "provider": "openrouter",
+      "id": "cloudflare/clef-flash",
+      "canonical_id": "cloudflare/clef-flash",
+      "display_name": "Cloudflare: Clef Flash",
+      "context_window": 24576,
+      "capabilities": [
+        "classify",
+        "image-input"
+      ],
+      "pricing": {
+        "input_per_mtok": 0.019000000000000003,
+        "output_per_mtok": 0
+      }
+    },
+    {
+      "provider": "openrouter",
+      "id": "cloudflare/clef-omni",
+      "canonical_id": "cloudflare/clef-omni",
+      "display_name": "Cloudflare: Clef Omni",
+      "context_window": 65536,
+      "capabilities": [
+        "classify",
+        "image-input"
+      ],
+      "pricing": {
+        "input_per_mtok": 0.15,
+        "output_per_mtok": 0
+      }
     },
     {
       "provider": "openrouter",
@@ -2365,9 +2453,9 @@
       "context_window": 1048576,
       "max_output_tokens": 131072,
       "pricing": {
-        "input_per_mtok": 0.047080000000000004,
-        "output_per_mtok": 0.14124,
-        "cache_read_per_mtok": 0.001498
+        "input_per_mtok": 0.04444,
+        "output_per_mtok": 0.13332,
+        "cache_read_per_mtok": 0.0014140000000000001
       },
       "supported_efforts": [
         "none",
@@ -2403,9 +2491,9 @@
       "context_window": 1048576,
       "max_output_tokens": 384000,
       "pricing": {
-        "input_per_mtok": 0.892272,
-        "output_per_mtok": 1.784544,
-        "cache_read_per_mtok": 0.07435599999999999
+        "input_per_mtok": 0.20879999999999999,
+        "output_per_mtok": 0.41759999999999997,
+        "cache_read_per_mtok": 0.0174
       },
       "supported_efforts": [
         "none",
@@ -2440,9 +2528,9 @@
       "context_window": 1048576,
       "max_output_tokens": 943718,
       "pricing": {
-        "input_per_mtok": 0.3,
-        "output_per_mtok": 1.2,
-        "cache_read_per_mtok": 0.006
+        "input_per_mtok": 0.02,
+        "output_per_mtok": 1,
+        "cache_read_per_mtok": 0.015
       },
       "supported_efforts": [
         "none",
@@ -3124,9 +3212,9 @@
       "context_window": 262144,
       "max_output_tokens": 235929,
       "pricing": {
-        "input_per_mtok": 0.09,
-        "output_per_mtok": 0.3,
-        "cache_read_per_mtok": 0.049999999999999996
+        "input_per_mtok": 0.0675,
+        "output_per_mtok": 0.22499999999999998,
+        "cache_read_per_mtok": 0.0375
       },
       "canonical_id": "google/gemma-4-26b-a4b-it"
     },
@@ -3291,6 +3379,37 @@
     },
     {
       "provider": "openrouter",
+      "id": "inception/mercury-decide",
+      "canonical_id": "inception/mercury-decide",
+      "display_name": "Inception: Mercury Decide",
+      "context_window": 65536,
+      "capabilities": [
+        "classify",
+        "image-input"
+      ],
+      "pricing": {
+        "input_per_mtok": 0.02,
+        "output_per_mtok": 0,
+        "cache_read_per_mtok": 0
+      }
+    },
+    {
+      "provider": "openrouter",
+      "id": "inception/mercury-decide:free",
+      "canonical_id": "inception/mercury-decide:free",
+      "display_name": "Inception: Mercury Decide (free)",
+      "context_window": 65536,
+      "capabilities": [
+        "classify",
+        "image-input"
+      ],
+      "pricing": {
+        "input_per_mtok": 0,
+        "output_per_mtok": 0
+      }
+    },
+    {
+      "provider": "openrouter",
       "id": "inclusionai/ling-3.0-flash",
       "display_name": "inclusionAI: Ling 3.0 Flash",
       "context_window": 262144,
@@ -3353,6 +3472,52 @@
         "cache_read_per_mtok": 0.03
       },
       "canonical_id": "inference-net/schematron-v2-turbo"
+    },
+    {
+      "provider": "openrouter",
+      "id": "jaredpalmer/kev-4b",
+      "canonical_id": "jaredpalmer/kev-4b",
+      "display_name": "Jared Palmer: Kev 4B",
+      "context_window": 8192,
+      "capabilities": [
+        "classify"
+      ],
+      "pricing": {
+        "input_per_mtok": 0.041999999999999996,
+        "output_per_mtok": 0
+      }
+    },
+    {
+      "provider": "openrouter",
+      "id": "liquid/d1",
+      "canonical_id": "liquid/d1",
+      "display_name": "LiquidAI: d1",
+      "context_window": 65536,
+      "capabilities": [
+        "classify",
+        "image-input"
+      ],
+      "pricing": {
+        "input_per_mtok": 0.02,
+        "output_per_mtok": 0,
+        "cache_read_per_mtok": 0.02
+      }
+    },
+    {
+      "provider": "openrouter",
+      "id": "liquid/d1-ultra",
+      "canonical_id": "liquid/d1-ultra",
+      "display_name": "LiquidAI: d1-ultra",
+      "context_window": 32768,
+      "capabilities": [
+        "classify",
+        "image-input"
+      ],
+      "pricing": {
+        "input_per_mtok": 0.041999999999999996,
+        "output_per_mtok": 0,
+        "cache_read_per_mtok": 0.041999999999999996
+      }
     },
     {
       "provider": "openrouter",
@@ -3665,6 +3830,20 @@
     },
     {
       "provider": "openrouter",
+      "id": "microsoft/microsoft-decision-1",
+      "canonical_id": "microsoft/microsoft-decision-1",
+      "display_name": "Microsoft: Microsoft-Decision-1",
+      "context_window": 32768,
+      "capabilities": [
+        "classify"
+      ],
+      "pricing": {
+        "input_per_mtok": 0.041999999999999996,
+        "output_per_mtok": 0
+      }
+    },
+    {
+      "provider": "openrouter",
       "id": "microsoft/phi-4",
       "display_name": "Microsoft: Phi 4",
       "context_window": 16384,
@@ -3742,10 +3921,10 @@
       "id": "minimax/minimax-m2.5",
       "display_name": "MiniMax: MiniMax M2.5",
       "context_window": 204800,
-      "max_output_tokens": 32768,
+      "max_output_tokens": 131072,
       "pricing": {
-        "input_per_mtok": 0.27,
-        "output_per_mtok": 0.95,
+        "input_per_mtok": 0.3,
+        "output_per_mtok": 1.2,
         "cache_read_per_mtok": 0.03
       },
       "canonical_id": "minimax/minimax-m2.5"
@@ -4248,7 +4427,7 @@
       "max_output_tokens": 943718,
       "pricing": {
         "input_per_mtok": 0.23900000000000002,
-        "output_per_mtok": 11.936,
+        "output_per_mtok": 10.8,
         "cache_read_per_mtok": 0.21
       },
       "supported_efforts": [
@@ -4258,6 +4437,25 @@
         "max"
       ],
       "canonical_id": "moonshotai/kimi-k3"
+    },
+    {
+      "provider": "openrouter",
+      "id": "moonshotai/kimi-k3.1-pro",
+      "display_name": "MoonshotAI: Kimi K3.1 Pro",
+      "context_window": 1048576,
+      "max_output_tokens": 943718,
+      "pricing": {
+        "input_per_mtok": 2,
+        "output_per_mtok": 10,
+        "cache_read_per_mtok": 0.19999999999999998
+      },
+      "supported_efforts": [
+        "none",
+        "low",
+        "high",
+        "max"
+      ],
+      "canonical_id": "moonshotai/kimi-k3.1-pro"
     },
     {
       "provider": "openrouter",
@@ -4295,6 +4493,48 @@
         "output_per_mtok": 1.9
       },
       "canonical_id": "morph/morph-v3-large"
+    },
+    {
+      "provider": "openrouter",
+      "id": "nace-ai/drex-max",
+      "canonical_id": "nace-ai/drex-max",
+      "display_name": "Nace.AI: Drex Max",
+      "context_window": 262144,
+      "capabilities": [
+        "classify"
+      ],
+      "pricing": {
+        "input_per_mtok": 0.06,
+        "output_per_mtok": 0
+      }
+    },
+    {
+      "provider": "openrouter",
+      "id": "nace-ai/drex-v1.5",
+      "canonical_id": "nace-ai/drex-v1.5",
+      "display_name": "Nace.AI: Drex v1.5",
+      "context_window": 131072,
+      "capabilities": [
+        "classify"
+      ],
+      "pricing": {
+        "input_per_mtok": 0.04,
+        "output_per_mtok": 0
+      }
+    },
+    {
+      "provider": "openrouter",
+      "id": "nace-ai/drex-v2.0",
+      "canonical_id": "nace-ai/drex-v2.0",
+      "display_name": "Nace.AI: Drex v2.0",
+      "context_window": 131072,
+      "capabilities": [
+        "classify"
+      ],
+      "pricing": {
+        "input_per_mtok": 0.06,
+        "output_per_mtok": 0
+      }
     },
     {
       "provider": "openrouter",
@@ -4546,14 +4786,13 @@
     {
       "provider": "openrouter",
       "id": "openai/gpt-3.5-turbo",
-      "display_name": "OpenAI: GPT-3.5 Turbo",
+      "display_name": "GPT-3.5-turbo",
       "context_window": 16385,
       "max_output_tokens": 4096,
       "pricing": {
         "input_per_mtok": 0.5,
         "output_per_mtok": 1.5
-      },
-      "canonical_id": "openai/gpt-3.5-turbo"
+      }
     },
     {
       "provider": "openrouter",
@@ -4582,25 +4821,12 @@
     {
       "provider": "openrouter",
       "id": "openai/gpt-3.5-turbo-instruct",
-      "display_name": "OpenAI: GPT-3.5 Turbo Instruct",
+      "display_name": "GPT-3.5 Turbo Instruct",
       "context_window": 4095,
       "max_output_tokens": 3685,
       "pricing": {
         "input_per_mtok": 1.5,
         "output_per_mtok": 2
-      },
-      "canonical_id": "openai/gpt-3.5-turbo-instruct"
-    },
-    {
-      "provider": "openrouter",
-      "id": "openai/gpt-3.5-turbo:batch",
-      "canonical_id": "openai/gpt-3.5-turbo:batch",
-      "display_name": "OpenAI: GPT-3.5 Turbo (batch)",
-      "context_window": 16385,
-      "max_output_tokens": 4096,
-      "pricing": {
-        "input_per_mtok": 0.25,
-        "output_per_mtok": 0.75
       }
     },
     {
@@ -5797,6 +6023,23 @@
     },
     {
       "provider": "openrouter",
+      "id": "openai/gpt-6-luna-decisions",
+      "canonical_id": "openai/gpt-6-luna-decisions",
+      "display_name": "OpenAI: GPT-6 Luna Decisions",
+      "context_window": 1050000,
+      "capabilities": [
+        "classify",
+        "image-input"
+      ],
+      "pricing": {
+        "input_per_mtok": 0.09999999999999999,
+        "output_per_mtok": 0,
+        "cache_read_per_mtok": 0,
+        "cache_write_per_mtok": 0
+      }
+    },
+    {
+      "provider": "openrouter",
       "id": "openai/gpt-6-luna-pro",
       "display_name": "OpenAI: GPT-6 Luna Pro",
       "context_window": 1050000,
@@ -6375,6 +6618,36 @@
         "high"
       ],
       "canonical_id": "perceptron/perceptron-mk1.5"
+    },
+    {
+      "provider": "openrouter",
+      "id": "perplexity/pplx-decider-flash-v1.2",
+      "canonical_id": "perplexity/pplx-decider-flash-v1.2",
+      "display_name": "Perplexity: Decider Flash V1.2",
+      "context_window": 262144,
+      "capabilities": [
+        "classify",
+        "image-input"
+      ],
+      "pricing": {
+        "input_per_mtok": 0.01,
+        "output_per_mtok": 0
+      }
+    },
+    {
+      "provider": "openrouter",
+      "id": "perplexity/pplx-decider-v1.2",
+      "canonical_id": "perplexity/pplx-decider-v1.2",
+      "display_name": "Perplexity: Decider V1.2",
+      "context_window": 262144,
+      "capabilities": [
+        "classify",
+        "image-input"
+      ],
+      "pricing": {
+        "input_per_mtok": 0.02,
+        "output_per_mtok": 0
+      }
     },
     {
       "provider": "openrouter",
@@ -7237,6 +7510,60 @@
     },
     {
       "provider": "openrouter",
+      "id": "respan/span-01",
+      "canonical_id": "respan/span-01",
+      "display_name": "Respan: Span-01",
+      "capabilities": [
+        "classify"
+      ],
+      "pricing": {
+        "input_per_mtok": 0.02,
+        "output_per_mtok": 0
+      }
+    },
+    {
+      "provider": "openrouter",
+      "id": "respan/span-01-lite",
+      "canonical_id": "respan/span-01-lite",
+      "display_name": "Respan: Span-01 Lite",
+      "capabilities": [
+        "classify"
+      ],
+      "pricing": {
+        "input_per_mtok": 0,
+        "output_per_mtok": 0
+      }
+    },
+    {
+      "provider": "openrouter",
+      "id": "respan/span-01-lite:free",
+      "canonical_id": "respan/span-01-lite:free",
+      "display_name": "Respan: Span-01 Lite (free)",
+      "capabilities": [
+        "classify"
+      ],
+      "pricing": {
+        "input_per_mtok": 0,
+        "output_per_mtok": 0
+      }
+    },
+    {
+      "provider": "openrouter",
+      "id": "respan/span-02",
+      "canonical_id": "respan/span-02",
+      "display_name": "Respan: Span-02",
+      "context_window": 131072,
+      "capabilities": [
+        "classify",
+        "image-input"
+      ],
+      "pricing": {
+        "input_per_mtok": 0.01,
+        "output_per_mtok": 0
+      }
+    },
+    {
+      "provider": "openrouter",
       "id": "sakana/fugu-max",
       "display_name": "Sakana: Fugu Max",
       "context_window": 1000000,
@@ -7345,6 +7672,21 @@
         "output_per_mtok": 0.85
       },
       "canonical_id": "sao10k/l3.1-euryale-70b"
+    },
+    {
+      "provider": "openrouter",
+      "id": "scaledown/classify-1",
+      "canonical_id": "scaledown/classify-1",
+      "display_name": "ScaleDown: Classify-1",
+      "context_window": 1000000,
+      "capabilities": [
+        "classify",
+        "image-input"
+      ],
+      "pricing": {
+        "input_per_mtok": 0.04,
+        "output_per_mtok": 0
+      }
     },
     {
       "provider": "openrouter",
@@ -7473,9 +7815,9 @@
       "context_window": 262144,
       "max_output_tokens": 128000,
       "pricing": {
-        "input_per_mtok": 0.13199999999999998,
-        "output_per_mtok": 0.5279999999999999,
-        "cache_read_per_mtok": 0.032999999999999995
+        "input_per_mtok": 0.0825,
+        "output_per_mtok": 0.33,
+        "cache_read_per_mtok": 0.020625
       },
       "supported_efforts": [
         "none",
@@ -7509,9 +7851,9 @@
       "context_window": 1048576,
       "max_output_tokens": 64000,
       "pricing": {
-        "input_per_mtok": 0.834,
-        "output_per_mtok": 2.501,
-        "cache_read_per_mtok": 0.041999999999999996
+        "input_per_mtok": 0.7505999999999999,
+        "output_per_mtok": 2.2509,
+        "cache_read_per_mtok": 0.0378
       },
       "supported_efforts": [
         "none",
@@ -7642,6 +7984,50 @@
     },
     {
       "provider": "openrouter",
+      "id": "togethercomputer/tev1-4b-experimental",
+      "canonical_id": "togethercomputer/tev1-4b-experimental",
+      "display_name": "Together: Tev1 4B Experimental",
+      "context_window": 32768,
+      "capabilities": [
+        "classify"
+      ],
+      "pricing": {
+        "input_per_mtok": 0.041999999999999996,
+        "output_per_mtok": 0
+      }
+    },
+    {
+      "provider": "openrouter",
+      "id": "typesafe/jev-1.13",
+      "canonical_id": "typesafe/jev-1.13",
+      "display_name": "TypeSafe: Jev 1.13",
+      "context_window": 262144,
+      "capabilities": [
+        "classify",
+        "image-input"
+      ],
+      "pricing": {
+        "input_per_mtok": 0.041999999999999996,
+        "output_per_mtok": 0
+      }
+    },
+    {
+      "provider": "openrouter",
+      "id": "typesafe/jev-1.14",
+      "canonical_id": "typesafe/jev-1.14",
+      "display_name": "TypeSafe: Jev 1.14",
+      "context_window": 262144,
+      "capabilities": [
+        "classify",
+        "image-input"
+      ],
+      "pricing": {
+        "input_per_mtok": 0.041999999999999996,
+        "output_per_mtok": 0
+      }
+    },
+    {
+      "provider": "openrouter",
       "id": "typesafe/jev-router",
       "canonical_id": "typesafe/jev-router",
       "display_name": "TypeSafe: Jev Router",
@@ -7685,6 +8071,36 @@
         "output_per_mtok": 0.65
       },
       "canonical_id": "undi95/remm-slerp-l2-13b"
+    },
+    {
+      "provider": "openrouter",
+      "id": "upstage/solar-decide",
+      "canonical_id": "upstage/solar-decide",
+      "display_name": "Upstage: Solar Decide",
+      "context_window": 524288,
+      "capabilities": [
+        "classify"
+      ],
+      "pricing": {
+        "input_per_mtok": 0.049999999999999996,
+        "output_per_mtok": 0,
+        "cache_read_per_mtok": 0.049999999999999996
+      }
+    },
+    {
+      "provider": "openrouter",
+      "id": "upstage/solar-decide-flash",
+      "canonical_id": "upstage/solar-decide-flash",
+      "display_name": "Upstage: Solar Decide Flash",
+      "context_window": 524288,
+      "capabilities": [
+        "classify"
+      ],
+      "pricing": {
+        "input_per_mtok": 0.049999999999999996,
+        "output_per_mtok": 0,
+        "cache_read_per_mtok": 0.049999999999999996
+      }
     },
     {
       "provider": "openrouter",
@@ -8182,9 +8598,9 @@
       "context_window": 1048576,
       "max_output_tokens": 943718,
       "pricing": {
-        "input_per_mtok": 0.079,
-        "output_per_mtok": 1.4,
-        "cache_read_per_mtok": 0.078
+        "input_per_mtok": 0.0908,
+        "output_per_mtok": 1.61,
+        "cache_read_per_mtok": 0.0897
       },
       "supported_efforts": [
         "low",
@@ -8198,11 +8614,11 @@
       "id": "z-ai/glm-5.3-flash",
       "display_name": "Z.ai: GLM 5.3 Flash",
       "context_window": 1048576,
-      "max_output_tokens": 943718,
+      "max_output_tokens": 943717,
       "pricing": {
-        "input_per_mtok": 0.005200000000000001,
-        "output_per_mtok": 0.1985,
-        "cache_read_per_mtok": 0.005200000000000001
+        "input_per_mtok": 0.15,
+        "output_per_mtok": 0.5,
+        "cache_read_per_mtok": 0.03
       },
       "supported_efforts": [
         "low",
@@ -8387,9 +8803,9 @@
       "context_window": 1048576,
       "max_output_tokens": 943718,
       "pricing": {
-        "input_per_mtok": 0.045,
-        "output_per_mtok": 0.6,
-        "cache_read_per_mtok": 0.006
+        "input_per_mtok": 0.02,
+        "output_per_mtok": 1,
+        "cache_read_per_mtok": 0.015
       },
       "supported_efforts": [
         "none",
@@ -8406,9 +8822,9 @@
       "context_window": 1048576,
       "max_output_tokens": 393216,
       "pricing": {
-        "input_per_mtok": 0.20592000000000002,
-        "output_per_mtok": 0.61776,
-        "cache_read_per_mtok": 0.006552
+        "input_per_mtok": 0.1188,
+        "output_per_mtok": 8,
+        "cache_read_per_mtok": 0.12
       },
       "supported_efforts": [
         "none",
@@ -8423,11 +8839,11 @@
       "id": "~deepseek/deepseek-v4-flash-latest",
       "display_name": "DeepSeek: DeepSeek V4 Flash Latest",
       "context_window": 1048576,
-      "max_output_tokens": 131072,
+      "max_output_tokens": 943718,
       "pricing": {
-        "input_per_mtok": 0.047080000000000004,
-        "output_per_mtok": 0.14124,
-        "cache_read_per_mtok": 0.001498
+        "input_per_mtok": 0.0422,
+        "output_per_mtok": 0.1763,
+        "cache_read_per_mtok": 0.027
       },
       "supported_efforts": [
         "none",
@@ -8491,9 +8907,9 @@
       "context_window": 1048576,
       "max_output_tokens": 943718,
       "pricing": {
-        "input_per_mtok": 0.238,
-        "output_per_mtok": 16,
-        "cache_read_per_mtok": 0.228
+        "input_per_mtok": 0.19,
+        "output_per_mtok": 8.940000000000001,
+        "cache_read_per_mtok": 0.19
       },
       "supported_efforts": [
         "none",
@@ -8647,6 +9063,51 @@
     },
     {
       "provider": "openrouter",
+      "id": "~perplexity/pplx-decider-flash-latest",
+      "canonical_id": "~perplexity/pplx-decider-flash-latest",
+      "display_name": "Perplexity: Decider Flash Latest",
+      "context_window": 262144,
+      "capabilities": [
+        "classify",
+        "image-input"
+      ],
+      "pricing": {
+        "input_per_mtok": 0.01,
+        "output_per_mtok": 0
+      }
+    },
+    {
+      "provider": "openrouter",
+      "id": "~perplexity/pplx-decider-latest",
+      "canonical_id": "~perplexity/pplx-decider-latest",
+      "display_name": "Perplexity: Decider Latest",
+      "context_window": 262144,
+      "capabilities": [
+        "classify",
+        "image-input"
+      ],
+      "pricing": {
+        "input_per_mtok": 0.02,
+        "output_per_mtok": 0
+      }
+    },
+    {
+      "provider": "openrouter",
+      "id": "~typesafe/jev-latest",
+      "canonical_id": "~typesafe/jev-latest",
+      "display_name": "TypeSafe: Jev Latest",
+      "context_window": 262144,
+      "capabilities": [
+        "classify",
+        "image-input"
+      ],
+      "pricing": {
+        "input_per_mtok": 0.041999999999999996,
+        "output_per_mtok": 0
+      }
+    },
+    {
+      "provider": "openrouter",
       "id": "~unbiased/pareto-latest",
       "display_name": "Pareto Latest",
       "context_window": 1048576,
@@ -8690,11 +9151,11 @@
       "id": "~z-ai/glm-flash-latest",
       "display_name": "Z.ai: GLM Flash Latest",
       "context_window": 1048576,
-      "max_output_tokens": 943718,
+      "max_output_tokens": 131072,
       "pricing": {
-        "input_per_mtok": 0.005200000000000001,
-        "output_per_mtok": 0.1985,
-        "cache_read_per_mtok": 0.005200000000000001
+        "input_per_mtok": 0.050699999999999995,
+        "output_per_mtok": 0.07020000000000001,
+        "cache_read_per_mtok": 0.03
       },
       "supported_efforts": [
         "low",
@@ -8708,11 +9169,11 @@
       "id": "~z-ai/glm-latest",
       "display_name": "Z.ai: GLM Latest",
       "context_window": 1048576,
-      "max_output_tokens": 943718,
+      "max_output_tokens": 131072,
       "pricing": {
-        "input_per_mtok": 0.079,
-        "output_per_mtok": 1.4,
-        "cache_read_per_mtok": 0.078
+        "input_per_mtok": 0.075,
+        "output_per_mtok": 4.295000000000001,
+        "cache_read_per_mtok": 0.075
       },
       "supported_efforts": [
         "low",
@@ -8720,6 +9181,206 @@
         "max"
       ],
       "canonical_id": "~z-ai/glm-latest"
+    },
+    {
+      "provider": "typesafe",
+      "id": "jev-1.14.0",
+      "display_name": "Jev 1.14",
+      "context_window": 64000,
+      "capabilities": [
+        "classify",
+        "image-input"
+      ]
+    },
+    {
+      "provider": "typesafe",
+      "id": "jev-latest",
+      "display_name": "Jev",
+      "context_window": 64000,
+      "capabilities": [
+        "classify",
+        "image-input"
+      ]
+    },
+    {
+      "provider": "vercel-ai-gateway",
+      "id": "baseten/elephant-1",
+      "display_name": "Elephant-1",
+      "context_window": 16384,
+      "capabilities": [
+        "classify"
+      ],
+      "pricing": {
+        "input_per_mtok": 0,
+        "output_per_mtok": 0
+      }
+    },
+    {
+      "provider": "vercel-ai-gateway",
+      "id": "baseten/mammoth-1",
+      "display_name": "Mammoth-1",
+      "context_window": 16384,
+      "capabilities": [
+        "classify"
+      ],
+      "pricing": {
+        "input_per_mtok": 0,
+        "output_per_mtok": 0
+      }
+    },
+    {
+      "provider": "vercel-ai-gateway",
+      "id": "convaiinnovations/laya",
+      "display_name": "Laya",
+      "context_window": 8192,
+      "capabilities": [
+        "classify"
+      ],
+      "pricing": {
+        "input_per_mtok": 0,
+        "output_per_mtok": 0
+      }
+    },
+    {
+      "provider": "vercel-ai-gateway",
+      "id": "convaiinnovations/laya-free",
+      "display_name": "Laya (Free)",
+      "context_window": 8192,
+      "capabilities": [
+        "classify"
+      ],
+      "pricing": {
+        "input_per_mtok": 0,
+        "output_per_mtok": 0
+      }
+    },
+    {
+      "provider": "vercel-ai-gateway",
+      "id": "liquid/d1",
+      "display_name": "Liquid d1",
+      "context_window": 65536,
+      "capabilities": [
+        "classify"
+      ],
+      "pricing": {
+        "input_per_mtok": 0.02,
+        "output_per_mtok": 0
+      }
+    },
+    {
+      "provider": "vercel-ai-gateway",
+      "id": "liquid/d1-ultra",
+      "display_name": "Liquid d1 Ultra",
+      "context_window": 32768,
+      "capabilities": [
+        "classify"
+      ],
+      "pricing": {
+        "input_per_mtok": 0.041999999999999996,
+        "output_per_mtok": 0
+      }
+    },
+    {
+      "provider": "vercel-ai-gateway",
+      "id": "microsoft/microsoft-decision-1",
+      "display_name": "Decision-1",
+      "context_window": 32768,
+      "capabilities": [
+        "classify"
+      ],
+      "pricing": {
+        "input_per_mtok": 0.041999999999999996,
+        "output_per_mtok": 0
+      }
+    },
+    {
+      "provider": "vercel-ai-gateway",
+      "id": "openai/gpt-6-luna-decisions",
+      "display_name": "GPT-6 Luna Decisions",
+      "context_window": 1050000,
+      "capabilities": [
+        "classify"
+      ],
+      "pricing": {
+        "input_per_mtok": 0.09999999999999999
+      }
+    },
+    {
+      "provider": "vercel-ai-gateway",
+      "id": "perplexity/pplx-decider-flash-v1.2",
+      "display_name": "Decider Flash V1.2 4B",
+      "context_window": 262144,
+      "capabilities": [
+        "classify"
+      ],
+      "pricing": {
+        "input_per_mtok": 0.01,
+        "output_per_mtok": 0
+      }
+    },
+    {
+      "provider": "vercel-ai-gateway",
+      "id": "perplexity/pplx-decider-v1.2",
+      "display_name": "Decider V1.2 27B",
+      "context_window": 262144,
+      "capabilities": [
+        "classify"
+      ],
+      "pricing": {
+        "input_per_mtok": 0.02,
+        "output_per_mtok": 0
+      }
+    },
+    {
+      "provider": "vercel-ai-gateway",
+      "id": "scaledown/scaledown-classify-1",
+      "display_name": "Classify-1",
+      "capabilities": [
+        "classify"
+      ],
+      "pricing": {
+        "input_per_mtok": 0.049999999999999996,
+        "output_per_mtok": 0
+      }
+    },
+    {
+      "provider": "vercel-ai-gateway",
+      "id": "typesafe-ai/jev",
+      "display_name": "Jev",
+      "context_window": 32000,
+      "capabilities": [
+        "classify"
+      ],
+      "pricing": {
+        "input_per_mtok": 0.041999999999999996,
+        "output_per_mtok": 0
+      }
+    },
+    {
+      "provider": "vercel-ai-gateway",
+      "id": "typesafe-ai/jev-1.13.0",
+      "display_name": "Jev 1.13.0",
+      "context_window": 32000,
+      "capabilities": [
+        "classify"
+      ],
+      "pricing": {
+        "input_per_mtok": 0.041999999999999996,
+        "output_per_mtok": 0
+      }
+    },
+    {
+      "provider": "vercel-ai-gateway",
+      "id": "typesafe-ai/jev-1.14.0",
+      "display_name": "Jev 1.14.0",
+      "context_window": 32000,
+      "capabilities": [
+        "classify"
+      ],
+      "pricing": {
+        "input_per_mtok": 0.041999999999999996,
+        "output_per_mtok": 0
+      }
     }
   ]
 }

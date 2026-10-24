@@ -11,6 +11,7 @@ import (
 	llm "github.com/pkieltyka/go-llm"
 	"github.com/pkieltyka/go-llm/providers/chatcompletions"
 	"github.com/pkieltyka/go-llm/providers/internal/providerutil"
+	"github.com/pkieltyka/go-llm/providers/internal/systemone"
 )
 
 const (
@@ -181,4 +182,47 @@ func (c config) chatcompletionsConfig() (chatcompletions.Config, error) {
 		Logger:          c.logger,
 		WireCapture:     c.wireCapture,
 	}, nil
+}
+
+// classifier builds the System One engine from the same settings as chat.
+func (c config) classifier(chat chatcompletions.Config) (*systemone.Engine, error) {
+	baseURL := c.baseURL
+	if baseURL == "" {
+		baseURL = defaultOpenRouterBaseURL
+	}
+	apiKey := chat.APIKeyFunc
+	if apiKey == nil {
+		key := chat.APIKey
+		apiKey = func(context.Context) (string, error) {
+			if key == "" {
+				return "", fmt.Errorf("%w: missing OpenRouter API key; set WithAPIKey or %s", llm.ErrAuth, apiKeyEnv)
+			}
+			return key, nil
+		}
+	}
+	headers := http.Header{}
+	if c.httpReferer != "" {
+		headers.Set("HTTP-Referer", c.httpReferer)
+	}
+	if c.xTitle != "" {
+		headers.Set("X-Title", c.xTitle)
+	}
+	maxRetries := 2
+	if c.maxRetries != nil {
+		maxRetries = *c.maxRetries
+	}
+	return systemone.New(systemone.Config{
+		Provider:        providerName,
+		BaseURL:         baseURL,
+		APIKey:          apiKey,
+		Headers:         headers,
+		ImageForm:       func(string) systemone.ImageForm { return systemone.ImageStateURLs },
+		HTTPClient:      c.httpClient,
+		MaxRetries:      maxRetries,
+		ResponseRetries: c.responseRetries,
+		Timeout:         c.timeout,
+		PriceTable:      c.priceTable,
+		Logger:          c.logger,
+		WireCapture:     c.wireCapture,
+	})
 }

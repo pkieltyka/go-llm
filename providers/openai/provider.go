@@ -32,6 +32,7 @@ var capabilities = []llm.Capability{
 	llm.CapabilityModelsListing,
 	llm.CapabilityPositionalInstructions,
 	llm.CapabilityPositionalTools,
+	llm.CapabilityClassify,
 }
 
 // Name returns the provider identifier.

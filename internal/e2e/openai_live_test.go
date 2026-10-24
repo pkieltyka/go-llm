@@ -22,6 +22,8 @@ const (
 	// openAIPositionalModel takes system messages and tool changes in place
 	// with an API key; the Sign in with ChatGPT default already does.
 	openAIPositionalModel = "gpt-5.4-mini"
+	// openAIClassifierModel is the Decisions API model (API keys only).
+	openAIClassifierModel = "gpt-6-luna"
 	openAIReasoningPrompt = "A store has three boxes. One is labeled apples, one oranges, and one mixed, " +
 		"but every label is wrong. You may inspect one fruit from one box. Determine the correct labels, then answer with only: solved."
 )
@@ -101,6 +103,12 @@ func openAILiveScenarioRunners(baseURL string, signIn bool) map[string]ScenarioR
 	runners["prompt_cache"] = liveImplicitPromptCacheScenario
 	runners["error_mapping"] = func(ctx context.Context, t *testing.T, p llm.Provider, model string) {
 		liveOpenAIErrorMappingScenario(ctx, t, p, model, baseURL)
+	}
+	runners["classify"] = liveClassifyScenario(openAIClassifierModel)
+	if signIn {
+		runners["classify"] = func(_ context.Context, t *testing.T, _ llm.Provider, _ string) {
+			t.Skip("OpenAI's Decisions API takes API keys only; the configured credential is Sign in with ChatGPT (refusal covered offline)")
+		}
 	}
 	return runners
 }

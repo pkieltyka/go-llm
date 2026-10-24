@@ -35,9 +35,14 @@ type loginProvider struct {
 	name       string
 	oauthLabel string // "" when the provider has no OAuth sign-in
 	keyName    string
+	// envName and envLabel ask for one more value after the key, stored in
+	// the entry's env as pi stores it (Cloudflare's account ID).
+	envName  string
+	envLabel string
 }
 
-// loginProviders lists the providers in display order. Anthropic has no
+// loginProviders lists the providers in display order: the chat
+// providers, then the classifier-only ones (FS §13C). Anthropic has no
 // OAuth sign-in here: its subscription credentials are limited to its own
 // apps.
 var loginProviders = []loginProvider{
@@ -46,6 +51,11 @@ var loginProviders = []loginProvider{
 	{id: "openrouter", name: "OpenRouter", keyName: "OpenRouter API key"},
 	{id: "vllm", name: "vLLM", keyName: "vLLM API key"},
 	{id: "chatcompletions", name: "Chat Completions", keyName: "API key"},
+	{id: "typesafe", name: "TypeSafe", keyName: "TypeSafe API key"},
+	{id: "cloudflare-workers-ai", name: "Cloudflare Workers AI", keyName: "Cloudflare API key", envName: "CLOUDFLARE_ACCOUNT_ID", envLabel: "Cloudflare account ID"},
+	{id: "vercel-ai-gateway", name: "Vercel AI Gateway", keyName: "Vercel AI Gateway API key"},
+	{id: "opencode", name: "OpenCode Zen", keyName: "OpenCode API key"},
+	{id: "systemone", name: "System One server", keyName: "API key"},
 }
 
 func findLoginProvider(id string) (loginProvider, bool) {
@@ -239,10 +249,15 @@ func (a app) signInWithChatGPT(ctx context.Context, cfg loginConfig) (llm.AuthCr
 
 // readAPIKey asks for the provider's API key: a hidden prompt on a
 // terminal, else the first line of stdin. The value is stored as entered,
-// so a pi reference such as "$OPENAI_API_KEY" stays a reference.
+// so a pi reference such as "$OPENAI_API_KEY" stays a reference. A
+// provider with an env value (Cloudflare's account ID) asks for it next, at
+// a visible prompt or as the second line of stdin, as pi's login does.
 func (a app) readAPIKey(ctx context.Context, provider loginProvider) (llm.AuthCredential, error) {
 	var key string
-	if file, ok := a.stdin.(*os.File); ok && term.IsTerminal(int(file.Fd())) {
+	var lines *bufio.Reader
+	file, ok := a.stdin.(*os.File)
+	terminal := ok && term.IsTerminal(int(file.Fd()))
+	if terminal {
 		if err := a.status("Enter %s: ", provider.keyName); err != nil {
 			return llm.AuthCredential{}, err
 		}
@@ -253,8 +268,9 @@ func (a app) readAPIKey(ctx context.Context, provider loginProvider) (llm.AuthCr
 		}
 		key = secret
 	} else if a.stdin != nil {
-		line, err := bufio.NewReader(a.stdin).ReadString('\n')
-		if err != nil && !errors.Is(err, io.EOF) {
+		lines = bufio.NewReader(a.stdin)
+		line, err := readLine(ctx, lines)
+		if err != nil {
 			return llm.AuthCredential{}, fmt.Errorf("read %s: %w", provider.keyName, err)
 		}
 		key = line
@@ -263,7 +279,57 @@ func (a app) readAPIKey(ctx context.Context, provider loginProvider) (llm.AuthCr
 	if key == "" {
 		return llm.AuthCredential{}, fmt.Errorf("%w: no %s entered", llm.ErrBadRequest, provider.keyName)
 	}
-	return llm.AuthCredential{Type: authAPIKey, Key: key}, nil
+	credential := llm.AuthCredential{Type: authAPIKey, Key: key}
+	if provider.envName == "" {
+		return credential, nil
+	}
+	var value string
+	switch {
+	case terminal:
+		if err := a.status("Enter %s: ", provider.envLabel); err != nil {
+			return llm.AuthCredential{}, err
+		}
+		line, err := readLine(ctx, bufio.NewReader(file))
+		if err != nil {
+			return llm.AuthCredential{}, fmt.Errorf("read %s: %w", provider.envLabel, err)
+		}
+		value = line
+	case lines != nil:
+		line, err := readLine(ctx, lines)
+		if err != nil {
+			return llm.AuthCredential{}, fmt.Errorf("read %s: %w", provider.envLabel, err)
+		}
+		value = line
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return llm.AuthCredential{}, fmt.Errorf("%w: no %s entered (pipe it as the second line after the key)", llm.ErrBadRequest, provider.envLabel)
+	}
+	credential.Env = map[string]string{provider.envName: value}
+	return credential, nil
+}
+
+// readLine reads one line, ending at EOF too, and gives up when ctx is
+// canceled.
+func readLine(ctx context.Context, r *bufio.Reader) (string, error) {
+	type result struct {
+		line string
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		line, err := r.ReadString('\n')
+		if errors.Is(err, io.EOF) {
+			err = nil
+		}
+		done <- result{line, err}
+	}()
+	select {
+	case res := <-done:
+		return res.line, res.err
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
 }
 
 // readHidden reads a line without echo. ReadPassword blocks in read(2)
@@ -374,15 +440,22 @@ func authStatus(provider loginProvider, auth llm.AuthFile) string {
 			return "✗ subscription stored, which " + provider.name + " does not accept here; run 'llm-cli login " + provider.id + "'"
 		case cred.Type == authOAuth:
 			return "✓ subscription configured"
+		case cred.Key != "" && provider.envName != "" && cred.Env[provider.envName] == "" && !envValueSet(provider.envName):
+			return "✗ API key stored without " + provider.envLabel + "; run 'llm-cli login " + provider.id + "' or set " + provider.envName
 		case strings.HasPrefix(cred.Key, "!"):
 			return "✓ API key configured (command)"
 		case strings.Contains(cred.Key, "$"):
 			return "✓ API key configured (reference)"
+		case cred.Key != "" && provider.envName != "" && cred.Env[provider.envName] == "":
+			return "✓ API key configured (" + provider.envName + " from the environment)"
 		case cred.Key != "":
 			return "✓ API key configured"
 		}
 	}
 	if name := providerEnvKey(provider.id); name != "" {
+		if provider.envName != "" && !envValueSet(provider.envName) {
+			return "✗ env: " + name + " without " + provider.envName
+		}
 		return "✓ env: " + name
 	}
 	return "• not configured"
@@ -418,9 +491,13 @@ func withLoginHint(providerID, apiKey string, err error) error {
 // providerEnvName is each provider's API key environment variable; the
 // self-hosted providers never read the environment.
 var providerEnvName = map[string]string{
-	"openai":     "OPENAI_API_KEY",
-	"anthropic":  "ANTHROPIC_API_KEY",
-	"openrouter": "OPENROUTER_API_KEY",
+	"openai":                "OPENAI_API_KEY",
+	"anthropic":             "ANTHROPIC_API_KEY",
+	"openrouter":            "OPENROUTER_API_KEY",
+	"typesafe":              "TYPESAFE_API_KEY",
+	"cloudflare-workers-ai": "CLOUDFLARE_API_KEY and CLOUDFLARE_ACCOUNT_ID",
+	"vercel-ai-gateway":     "AI_GATEWAY_API_KEY",
+	"opencode":              "OPENCODE_API_KEY",
 }
 
 // providerEnvKey names the provider's API key environment variable when it
@@ -434,11 +511,30 @@ func providerEnvKey(providerID string) string {
 		name, value = "ANTHROPIC_API_KEY", os.Getenv("ANTHROPIC_API_KEY")
 	case "openrouter":
 		name, value = "OPENROUTER_API_KEY", os.Getenv("OPENROUTER_API_KEY")
+	case "typesafe":
+		name, value = "TYPESAFE_API_KEY", os.Getenv("TYPESAFE_API_KEY")
+	case "cloudflare-workers-ai":
+		name, value = "CLOUDFLARE_API_KEY", os.Getenv("CLOUDFLARE_API_KEY")
+	case "vercel-ai-gateway":
+		name, value = "AI_GATEWAY_API_KEY", os.Getenv("AI_GATEWAY_API_KEY")
+	case "opencode":
+		name, value = "OPENCODE_API_KEY", os.Getenv("OPENCODE_API_KEY")
 	}
 	if value == "" {
 		return ""
 	}
 	return name
+}
+
+// envValueSet reports whether a provider's extra environment value (named
+// by loginProvider.envName) is set; each name is read explicitly so the
+// credential-variable scan sees it.
+func envValueSet(name string) bool {
+	switch name {
+	case "CLOUDFLARE_ACCOUNT_ID":
+		return os.Getenv("CLOUDFLARE_ACCOUNT_ID") != ""
+	}
+	return false
 }
 
 func (a app) status(format string, args ...any) error {

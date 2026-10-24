@@ -1,0 +1,4 @@
+{
+  "typesafe/jev-latest":{"type":"decision","name":"Jev","limit":{"context":64000,"output":0},"modalities":{"input":["text","image"],"output":["text"]}},
+  "liquid/d1":{"type":"decision","name":"Liquid d1","limit":{"context":65536,"output":0},"modalities":{"input":["text","image"],"output":["text"]}}
+}

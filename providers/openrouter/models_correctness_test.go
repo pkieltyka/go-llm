@@ -280,13 +280,14 @@ func TestOpenRouterModelDiscoveryHasNoHiddenFetchOrRequestGating(t *testing.T) {
 	if err != nil || len(models) != 1 || !models[0].ReasoningRequired {
 		t.Fatalf("Models = %+v, %v", models, err)
 	}
-	if counts["models"] != 1 {
-		t.Fatalf("explicit Models requests = %d, want 1", counts["models"])
+	// One explicit Models call lists the chat and the decisions catalogs.
+	if counts["models"] != 2 {
+		t.Fatalf("explicit Models requests = %d, want 2", counts["models"])
 	}
 	if _, err := p.Chat(context.Background(), req); err != nil {
 		t.Fatalf("post-discovery EffortNone Chat returned error: %v", err)
 	}
-	if counts["models"] != 1 || counts["chat"] != 3 {
+	if counts["models"] != 2 || counts["chat"] != 3 {
 		t.Fatalf("post-discovery requests = %+v", counts)
 	}
 	for i, body := range chatBodies {
