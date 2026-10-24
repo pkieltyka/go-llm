@@ -1307,9 +1307,11 @@ snapshot suitable for feeding any metrics system. OpenTelemetry and
 metrics-backend *integrations* are deliberately not in core — the
 tracker, middleware seam, and wire capture are their raw material.
 
-**OpenTelemetry integration (`contrib/otelllm`).** This is a separate
-nested module, `github.com/pkieltyka/go-llm/contrib/otelllm`, with its own
-`go.mod`, so the root module never requires OpenTelemetry.
+**OpenTelemetry integration (`otelllm`).** The package
+`github.com/pkieltyka/go-llm/otelllm` is an ordinary package of the root
+module, like the provider packages: the OpenTelemetry API is required in
+`go.mod` but compiled and downloaded only by programs that import
+`otelllm`, so the core `llm` package stays standard-library only.
 `otelllm.Middleware(opts...)` is `llm.Wrap` middleware that uses the global
 providers by default, or `WithTracerProvider` and `WithMeterProvider`. Place
 it outermost.
@@ -1412,6 +1414,17 @@ go-llm mirrors pi's authentication model (pi v1.4, `packages/ai/src/auth`).
       preserved. A credential type change drops the old type's fields but
       keeps `model`/`base_url`.
     - Errors never quote file content.
+    - `Read` applies pi's `api_key` indirection (resolve-config-value.ts)
+      to the returned key only: `$NAME` and `${NAME}` interpolate
+      environment variables, first from the entry's `env` map, then the
+      process (an empty value is unset; `$$` and `$!` are literal `$` and
+      `!`; any other `$` is literal). A reference to an unset variable is
+      `ErrAuth` naming the variables. A key starting with `!` is a shell
+      command (`sh -c`, `cmd /C` on Windows; 10 s bound; trimmed stdout;
+      successful results cached per `File`) and runs only with
+      `NewFile(path, WithKeyCommands())`; otherwise it is `ErrAuth`.
+      `Modify` and the file keep the raw value, so a resolved secret is
+      never written back. OAuth fields are never resolved.
 - **Provider resolution** (`WithCredentials(store)` on `openai`,
   `anthropic`, and `openrouter`) runs on every request:
   - A stored credential owns the provider: a stored credential of a type

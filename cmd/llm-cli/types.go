@@ -9,22 +9,25 @@ import (
 )
 
 type app struct {
-	stdin           io.Reader
-	stdout          io.Writer
-	stderr          io.Writer
-	providerFactory providerFactory
+	stdin            io.Reader
+	stdout           io.Writer
+	stderr           io.Writer
+	providerFactory  providerFactory
+	loginFlowFactory loginFlowFactory
+	configDir        func() (string, error)
 }
 
 type providerFactory func(context.Context, providerConfig) (llm.Provider, error)
 
 type providerConfig struct {
-	name     string
-	apiKey   string
-	authFile string
-	baseURL  string
-	timeout  time.Duration
-	debug    bool
-	stderr   io.Writer
+	name             string
+	apiKey           string
+	authFile         string
+	authFileCommands bool
+	baseURL          string
+	timeout          time.Duration
+	debug            bool
+	stderr           io.Writer
 }
 
 type chatConfig struct {
@@ -53,7 +56,9 @@ type chatConfig struct {
 	timeout     time.Duration
 	version     bool
 	args        []string
-	stdinText   string
+
+	authFileCommands bool
+	stdinText        string
 }
 
 type modelsConfig struct {
@@ -65,6 +70,16 @@ type modelsConfig struct {
 	timeout    time.Duration
 	debug      bool
 	version    bool
+
+	authFileCommands bool
+}
+
+type loginConfig struct {
+	provider string
+	authFile string
+	deviceID string
+	timeout  time.Duration
+	version  bool
 }
 
 type requestBundle struct {

@@ -6,9 +6,6 @@ GO_MIN_VERSION ?= 1.26.0
 MODEL_SOURCE_DIR ?= scripts/model-sources/2026-10-23
 MODEL_ARGS ?=
 PATCH_BASE ?= HEAD
-# Nested modules with their own go.mod (integrations kept out of the root
-# module's dependency graph). Each check below also runs inside them.
-CONTRIB_MODULES ?= contrib/otelllm
 
 .DEFAULT_GOAL := build
 
@@ -20,13 +17,11 @@ CONTRIB_MODULES ?= contrib/otelllm
 
 build:
 	$(GO) build ./...
-	@for m in $(CONTRIB_MODULES); do echo "$(GO) -C $$m build ./..."; $(GO) -C $$m build ./... || exit 1; done
 	mkdir -p bin
 	$(GO) build -o bin/llm-cli ./cmd/llm-cli
 
 test:
 	$(GO) test -race -count=1 ./... $(TEST_ARGS)
-	@for m in $(CONTRIB_MODULES); do echo "$(GO) -C $$m test -race -count=1 ./..."; $(GO) -C $$m test -race -count=1 ./... $(TEST_ARGS) || exit 1; done
 
 e2e-test:
 	$(GO) test -count=1 -tags=live -v ./internal/e2e $(E2E_ARGS)
@@ -51,7 +46,6 @@ check-format:
 
 check-mod-tidy:
 	$(GO) mod tidy -diff
-	@for m in $(CONTRIB_MODULES); do echo "$(GO) -C $$m mod tidy -diff"; $(GO) -C $$m mod tidy -diff || exit 1; done
 
 check-patch:
 	git diff --check "$(PATCH_BASE)" -- .
@@ -63,11 +57,9 @@ check-build: build
 
 check-vet:
 	$(GO) vet ./...
-	@for m in $(CONTRIB_MODULES); do echo "$(GO) -C $$m vet ./..."; $(GO) -C $$m vet ./... || exit 1; done
 
 check-lint:
 	$(GO) run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run --default=none --enable=govet --enable=ineffassign --enable=unused ./...
-	@for m in $(CONTRIB_MODULES); do echo "lint $$m"; $(GO) -C $$m run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run --default=none --enable=govet --enable=ineffassign --enable=unused ./... || exit 1; done
 
 check-test: test
 
@@ -98,7 +90,6 @@ check-coverage:
 
 check-vulnerabilities:
 	$(GO) run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
-	@for m in $(CONTRIB_MODULES); do echo "govulncheck $$m"; $(GO) -C $$m run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./... || exit 1; done
 
 # go test -fuzz accepts only one package and one matching target per call.
 check-fuzz:

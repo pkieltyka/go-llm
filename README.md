@@ -70,8 +70,9 @@ where they exist and pulled in only by the provider package you import.
   `PromptTemplate`, `llm.Ptr` for optional scalar fields, middleware via
   `llm.Wrap`, and observability built in but silent by default (`slog`
   logging, `UsageTracker`, wire capture via `WithWireCapture`), plus an
-  optional, content-free OpenTelemetry middleware in the separate
-  `contrib/otelllm` module (GenAI semantic conventions). Sensitive
+  optional, content-free OpenTelemetry middleware in the `otelllm`
+  package (GenAI semantic conventions; OpenTelemetry is pulled in only when
+  you import it). Sensitive
   headers are always redacted; captured URLs and bodies remain
   application-sensitive data. Built-in failure logs use safe provider-error
   summaries and never emit provider-controlled bodies or metadata.
@@ -204,7 +205,12 @@ p, err := openai.New(openai.WithCredentials(store))
 bare or under a `"providers"` wrapper). `Modify` is the only write path: it
 holds pi's own lock on `<path>.lock` (so pi and go-llm processes exclude each
 other on a shared file), writes atomically with mode 0600, and preserves
-fields it does not own.
+fields it does not own. An `api_key` may use pi's indirection:
+`"$OPENAI_API_KEY"` or `"${VAR}"` reads an environment variable (or the
+entry's `env` map), and `"!op read op://vault/key"` runs a shell command —
+the latter only with `authstore.NewFile(path, authstore.WithKeyCommands())`,
+since it runs code named by a file. Resolution happens on read; the file
+keeps the reference.
 `authstore.NewMemory` is the in-process equivalent.
 
 OpenAI also accepts a Sign in with ChatGPT OAuth credential, which calls the
@@ -435,6 +441,12 @@ llm-cli -p openai --auth-file ~/.pi/agent/auth.json -m gpt-5.5 "review this diff
 
 llm-cli models -p openrouter          # list models (table or --json)
 
+llm-cli -p vllm --base-url http://gpu-box:8000/v1 -m Qwen/Qwen3-8B "hello"
+llm-cli -p chatcompletions --base-url http://localhost:11434/v1 -m llama3.2 "hello"
+
+llm-cli login --auth-file ~/.config/llm/auth.json   # Sign in with ChatGPT
+llm-cli -p openai --auth-file ~/.config/llm/auth.json -m gpt-5.5 "hello"
+
 llm-cli -p openai -m gpt-5.5 --save chat.json "Start a checklist"
 llm-cli -p anthropic -m claude-opus-4-8 --load chat.json --save chat.json "Continue it"
 ```
@@ -451,10 +463,24 @@ caller's `Request.Effort`.
 The last pair saves a conversation with one provider and continues it with
 another — the handoff described above, from the shell.
 
+Self-hosted servers use `-p vllm` (the vLLM preset) or `-p chatcompletions`
+(Ollama, llama.cpp, any Chat Completions server) with `--base-url` set to the
+server's `/v1` root. Their API key is optional and never read from the
+environment; with `--auth-file` it is the `api_key` entry named after the
+provider (`"vllm"` or `"chatcompletions"`), if any.
+
+`llm-cli login` runs Sign in with ChatGPT in your browser and stores the
+credential under `"openai"` in the auth file, where `--auth-file` (and pi)
+pick it up. When the browser cannot reach the machine running the CLI (over
+SSH, say), paste the final redirect URL into the terminal. The installation's
+device ID is created once in your user config directory (`--device-id`
+overrides it).
+
 `--auth-file` names a pi-compatible `auth.json` credential store used by
 every provider (API keys, or Sign in with ChatGPT OAuth for `openai`); OAuth
-refreshes are written back to it under its lock. Without it, providers read
-their usual environment variable. `--api-key` is exclusive with
+refreshes are written back to it under its lock. `$VAR` key references
+resolve as in pi; `!command` keys run only with `--auth-file-commands`.
+Without `--auth-file`, providers read their usual environment variable. `--api-key` is exclusive with
 `--auth-file`; its value is visible in process arguments and often shell
 history, so prefer the file or the environment.
 
@@ -505,8 +531,10 @@ make e2e-test
 ## Examples
 
 Every program in [`examples/`](examples/) is **dual-mode**: it runs offline
-out of the box against the scripted `llmtest` provider, and switches to the
-real API when `ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY` is set.
+out of the box (against the scripted `llmtest` provider, or an in-process
+server for `self-hosted`), and switches to the real API when its
+credentials or server are set — `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`,
+or `LLM_BASE_URL`.
 
 ```sh
 go run ./examples/chat                        # offline, scripted fallback
@@ -519,6 +547,8 @@ ANTHROPIC_API_KEY=... go run ./examples/chat  # same program, real API
 | [`stream`](examples/stream) | Streaming deltas with `llm.StreamText` |
 | [`tools`](examples/tools) | A full tool round trip: call → local execution → result → answer |
 | [`parse`](examples/parse) | `llm.Parse[T]` structured output into a Go struct |
+| [`prompt-deltas`](examples/prompt-deltas) | Changing instructions and tools mid-conversation with `SystemDeltaPart`/`ToolsDeltaPart`, and what `llm.FoldPositional` sends models without in-place support |
+| [`self-hosted`](examples/self-hosted) | vLLM or any Chat Completions server (Ollama, llama.cpp) via `LLM_BASE_URL`; offline it runs against an in-process server |
 | [`history-replay`](examples/history-replay) | Serialize a conversation and continue it on another provider (a real Anthropic→OpenRouter handoff when both keys are set) |
 | [`observability`](examples/observability) | `UsageTracker`, logging, and cost via `llm.Wrap` middleware |
 | [`provider-selection`](examples/provider-selection) | Choosing a provider at runtime: env keys, an `LLM_AUTH_FILE` credential store (including Sign in with ChatGPT), or the offline fake |

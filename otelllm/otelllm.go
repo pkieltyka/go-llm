@@ -37,7 +37,7 @@ import (
 )
 
 // ScopeName is the instrumentation scope for the tracer and meter.
-const ScopeName = "github.com/pkieltyka/go-llm/contrib/otelllm"
+const ScopeName = "github.com/pkieltyka/go-llm/otelllm"
 
 // Attribute and metric names. gen_ai.* names follow semconv v1.41.0.
 const (

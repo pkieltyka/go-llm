@@ -262,7 +262,10 @@ FS §10B and ARCH §10 keep integrations out of core.
 ## Implementation status (2026-10-22)
 
 **Part C: shipped** as `contrib/otelllm`, a nested module with its own
-`go.mod`.
+`go.mod`. *Superseded:* it was later folded into the root module as the
+ordinary package `github.com/pkieltyka/go-llm/otelllm` (OpenTelemetry is
+downloaded only by importers, like the provider SDKs); the nested-module,
+`replace` and `contrib/otelllm/vX.Y.Z` tagging notes below are historical.
 
 - **Naming source.** The OTel Go semconv packages carry the GenAI
   vocabulary only up to v1.41.0, which ships in OTel v1.47.0; v1.42 and
