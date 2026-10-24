@@ -47,7 +47,7 @@ live.
 | Provider | Model metadata source | Advisory capabilities currently populated |
 |---|---|---|
 | OpenRouter | One explicit `GET /models` call; `supported_parameters`, input modalities, and reasoning metadata | Tools, tool choice, parallel tools, JSON schema, reasoning, image input, and stop sequences when explicitly advertised. Supported/default effort and positive mandatory-reasoning claims populate separate advisory `ModelInfo` fields. |
-| Anthropic, OpenAI, vLLM, Ollama, generic Chat Completions | Their current model-list responses do not provide sufficiently precise fields for this mapping | Unknown/empty by design; no model-name inference is applied. |
+| Anthropic, OpenAI, vLLM, generic Chat Completions (including Ollama) | Their current model-list responses do not provide sufficiently precise fields for this mapping | Unknown/empty by design; no model-name inference is applied. |
 
 Returned capability slices are independently mutable. Upstream values that do
 not have a precise unified capability remain available through `ModelInfo.Raw`.

@@ -27,8 +27,8 @@ verified with Go 1.26.6 or newer. Streaming uses standard iterators (`iter`).
 | OpenAI | Wraps official `openai-go` (direct) | **Responses API** — OpenAI's recommended surface for new projects; enables reasoning continuity + content (see provider_capabilities.md). Authenticates with an API key or **Sign in with ChatGPT** OAuth (a ChatGPT subscription using the API, §17C) |
 | OpenRouter | Shared OpenAI-compatible adapter (via `openai-go`), preset base URL + auth + typed extensions | `https://openrouter.ai/api/v1` |
 | vLLM | `providers/vllm` — current-stable v0.26.0 preset over the public `chatcompletions` engine; **host-first construction** (self-hosted: `http://host:8000/v1`, key optional via `--api-key` bearer) | Live-tested. Includes fuzzy model resolution and concrete-provider `/tokenize`, `/detokenize`, and `/tokenizer_info` extensions. Full upstream research: `vllm_research.md` |
-| Ollama | `providers/ollama` — data-only preset over the public `chatcompletions` engine (`http://localhost:11434/v1` convention) | Offline conformance-tested; not in the credentialed live matrix |
-| Custom | Public `Provider` interface — anyone can implement their own; or `chatcompletions.New(baseURL, opts...)` for any OpenAI-compatible server, with quirks declared via the `Compat` struct | |
+| Chat Completions-compatible servers (including Ollama) | `chatcompletions.New(baseURL, opts...)`, with quirks declared via the `Compat` struct | For local Ollama: `http://localhost:11434/v1`, `WithName("ollama")`, and `WithCompat(Compat{StreamIncludeUsage: true})`; shared engine is offline conformance-tested |
+| Custom | Public `Provider` interface — anyone can implement their own | |
 
 Decisions:
 
@@ -48,9 +48,10 @@ Decisions:
   round-trips encrypted reasoning items. Chat Completions remains fully
   supported upstream; Chat Completions-only knobs are reachable via the raw
   client.
-- OpenRouter, vLLM, and Ollama are presets over one public
-  OpenAI-compatible, chat-completions-shaped engine. OpenRouter and vLLM add
-  typed provider options and response mappings; Ollama is a data-only preset.
+- OpenRouter and vLLM are presets over one public OpenAI Chat
+  Completions-compatible engine, adding typed provider options and response
+  mappings. Ollama and other compatible servers use `chatcompletions.New`
+  directly; `WithName` labels the provider in responses, logs, and errors.
 - **Subscription auth is in scope for OpenAI** (§17C): the `openai`
   provider accepts Sign in with ChatGPT OAuth credentials from a
   `CredentialStore`, refreshes them, and mints them through a browser PKCE
@@ -87,9 +88,9 @@ Decisions:
   debug capture — §17B
 - `llmtest` fake provider for downstream testing — §17A
 - `cmd/llm-cli` — a curl-like command-line frontend to the library — §19
-- Self-hosted / any OpenAI-compatible server: public
+- Self-hosted / OpenAI Chat Completions-compatible servers: public
   `chatcompletions.New(baseURL)` engine (key-optional, declarative
-  `Compat`) + `providers/vllm` preset + data-only `providers/ollama` — §2
+  `Compat`) + `providers/vllm` preset — §2
 
 **Out of scope (v1):**
 
@@ -246,7 +247,8 @@ OpenAI (Responses) has no `finish_reason` — the adapter maps
 `max_output_tokens` → `max_tokens`, `incomplete` + `content_filter` →
 `content_filter`, `failed` → `error`. The `OpenAI` entries in the table
 above are chat-completions vocabulary, which applies to the CC-shaped
-adapter and its OpenRouter, vLLM, and Ollama presets.
+adapter and its OpenRouter and vLLM presets, including direct connections
+to compatible servers such as Ollama.
 
 ## 6. Streaming
 
@@ -866,7 +868,7 @@ explicitly invoked; construction, chat, and streaming do not fetch catalogs.
 - vLLM: `GET /v1/models`, including `max_model_len` when the server reports
   it. `ResolveModel(ctx, preference)` chooses an exact, substring/normalized,
   or token-overlap match, then prefers a Qwen model and finally the first row.
-- Ollama and generic Chat Completions: the compatible `/models` endpoint
+- Generic Chat Completions (including Ollama): the compatible `/models` endpoint
 
 **Offline lookup & context accounting** (no network; from the embedded
 models snapshot §11):

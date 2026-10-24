@@ -221,8 +221,8 @@ var credentialEnvNames = []string{
 // OPENROUTER_API_KEY, and OPENAI_CUSTOM_HEADERS. The OpenAI SDK's environment defaults
 // additionally read OPENAI_ADMIN_KEY and OPENAI_WEBHOOK_SECRET, which the
 // adapters override rather than use. The Anthropic SDK's environment defaults
-// are disabled. Self-hosted presets (vLLM, Ollama, the generic
-// chat-completions engine) read no environment variables. The returned slice
+// are disabled. The vLLM preset and generic chat-completions engine
+// read no environment variables. The returned slice
 // is a copy.
 func CredentialEnvNames() []string {
 	return append([]string(nil), credentialEnvNames...)

@@ -13,8 +13,9 @@
 // Every provider implements the small Provider interface: Name,
 // Capabilities, Models, blocking Chat, and streaming ChatStream. Shipped
 // providers live under providers/: anthropic (API key), openai (Responses
-// API, with an API key or Sign in with ChatGPT), openrouter, vllm, ollama,
-// and the generic chatcompletions engine. Concrete providers expose advanced
+// API, with an API key or Sign in with ChatGPT), openrouter, vllm,
+// and the generic chatcompletions engine for Ollama and other OpenAI Chat
+// Completions-compatible servers. Concrete providers expose advanced
 // escape hatches, and typed extension options travel through
 // Request.ProviderOptions.
 //

@@ -160,7 +160,6 @@ with `-coverpkg` through its real facade/provider consumers.
 | `providers/openrouter` | 75% |
 | `providers/chatcompletions` | 77% |
 | `providers/vllm` | 84% |
-| `providers/ollama` | 100% |
 | `providers/internal/responsesapi` | 77% |
 | `providers/internal/provideroauth` | 71% |
 | `internal/schemajson` (owned group) | 82% |
