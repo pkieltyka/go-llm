@@ -163,8 +163,9 @@ func TestClassifyMalformedAnswersKeepUsage(t *testing.T) {
 		})
 	}
 	server, _ := serve(t, http.StatusOK, []byte(`not json`))
-	if _, err := engine(t, Config{BaseURL: server.URL}).Classify(context.Background(), threeQuestions()); !errors.Is(err, llm.ErrServer) {
-		t.Fatalf("unreadable body = %v", err)
+	var syntax *json.SyntaxError
+	if _, err := engine(t, Config{BaseURL: server.URL}).Classify(context.Background(), threeQuestions()); !errors.Is(err, llm.ErrServer) || !errors.As(err, &syntax) {
+		t.Fatalf("unreadable body = %v (the cause should stay reachable)", err)
 	}
 }
 

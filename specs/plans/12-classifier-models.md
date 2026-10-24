@@ -659,6 +659,15 @@ shared with chat (R6). The catalog generator admits an OpenRouter decision
 row only when it lists `decisions` output (R7), and its destructive-update
 checks and overrides cover TypeSafe and Vercel (R8/R9).
 
+A clean-context verification pass confirmed all nine fixed and found five
+mild follow-ups, also fixed: `ProviderError.Error()` without status or
+code no longer prints "llm/openai::"; a question Decisions answers twice
+is malformed in either order (a later answer cannot hide a refusal);
+`ResponseError` keeps its cause reachable (`errors.Join` into `Kind`, as
+`NormalizeRemoteError` does); lost `capabilities` counts as metadata loss;
+and a classifier-only provider's row must carry `classify`, so an override
+cannot invent a row whose price would never apply.
+
 ## Deferred
 
 - The System One `box` question type (image localization), found in Phase 1;

@@ -352,6 +352,7 @@ const metadataFields = [
   ["pricing.cache_write_per_mtok", (row: ModelRow) => row.pricing?.cache_write_per_mtok !== undefined],
   ["pricing.tiers", (row: ModelRow) => row.pricing?.tiers !== undefined],
   ["supported_efforts", (row: ModelRow) => row.supported_efforts !== undefined],
+  ["capabilities", (row: ModelRow) => row.capabilities !== undefined],
 ] as const;
 
 function metadataLossProblems(
@@ -872,6 +873,11 @@ function validateOutputProviders(rows: ModelRow[]): void {
       if (capability !== "classify" && capability !== "image-input") {
         throw new Error(`${key(row)} has unknown capability ${capability}`);
       }
+    }
+    // A classifier-only provider's row without "classify" would never be
+    // priced (an override for an ID no classifier catalog lists, say).
+    if ((classifierProviders as readonly string[]).includes(row.provider) && !row.capabilities?.includes("classify")) {
+      throw new Error(`${key(row)} is not in a classifier catalog`);
     }
   }
   for (const row of rows) {

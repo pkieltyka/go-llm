@@ -286,3 +286,20 @@ func TestDecisionsTimeoutCoversCredentialRead(t *testing.T) {
 		t.Fatalf("classify = %v after %v", err, time.Since(start))
 	}
 }
+
+// TestDecisionsDuplicateAnswerIsMalformed: a question answered twice is
+// malformed in either order, so a later answer cannot hide a refusal.
+func TestDecisionsDuplicateAnswerIsMalformed(t *testing.T) {
+	valid := `{"name":"approved","type":"predicate","probability":0.7}`
+	refusal := `{"name":"approved","type":"refusal"}`
+	for name, pair := range map[string]string{"valid first": valid + "," + refusal, "refusal first": refusal + "," + valid} {
+		s, _, _ := decisionsServer(t, http.StatusOK, `{"answers":[
+			{"name":"category","type":"choice","choice":"approval","confidence":0.9},
+			{"name":"satisfaction","type":"score","score":1,"confidence":0.9},`+pair+`],"usage":{"input_tokens":7}}`)
+		p, _ := New(WithAPIKey("sk-test"), WithBaseURL(s.URL+"/v1"), WithHTTPClient(s.Client()))
+		result, err := p.Classify(context.Background(), decisionsRequest())
+		if !errors.Is(err, llm.ErrServer) || !strings.Contains(err.Error(), "more than once") || result.Usage.InputTokens != 7 || len(result.Answers) != 2 {
+			t.Fatalf("%s: result %+v err %v", name, result, err)
+		}
+	}
+}

@@ -703,6 +703,11 @@ test("guards classifier-only providers against destructive updates", () => {
     models: previous.models.map(({ provider, id, capabilities }) => ({ provider, id, capabilities })),
   };
   assert.throws(() => assertNonDestructive(previous, stripped), /typesafe: lost context_window for 8\/8/);
+  const uncapable: SnapshotDocument = {
+    generated_at: "after",
+    models: previous.models.map(({ capabilities: _, ...row }) => row),
+  };
+  assert.throws(() => assertNonDestructive(previous, uncapable), /typesafe: lost capabilities for 8\/8/);
 });
 
 test("overrides can correct classifier-only provider rows", async () => {
@@ -722,4 +727,21 @@ test("overrides can correct classifier-only provider rows", async () => {
   const jev = snapshot.models.find((row) => row.provider === "typesafe" && row.id === "jev-latest");
   assert.equal(jev?.pricing?.input_per_mtok, 0.1);
   assert.deepEqual(jev?.capabilities, ["classify", "image-input"]);
+  // An override cannot invent a classifier row: its price would never apply.
+  const [modelsDev, openRouter] = [await fixture("models-dev.json"), await fixture("openrouter-models.json")];
+  const classifiers = {
+    openRouterDecisions: await fixture("openrouter-decisions.json"),
+    modelsDevDecisions: await fixture("models-dev-decisions.json"),
+    vercel: await fixture("vercel-models.json"),
+  };
+  assert.throws(
+    () =>
+      buildSnapshot(
+        modelsDev,
+        openRouter,
+        { models: [{ provider: "typesafe", id: "brand-new", pricing: { input_per_mtok: 0.2 } }] },
+        { minimums: fixtureMinimums, classifiers },
+      ),
+    /typesafe\/brand-new is not in a classifier catalog/,
+  );
 });

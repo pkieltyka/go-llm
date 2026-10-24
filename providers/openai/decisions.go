@@ -247,15 +247,20 @@ func parseDecisions(req *llm.ClassifyRequest, body []byte, table llm.PriceTable)
 		malformed = providerutil.ResponseError(providerName, fmt.Errorf("unreadable Decisions answers: %w", err))
 	}
 	// An answer whose name or type cannot be read is unidentifiable; a
-	// requested one is then reported missing.
+	// requested one is then reported missing. A name answered twice is
+	// malformed, whatever the order.
 	byName := make(map[string]json.RawMessage, len(raws))
 	types := make(map[string]string, len(raws))
+	duplicated := map[string]bool{}
 	for _, raw := range raws {
 		var head struct {
 			Name string `json:"name"`
 			Type string `json:"type"`
 		}
 		if json.Unmarshal(raw, &head) == nil {
+			if _, seen := byName[head.Name]; seen {
+				duplicated[head.Name] = true
+			}
 			byName[head.Name], types[head.Name] = raw, head.Type
 		}
 	}
@@ -264,6 +269,12 @@ func parseDecisions(req *llm.ClassifyRequest, body []byte, table llm.PriceTable)
 		raw, ok := byName[q.Name]
 		if !ok {
 			continue // CheckClassifyAnswers reports it
+		}
+		if duplicated[q.Name] {
+			if malformed == nil {
+				malformed = providerutil.ResponseError(providerName, fmt.Errorf("Decisions answered %q more than once", q.Name))
+			}
+			continue
 		}
 		if types[q.Name] == "refusal" {
 			refused = append(refused, strconv.Quote(q.Name))

@@ -1,6 +1,7 @@
 package providerutil
 
 import (
+	"errors"
 	"slices"
 	"strings"
 
@@ -32,8 +33,9 @@ func EstimateClassifierCost(table llm.PriceTable, provider, model string, usage 
 // kind ErrServer. Its Message keeps err's details, which may quote the
 // response, so callers see them while llm.SafeError keeps them out of
 // operational logs. A leading ErrServer text in err is dropped, since Kind
-// already says it.
+// already says it. Kind joins err, so its cause stays reachable with
+// errors.Is and errors.As.
 func ResponseError(provider string, err error) error {
 	message := strings.TrimPrefix(err.Error(), llm.ErrServer.Error()+": ")
-	return &llm.ProviderError{Provider: provider, Message: message, Kind: llm.ErrServer}
+	return &llm.ProviderError{Provider: provider, Message: message, Kind: errors.Join(llm.ErrServer, err)}
 }

@@ -1047,8 +1047,8 @@ Liquid d1 and others. go-llm follows pi's names (classifier, `classify`).
   probabilities and confidence within [0, 1], a declared choice (and
   probabilities only for declared values), a score within the level
   indices [0, len(Levels)-1] and, when present, one level probability per
-  level (a reported distribution of the wrong size, or with an index that
-  is not a level, is a malformed answer, not an absent one);
+  level (a nonempty distribution of the wrong size, or with a key that is
+  not a level index, is a malformed answer; an empty one is absent);
   `CheckClassifyAnswers` enforces this and drops invalid and
   unrequested answers, so `err == nil` means every requested answer is
   valid, and on an error every answer left is valid.

@@ -278,6 +278,9 @@ func (e *ProviderError) Error() string {
 	if e.Message == "" {
 		return prefix + ":" + status + code
 	}
+	if status == "" && code == "" {
+		return prefix + ": " + e.Message
+	}
 	return prefix + ":" + status + code + ": " + e.Message
 }
 

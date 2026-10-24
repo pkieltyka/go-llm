@@ -49,6 +49,10 @@ func TestProviderErrorStringSkipsCodeEqualToStatus(t *testing.T) {
 	if got, want := noStatus.Error(), "llm/zai: 1210: business error"; got != want {
 		t.Fatalf("code without status lost: got %q, want %q", got, want)
 	}
+	bare := &ProviderError{Provider: "openai", Message: "refused", Kind: ErrContentFiltered}
+	if got, want := bare.Error(), "llm/openai: refused"; got != want {
+		t.Fatalf("message only: got %q, want %q", got, want)
+	}
 }
 
 func TestProviderErrorSafeSummaryExcludesUntrustedFields(t *testing.T) {
