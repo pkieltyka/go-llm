@@ -1101,6 +1101,11 @@ Liquid d1 and others. go-llm follows pi's names (classifier, `classify`).
     instructions; the documented limits (at most 400 questions, 255
     choices, 10 score levels; pi's 128 images) are checked before I/O; a
     refusal fails as above; a 504 gateway timeout is not retried.
+- **Model constraints.** Some classifier models narrow the protocol and
+  reject other requests with a 400 (`ErrBadRequest`), which go-llm does not
+  pre-check: Respan (`respan/span-*`) takes bool questions only and a
+  `{input, output}` messages state; ScaleDown a `{text}` or document state;
+  Jev rejects small images (256x256 failed, 448x448 worked, 2026-10-24).
 - **Provider options.** `ClassifyRequest.ProviderOptions` is carried for
   providers that define classify options; none do yet. A System One
   service's image form is provider-wide (`systemone.WithImageForm`).

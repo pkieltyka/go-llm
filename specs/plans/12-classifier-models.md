@@ -605,10 +605,22 @@ All phases landed on `next`. Where the result differs from the text above:
 - An OpenAI Decisions refusal keeps the other questions' answers.
 - `AuthCredential` gained `Env` (pi's entry `env`), so it is no longer
   comparable with `==`; OAuth refresh carries `Env` over.
-- Live scenarios: `classify` on OpenRouter (Jev 1.14) and OpenAI (GPT-6
-  Luna; skipped with a Sign in with ChatGPT credential). TypeSafe,
+- Live scenarios: `classify` on OpenRouter (Jev 1.14, plus Clef Flash on a
+  red and a blue image, whose answers must follow the image) and OpenAI
+  (GPT-6 Luna; skipped with a Sign in with ChatGPT credential). TypeSafe,
   Cloudflare, Vercel and OpenCode have no credentials in `gollm-test.json`
   and are covered offline by golden requests.
+- OpenRouter sweep (2026-10-24, `llm-cli classify`, all 30 classifier
+  models it lists): every model answered a choice, score and bool question
+  about a support message, and every answer passed the checks. Two
+  families constrain the state and questions, and say so in a 400
+  (`ErrBadRequest`): ScaleDown takes a string or `{text | document,
+  document_mime_type}` state; Respan takes a string or `{input: [messages],
+  output: message}` state and bool questions only. Images, in OpenRouter's
+  form: Clef, Clef Flash, Clef Omni, GPT-6 Luna Decisions and Liquid
+  d1-ultra each told a red from a blue image; Jev 1.14 did so with
+  448x448 and larger images and rejected 256x256 and 64x64 as "Invalid
+  image dimensions".
 
 ### After the Codex plan review (`reviews/review-of-plan-12-from-codex.md`)
 

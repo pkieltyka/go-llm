@@ -3,9 +3,14 @@
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/png"
 	"strings"
 	"testing"
 
@@ -61,6 +66,44 @@ func liveClassifyScenario(model string) ScenarioRun {
 			t.Fatalf("usage = %+v", result.Usage)
 		}
 	}
+}
+
+// liveClassifyImagesScenario asks a classifier model the dominant color of
+// a solid red and a solid blue 512x512 PNG, so the answer must follow the
+// image rather than merely succeed.
+func liveClassifyImagesScenario(model string) func(context.Context, *testing.T, llm.Provider) {
+	return func(ctx context.Context, t *testing.T, p llm.Provider) {
+		t.Helper()
+		classifier := llm.NewClassifierModel(p, model)
+		question := llm.ChoiceQuestion("color", "What is the dominant color of the attached image?",
+			llm.Choice{Value: "red", Description: "Mostly red"},
+			llm.Choice{Value: "blue", Description: "Mostly blue"},
+			llm.Choice{Value: "green", Description: "Mostly green"})
+		for name, fill := range map[string]color.RGBA{"red": {R: 220, G: 20, B: 20, A: 255}, "blue": {R: 20, G: 40, B: 220, A: 255}} {
+			result, err := classifier.ClassifyRequest(ctx, &llm.ClassifyRequest{
+				State:     json.RawMessage(`{"task":"Describe the image"}`),
+				Images:    []llm.ImagePart{{Data: solidPNG(t, fill), MediaType: "image/png"}},
+				Questions: []llm.Question{question},
+			})
+			if err != nil {
+				t.Fatalf("Classify(%s, %s image): %v", model, name, err)
+			}
+			if got := result.Answers["color"]; got.Choice != name {
+				t.Fatalf("%s image classified as %+v", name, got)
+			}
+		}
+	}
+}
+
+func solidPNG(t *testing.T, fill color.RGBA) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 512, 512))
+	draw.Draw(img, img.Bounds(), &image.Uniform{C: fill}, image.Point{}, draw.Src)
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
 }
 
 func requireLiveProviderConfig(t *testing.T, provider string, cfg ProviderConfig) {
