@@ -18,7 +18,11 @@ func (a app) runChat(ctx context.Context, cfg chatConfig) error {
 	if err != nil {
 		return err
 	}
-	provider, err := a.providerFactory(ctx, providerConfigFromChat(cfg, a.stderr))
+	pcfg, err := a.withAuthFile(providerConfigFromChat(cfg, a.stderr))
+	if err != nil {
+		return err
+	}
+	provider, err := a.providerFactory(ctx, pcfg)
 	if err != nil {
 		return err
 	}

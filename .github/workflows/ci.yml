@@ -64,6 +64,5 @@ jobs:
       - name: Verify supported interval
         run: make check-go-version
 
-      # make test also runs every nested module (CONTRIB_MODULES).
       - name: Test
         run: make test

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -48,7 +49,15 @@ func TestNewProviderSelectionAndCredentials(t *testing.T) {
 		{name: "openrouter missing key", cfg: providerConfig{name: "openrouter"}, wantErr: llm.ErrAuth},
 		{name: "auth file and api key are exclusive", cfg: providerConfig{name: "openai", apiKey: "k", authFile: "auth.json"}, wantErr: llm.ErrBadRequest},
 		{name: "removed openai-codex provider", cfg: providerConfig{name: "openai-codex", apiKey: "k"}, wantErr: llm.ErrBadRequest},
-		{name: "zai deferred", cfg: providerConfig{name: "zai", apiKey: "key"}, wantErr: llm.ErrUnsupported},
+		{name: "vllm keyless", cfg: providerConfig{name: "vllm", baseURL: "http://localhost:8000/v1"}, wantName: "vllm"},
+		{name: "vllm api key", cfg: providerConfig{name: "vllm", baseURL: "http://localhost:8000/v1", apiKey: "k"}, wantName: "vllm"},
+		{name: "vllm ignores the environment", cfg: providerConfig{name: "vllm", baseURL: "http://localhost:8000/v1"}, env: map[string]string{"OPENAI_API_KEY": "env-key"}, wantName: "vllm"},
+		{name: "vllm needs a base URL", cfg: providerConfig{name: "vllm"}, wantErr: llm.ErrBadRequest},
+		{name: "vllm base URL needs a scheme", cfg: providerConfig{name: "vllm", baseURL: "gpu-box:8000/v1"}, wantErr: llm.ErrBadRequest},
+		{name: "chatcompletions base URL needs a host", cfg: providerConfig{name: "chatcompletions", baseURL: "http:///v1"}, wantErr: llm.ErrBadRequest},
+		{name: "chatcompletions keyless", cfg: providerConfig{name: "chatcompletions", baseURL: "http://localhost:11434/v1"}, wantName: "chatcompletions"},
+		{name: "chatcompletions needs a base URL", cfg: providerConfig{name: "chatcompletions"}, wantErr: llm.ErrBadRequest},
+		{name: "zai is not a provider", cfg: providerConfig{name: "zai", apiKey: "key"}, wantErr: llm.ErrBadRequest},
 		{name: "missing provider", cfg: providerConfig{}, wantErr: llm.ErrBadRequest},
 		{name: "unknown provider", cfg: providerConfig{name: "eliza"}, wantErr: llm.ErrBadRequest},
 	}
@@ -222,5 +231,95 @@ func TestShouldReadStdin(t *testing.T) {
 	_ = closed.Close()
 	if shouldReadStdin(closed) {
 		t.Fatalf("shouldReadStdin(closed file) = true, want false")
+	}
+}
+
+// TestSelfHostedAuthFileKey: with --auth-file a self-hosted server gets the
+// "api_key" entry named after the provider, no key when the entry is absent,
+// and a typed error for an entry of another kind.
+func TestSelfHostedAuthFileKey(t *testing.T) {
+	clearProviderEnv(t)
+	var gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"object":"list","data":[]}`)
+	}))
+	defer server.Close()
+	path := filepath.Join(t.TempDir(), "auth.json")
+	payload := `{
+		"vllm": {"type": "api_key", "key": "fake-vllm-key"},
+		"chatcompletions": {"type": "oauth", "access": "x", "refresh": "y"}
+	}`
+	if err := os.WriteFile(path, []byte(payload), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	models := func(name, authFile string) error {
+		gotAuth = ""
+		p, err := newProvider(context.Background(), providerConfig{name: name, authFile: authFile, baseURL: server.URL + "/v1"})
+		if err != nil {
+			return err
+		}
+		_, err = p.Models(context.Background())
+		return err
+	}
+	if err := models("vllm", path); err != nil || gotAuth != "Bearer fake-vllm-key" {
+		t.Fatalf("vllm with stored key: auth %q, err %v", gotAuth, err)
+	}
+	if err := models("chatcompletions", path); !errors.Is(err, llm.ErrAuth) {
+		t.Fatalf("chatcompletions with an oauth entry = %v, want ErrAuth", err)
+	}
+	empty := filepath.Join(t.TempDir(), "empty.json")
+	if err := os.WriteFile(empty, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := models("vllm", empty); err != nil || gotAuth != "" {
+		t.Fatalf("vllm without an entry: auth %q, err %v", gotAuth, err)
+	}
+}
+
+// TestAuthFileKeyIndirection: pi's "$VAR" keys resolve; "!command" keys run
+// only with --auth-file-commands.
+func TestAuthFileKeyIndirection(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh-specific command")
+	}
+	clearProviderEnv(t)
+	t.Setenv("CLI_TEST_VLLM_KEY", "env-indirect-key")
+	var gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"object":"list","data":[]}`)
+	}))
+	defer server.Close()
+	write := func(key string) string {
+		path := filepath.Join(t.TempDir(), "auth.json")
+		if err := os.WriteFile(path, []byte(`{"vllm":{"type":"api_key","key":`+strconv.Quote(key)+`}}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	models := func(path string, commands bool) error {
+		gotAuth = ""
+		p, err := newProvider(context.Background(), providerConfig{name: "vllm", authFile: path, authFileCommands: commands, baseURL: server.URL + "/v1"})
+		if err != nil {
+			return err
+		}
+		_, err = p.Models(context.Background())
+		return err
+	}
+	if err := models(write("$CLI_TEST_VLLM_KEY"), false); err != nil || gotAuth != "Bearer env-indirect-key" {
+		t.Fatalf("env key: auth %q, err %v", gotAuth, err)
+	}
+	command := write("!printf command-key")
+	if err := models(command, false); !errors.Is(err, llm.ErrAuth) {
+		t.Fatalf("command key without the flag = %v, want ErrAuth", err)
+	}
+	if err := models(command, true); err != nil || gotAuth != "Bearer command-key" {
+		t.Fatalf("command key with the flag: auth %q, err %v", gotAuth, err)
+	}
+	if _, err := newProvider(context.Background(), providerConfig{name: "vllm", baseURL: server.URL, authFileCommands: true}); !errors.Is(err, llm.ErrBadRequest) {
+		t.Fatalf("--auth-file-commands without --auth-file = %v", err)
 	}
 }

@@ -12,7 +12,11 @@ import (
 )
 
 func (a app) runModels(ctx context.Context, cfg modelsConfig) error {
-	provider, err := a.providerFactory(ctx, providerConfigFromModels(cfg, a.stderr))
+	pcfg, err := a.withAuthFile(providerConfigFromModels(cfg, a.stderr))
+	if err != nil {
+		return err
+	}
+	provider, err := a.providerFactory(ctx, pcfg)
 	if err != nil {
 		return err
 	}

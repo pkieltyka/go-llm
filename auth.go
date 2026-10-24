@@ -207,6 +207,7 @@ var credentialEnvNames = []string{
 	"OPENAI_API_KEY",        // providers/openai default API key
 	"OPENROUTER_API_KEY",    // providers/openrouter default API key
 	"OPENAI_CUSTOM_HEADERS", // OpenAI-family ambient headers; may carry auth
+	"LLM_AUTH_FILE",         // llm-cli's auth file path; locates stored credentials
 	// openai-go's DefaultClientOptions reads these in-process. The adapters
 	// override them, but they are credentials present in the process.
 	"OPENAI_ADMIN_KEY",
@@ -218,7 +219,8 @@ var credentialEnvNames = []string{
 // wrapped SDKs, in a stable order. Hosts that spawn subprocesses (for example
 // agent tool runners) use it to scrub those variables from child
 // environments. go-llm code reads ANTHROPIC_API_KEY, OPENAI_API_KEY,
-// OPENROUTER_API_KEY, and OPENAI_CUSTOM_HEADERS. The OpenAI SDK's environment defaults
+// OPENROUTER_API_KEY, and OPENAI_CUSTOM_HEADERS; llm-cli also reads
+// LLM_AUTH_FILE, the path of its credential store. The OpenAI SDK's environment defaults
 // additionally read OPENAI_ADMIN_KEY and OPENAI_WEBHOOK_SECRET, which the
 // adapters override rather than use. The Anthropic SDK's environment defaults
 // are disabled. The vLLM preset and generic chat-completions engine

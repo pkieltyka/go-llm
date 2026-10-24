@@ -38,14 +38,21 @@ var configKeys = map[string]bool{"model": true, "base_url": true}
 type File struct {
 	path string
 	mu   chan struct{}
+	keyResolver
 }
 
 var _ llm.CredentialStore = (*File)(nil)
 
 // NewFile returns a store for the auth file at path. The file need not
 // exist until the first write.
-func NewFile(path string) *File {
-	return &File{path: path, mu: make(chan struct{}, 1)}
+func NewFile(path string, opts ...Option) *File {
+	f := &File{path: path, mu: make(chan struct{}, 1)}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(f)
+		}
+	}
+	return f
 }
 
 // Path returns the backing file path.
@@ -69,7 +76,23 @@ func (f *File) Read(ctx context.Context, providerID string) (llm.AuthCredential,
 	if err != nil {
 		return llm.AuthCredential{}, false, err
 	}
-	return doc.credential(providerID)
+	cred, ok, err := doc.credential(providerID)
+	if err != nil || !ok || cred.Type != "api_key" || cred.Key == "" {
+		return cred, ok, err
+	}
+	// pi's api_key indirection ("$VAR", "${VAR}", "!command") resolves on
+	// read only: Modify and the file keep the raw value, so a resolved
+	// secret is never written back.
+	env, err := doc.entryEnv(providerID)
+	if err != nil {
+		return llm.AuthCredential{}, false, err
+	}
+	key, err := f.resolveKey(ctx, providerID, cred.Key, env)
+	if err != nil {
+		return llm.AuthCredential{}, false, err
+	}
+	cred.Key = key
+	return cred, true, nil
 }
 
 func (f *File) loadLocked(ctx context.Context) (authDocument, error) {

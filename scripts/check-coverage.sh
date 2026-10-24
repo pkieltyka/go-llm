@@ -101,6 +101,7 @@ providers/chatcompletions 77
 providers/vllm 84
 providers/internal/responsesapi 77
 providers/internal/provideroauth 71
+otelllm 86
 "
 
 failures=0

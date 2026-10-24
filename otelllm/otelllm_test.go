@@ -10,8 +10,8 @@ import (
 	"testing"
 
 	llm "github.com/pkieltyka/go-llm"
-	"github.com/pkieltyka/go-llm/contrib/otelllm"
 	"github.com/pkieltyka/go-llm/llmtest"
+	"github.com/pkieltyka/go-llm/otelllm"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
