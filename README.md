@@ -20,7 +20,8 @@ where they exist and pulled in only by the provider package you import.
   self-hosted vLLM. First-party presets run the shared offline
   conformance suite, and credentialed presets have capability-driven live
   scenarios. `chatcompletions.New(baseURL)` covers any other
-  OpenAI-compatible server (Ollama, llama.cpp, Groq, Together, ...).
+  OpenAI Chat Completions-compatible server (Ollama, llama.cpp, Groq,
+  Together, ...).
 - **Credentials, the pi way**: a `llm.CredentialStore` (in memory, or a
   pi-compatible `auth.json` via `authstore.NewFile`) owns each provider's
   credential. Sign in with ChatGPT tokens refresh inside the store's locked
@@ -155,8 +156,7 @@ _, _ = summary, resp
 | `providers/openai` | `OPENAI_API_KEY`, `WithAPIKey`, or `WithCredentials` (API key or Sign in with ChatGPT) | Responses API — reasoning survives across tool-call turns |
 | `providers/openrouter` | `OPENROUTER_API_KEY` or `WithAPIKey` | Chat Completions; routing/plugins, explicit rich model discovery, and native per-request cost reporting |
 | `providers/vllm` | optional `WithAPIKey` (vLLM `--api-key`) | Self-hosted vLLM preset: host-first, era-aware, live-tested |
-| `providers/ollama` | none | Data-only local-Ollama preset over the engine below (community-verified) |
-| `providers/chatcompletions` | optional `WithAPIKey` | Public engine for ANY OpenAI-compatible server: `New(baseURL, ...)` + declarative `Compat` quirks |
+| `providers/chatcompletions` | optional `WithAPIKey` | Common entry point for OpenAI Chat Completions-compatible servers, including Ollama: `New(baseURL, ...)` + declarative `Compat` quirks |
 
 ```go
 anthropic.New()  // ANTHROPIC_API_KEY
@@ -296,15 +296,23 @@ fmt.Printf("prompt occupies %d of %d tokens (%.2f%%)\n",
 	usage.UsedTokens, usage.Window, usage.UsedPercent)
 ```
 
-`Detokenize` and `TokenizerInfo` round out the family. For everything else
-that speaks the Chat Completions shape, the same engine is public:
+`Detokenize` and `TokenizerInfo` round out the family. For Ollama and other
+inference servers that expose an OpenAI Chat Completions-compatible API, use
+`providers/chatcompletions` as the common entry point. `WithName` labels the
+provider in responses, logs, and error metadata. For a local Ollama server:
 
 ```go
-// Ollama's local convention, as a data-only preset:
-p, err := ollama.New("") // http://localhost:11434/v1
+p, err := chatcompletions.New("http://localhost:11434/v1",
+	chatcompletions.WithName("ollama"),
+	chatcompletions.WithCompat(chatcompletions.Compat{StreamIncludeUsage: true}),
+)
+```
 
-// Or any OpenAI-compatible endpoint, with quirks declared as data:
-p, err = chatcompletions.New("https://api.example.com/v1",
+`StreamIncludeUsage` requests usage in the final stream chunk. For another
+compatible endpoint, set its URL, optional key, and required quirks:
+
+```go
+p, err := chatcompletions.New("https://api.example.com/v1",
 	chatcompletions.WithName("example"),
 	chatcompletions.WithAPIKey(os.Getenv("EXAMPLE_API_KEY")),
 	chatcompletions.WithCompat(chatcompletions.Compat{StreamIncludeUsage: true}),

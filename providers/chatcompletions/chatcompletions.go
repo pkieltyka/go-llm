@@ -6,8 +6,12 @@
 // New connects to any such server by base URL. The API key is OPTIONAL:
 // self-hosted servers are commonly keyless, and no environment fallback is
 // consulted. Server quirks are declared as data via WithCompat; preset
-// packages (providers/openrouter, providers/vllm, providers/ollama) build on
+// packages (providers/openrouter, providers/vllm) build on
 // this engine and pre-configure the quirks for you.
+//
+// For a local Ollama server, use New("http://localhost:11434/v1",
+// WithName("ollama"), WithCompat(Compat{StreamIncludeUsage: true})). WithName
+// labels the provider in responses, logs, and error metadata.
 //
 // Before sending function tools, the engine normalizes missing or null
 // properties on object schemas to an empty object. Structurally non-object

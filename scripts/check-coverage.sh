@@ -99,7 +99,6 @@ authstore 80
 providers/openrouter 75
 providers/chatcompletions 77
 providers/vllm 84
-providers/ollama 100
 providers/internal/responsesapi 77
 providers/internal/provideroauth 71
 "

@@ -47,7 +47,6 @@ go-llm/
 │   ├── openai/                                   # wraps openai-go Responses API (direct)
 │   ├── openrouter/                               # chatcompletions + OpenRouter dialect
 │   ├── vllm/                                     # chatcompletions + vLLM dialect (self-hosted, key-optional — §3.3)
-│   ├── ollama/                                   # data-only preset over chatcompletions.New (community-verified)
 │   └── chatcompletions/                          # public shared chat-completions engine (§3.3)
 └── go.mod
 ```
@@ -856,10 +855,12 @@ Dialect specifics (surface per functional spec §14):
   target the server-root tokenizer endpoints; `Tokenize` reuses Chat request
   conversion and returns exact `Count` plus `MaxModelLen`. finish_reason
   `abort` → `StopReasonError`. A Responses-API opt-in remains future work.
-- **ollama**: data-only preset (community-verified, not live-tested):
-  `ollama.New(baseURL)` = `chatcompletions.New` + localhost:11434/v1
-  convention + name "ollama" + `StreamIncludeUsage`. No code paths of its
-  own — anything beyond the OpenAI compatibility layer is out of scope.
+- **Other compatible servers (including Ollama)** use `chatcompletions.New`
+  directly. For local Ollama, pass `http://localhost:11434/v1`,
+  `WithName("ollama")`, and `WithCompat(Compat{StreamIncludeUsage: true})`.
+  The name labels responses, logs, and error metadata; the compat flag
+  requests streaming usage. Anything beyond the OpenAI Chat Completions
+  compatibility layer is out of scope.
 
 **Decision (phase 7): streaming bypasses `openai-go` with a direct SSE
 transport.** The adapter's `ChatStream` issues the POST itself and parses
@@ -1377,7 +1378,7 @@ via `llm.StreamText` or collect for `--json`/`--no-stream`), `models.go`
 - **`llmtest` self-tests** double as the `Provider` interface conformance
   suite.
 - **Offline capability activation profiles** run next to base conformance for
-  OpenAI, Anthropic, OpenRouter, vLLM, generic Chat Completions, and Ollama.
+  OpenAI, Anthropic, OpenRouter, vLLM, and generic Chat Completions.
   Native request assertions prove tools/required choice,
   structured output, images, stop/reasoning where advertised, and explicit
   cache mappings. Fixture success is never
