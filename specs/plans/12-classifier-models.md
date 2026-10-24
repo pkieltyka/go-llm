@@ -291,7 +291,7 @@ choices...)`, `llm.ScoreQuestion(name, instructions, levels...)`,
 
   ```go
   jev := llm.NewClassifierModel(p, "typesafe/jev-1.14",
-  	llm.WithClassifierQuestions(approved, category)) // optional defaults
+      llm.WithClassifierQuestions(approved, category)) // optional defaults
 
   result, err := jev.Classify(ctx, state)            // the bound questions
   result, err = jev.Classify(ctx, state, sentiment)  // or these instead
@@ -363,7 +363,7 @@ choices...)`, `llm.ScoreQuestion(name, instructions, levels...)`,
 
   jev := llm.NewClassifierModel(p, "typesafe/jev-1.14")
   result, _ := jev.Classify(ctx, state,
-  	llm.BoolQuestion("approved", "Does the user approve?", "Approval", "No approval"))
+      llm.BoolQuestion("approved", "Does the user approve?", "Approval", "No approval"))
   ```
 
   `llm.Classify(ctx, p, req)` finds it through any `llm.Wrap` chain.
