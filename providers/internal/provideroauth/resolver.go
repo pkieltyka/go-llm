@@ -170,5 +170,8 @@ func merge(prev, next llm.AuthCredential) llm.AuthCredential {
 	if next.BaseURL == "" {
 		next.BaseURL = prev.BaseURL
 	}
+	if next.Env == nil {
+		next.Env = prev.CloneEnv()
+	}
 	return next
 }

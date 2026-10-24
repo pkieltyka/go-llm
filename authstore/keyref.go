@@ -3,7 +3,6 @@ package authstore
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -232,21 +231,4 @@ func runKeyCommand(ctx context.Context, command string) (string, error) {
 		return "", fmt.Errorf("could not start the shell: %w", err)
 	}
 	return strings.TrimSpace(stdout.String()), nil
-}
-
-// entryEnv returns the entry's pi "env" map (variable overrides for its key
-// template), or nil. Like pi's loader it rejects an env that is not a map
-// of strings, rather than silently resolving from the process instead.
-func (doc *authDocument) entryEnv(providerID string) (map[string]string, error) {
-	raw, ok := doc.providers[providerID]
-	if !ok {
-		return nil, nil
-	}
-	var entry struct {
-		Env map[string]string `json:"env"`
-	}
-	if err := json.Unmarshal(raw, &entry); err != nil {
-		return nil, fmt.Errorf("%w: auth file entry %q: env must map variable names to strings", llm.ErrAuth, providerID)
-	}
-	return entry.Env, nil
 }

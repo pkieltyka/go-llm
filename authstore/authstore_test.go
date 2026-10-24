@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -42,16 +43,16 @@ func TestStoreReadModifyDelete(t *testing.T) {
 				}
 				return want, true, nil
 			})
-			if err != nil || !ok || got != want {
+			if err != nil || !ok || !reflect.DeepEqual(got, want) {
 				t.Fatalf("Modify = %+v, %v, %v", got, ok, err)
 			}
-			if read, ok, err := store.Read(ctx, "openai"); err != nil || !ok || read != want {
+			if read, ok, err := store.Read(ctx, "openai"); err != nil || !ok || !reflect.DeepEqual(read, want) {
 				t.Fatalf("Read = %+v, %v, %v", read, ok, err)
 			}
 			unchanged, ok, err := store.Modify(ctx, "openai", func(current llm.AuthCredential, _ bool) (llm.AuthCredential, bool, error) {
 				return llm.AuthCredential{Type: "oauth", Access: "ignored"}, false, nil
 			})
-			if err != nil || !ok || unchanged != want {
+			if err != nil || !ok || !reflect.DeepEqual(unchanged, want) {
 				t.Fatalf("no-write Modify = %+v, %v, %v; want the current credential", unchanged, ok, err)
 			}
 			boom := errors.New("boom")
@@ -363,5 +364,28 @@ func TestNilContextIsBackground(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+// TestCredentialEnvRoundTrip: pi's per-entry env (Cloudflare's account ID)
+// survives a write and a read, and Memory never aliases the map.
+func TestCredentialEnvRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	cred := llm.AuthCredential{Type: "api_key", Key: "cf-key", Env: map[string]string{"CLOUDFLARE_ACCOUNT_ID": "acct-1"}}
+	file := authstore.NewFile(filepath.Join(t.TempDir(), "auth.json"))
+	if _, _, err := file.Modify(ctx, "cloudflare", func(llm.AuthCredential, bool) (llm.AuthCredential, bool, error) { return cred, true, nil }); err != nil {
+		t.Fatal(err)
+	}
+	read, ok, err := file.Read(ctx, "cloudflare")
+	if err != nil || !ok || read.Env["CLOUDFLARE_ACCOUNT_ID"] != "acct-1" {
+		t.Fatalf("file read = %v %v env %v", ok, err, read.Env)
+	}
+	memory := authstore.NewMemory(llm.AuthFile{"cloudflare": cred})
+	cred.Env["CLOUDFLARE_ACCOUNT_ID"] = "mutated"
+	got, _, _ := memory.Read(ctx, "cloudflare")
+	got.Env["CLOUDFLARE_ACCOUNT_ID"] = "mutated again"
+	again, _, _ := memory.Read(ctx, "cloudflare")
+	if again.Env["CLOUDFLARE_ACCOUNT_ID"] != "acct-1" {
+		t.Fatalf("memory env aliased: %v", again.Env)
 	}
 }

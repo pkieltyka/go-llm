@@ -7,6 +7,7 @@ import (
 	sdk "github.com/openai/openai-go/v3"
 	llm "github.com/pkieltyka/go-llm"
 	"github.com/pkieltyka/go-llm/providers/chatcompletions"
+	"github.com/pkieltyka/go-llm/providers/internal/systemone"
 )
 
 var capabilities = []llm.Capability{
@@ -24,14 +25,20 @@ var capabilities = []llm.Capability{
 	llm.CapabilitySessionAffinity,
 	llm.CapabilityCostReporting,
 	llm.CapabilityModelsListing,
+	llm.CapabilityClassify,
 	llm.Capability("openrouter/routing"),
 	llm.Capability("openrouter/plugins"),
 }
 
-// Provider wraps the shared OpenAI-compatible adapter for OpenRouter.
+// Provider wraps the shared OpenAI-compatible adapter for OpenRouter. It
+// also classifies with OpenRouter's classifier (decision) models through
+// the System One protocol (FS §13C).
 type Provider struct {
-	inner *chatcompletions.Provider
+	inner      *chatcompletions.Provider
+	classifier *systemone.Engine
 }
+
+var _ llm.Classifier = (*Provider)(nil)
 
 // New constructs an OpenRouter provider.
 func New(opts ...Option) (*Provider, error) {
@@ -50,7 +57,11 @@ func New(opts ...Option) (*Provider, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Provider{inner: inner}, nil
+	classifier, err := cfg.classifier(compatCfg)
+	if err != nil {
+		return nil, err
+	}
+	return &Provider{inner: inner, classifier: classifier}, nil
 }
 
 // Client exposes the underlying OpenAI SDK client.
@@ -77,6 +88,15 @@ func (p *Provider) Chat(ctx context.Context, req *llm.Request) (*llm.Response, e
 
 func (p *Provider) ChatStream(ctx context.Context, req *llm.Request) iter.Seq2[llm.Event, error] {
 	return p.inner.ChatStream(ctx, req)
+}
+
+// Classify answers req with an OpenRouter classifier model (for example
+// "typesafe/jev-1.14", "cloudflare/clef-flash" or
+// "openai/gpt-6-luna-decisions") over POST /api/v1/systemone, using the same
+// key, base URL and HTTP client as chat. Images go as image_url parts in the
+// state; OpenRouter reports the cost natively.
+func (p *Provider) Classify(ctx context.Context, req *llm.ClassifyRequest) (*llm.ClassifyResult, error) {
+	return p.classifier.Classify(ctx, req)
 }
 
 func (p *Provider) buildParams(req *llm.Request, stream bool) (sdk.ChatCompletionNewParams, error) {

@@ -26,6 +26,22 @@ type AuthCredential struct {
 	ClientID string
 	Model    string
 	BaseURL  string
+	// Env holds pi's per-entry "env" values: variables a key reference
+	// ("$NAME") resolves against first, and provider settings that travel
+	// with the credential, such as Cloudflare's CLOUDFLARE_ACCOUNT_ID.
+	Env map[string]string
+}
+
+// CloneEnv returns a copy of c.Env, or nil.
+func (c AuthCredential) CloneEnv() map[string]string {
+	if c.Env == nil {
+		return nil
+	}
+	out := make(map[string]string, len(c.Env))
+	for k, v := range c.Env {
+		out[k] = v
+	}
+	return out
 }
 
 // String redacts credential material from formatted output.
@@ -160,19 +176,21 @@ func ParseAuthFile(data []byte) (AuthFile, error) {
 	return providers, nil
 }
 
-// UnmarshalJSON reads pi's auth.json fields plus go-llm's "model" and
-// "base_url" provider settings. Unknown fields are ignored.
+// UnmarshalJSON reads pi's auth.json fields (including "env", which must
+// map names to strings) plus go-llm's "model" and "base_url" provider
+// settings. Unknown fields are ignored.
 func (c *AuthCredential) UnmarshalJSON(data []byte) error {
 	type credential struct {
-		Type      string      `json:"type"`
-		Key       string      `json:"key"`
-		Access    string      `json:"access"`
-		Refresh   string      `json:"refresh"`
-		Expires   json.Number `json:"expires"`
-		AccountID string      `json:"accountId"`
-		ClientID  string      `json:"clientId"`
-		Model     string      `json:"model"`
-		BaseURL   string      `json:"base_url"`
+		Type      string            `json:"type"`
+		Key       string            `json:"key"`
+		Access    string            `json:"access"`
+		Refresh   string            `json:"refresh"`
+		Expires   json.Number       `json:"expires"`
+		AccountID string            `json:"accountId"`
+		ClientID  string            `json:"clientId"`
+		Model     string            `json:"model"`
+		BaseURL   string            `json:"base_url"`
+		Env       map[string]string `json:"env"`
 	}
 	var in credential
 	if err := json.Unmarshal(data, &in); err != nil {
@@ -187,6 +205,7 @@ func (c *AuthCredential) UnmarshalJSON(data []byte) error {
 		ClientID:  in.ClientID,
 		Model:     in.Model,
 		BaseURL:   in.BaseURL,
+		Env:       in.Env,
 	}
 	if in.Expires != "" {
 		expires, err := in.Expires.Int64()
@@ -208,6 +227,11 @@ var credentialEnvNames = []string{
 	"OPENROUTER_API_KEY",    // providers/openrouter default API key
 	"OPENAI_CUSTOM_HEADERS", // OpenAI-family ambient headers; may carry auth
 	"LLM_AUTH_FILE",         // llm-cli's auth file path; locates stored credentials
+	"TYPESAFE_API_KEY",      // providers/systemone NewTypeSafe default API key
+	"AI_GATEWAY_API_KEY",    // providers/systemone NewVercelAIGateway default API key
+	"OPENCODE_API_KEY",      // providers/systemone NewOpenCode default API key
+	"CLOUDFLARE_API_KEY",    // providers/cloudflare default API token
+	"CLOUDFLARE_ACCOUNT_ID", // providers/cloudflare default account (names the account the token unlocks)
 	// openai-go's DefaultClientOptions reads these in-process. The adapters
 	// override them, but they are credentials present in the process.
 	"OPENAI_ADMIN_KEY",
@@ -219,7 +243,9 @@ var credentialEnvNames = []string{
 // wrapped SDKs, in a stable order. Hosts that spawn subprocesses (for example
 // agent tool runners) use it to scrub those variables from child
 // environments. go-llm code reads ANTHROPIC_API_KEY, OPENAI_API_KEY,
-// OPENROUTER_API_KEY, and OPENAI_CUSTOM_HEADERS; llm-cli also reads
+// OPENROUTER_API_KEY, and OPENAI_CUSTOM_HEADERS; the classifier providers
+// read TYPESAFE_API_KEY, AI_GATEWAY_API_KEY, OPENCODE_API_KEY,
+// CLOUDFLARE_API_KEY, and CLOUDFLARE_ACCOUNT_ID; llm-cli also reads
 // LLM_AUTH_FILE, the path of its credential store. The OpenAI SDK's environment defaults
 // additionally read OPENAI_ADMIN_KEY and OPENAI_WEBHOOK_SECRET, which the
 // adapters override rather than use. The Anthropic SDK's environment defaults
