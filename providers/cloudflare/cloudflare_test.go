@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -72,14 +73,20 @@ func TestEnvelopeFailures(t *testing.T) {
 	clearEnv(t)
 	for name, respond := range map[string]string{
 		"success false":  `{"success":false,"errors":[{"code":7003,"message":"No route for that URI"}]}`,
-		"run incomplete": `{"success":true,"result":{"state":"Running"}}`,
+		"run incomplete": `{"success":true,"result":{"state":"PRIVATE_RESPONSE_MARKER"}}`,
 		"unreadable":     `nope`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			s, _ := server(t, respond)
-			p, _ := cloudflare.New(cloudflare.WithAPIKey("k"), cloudflare.WithAccountID("a"), cloudflare.WithBaseURL(s.URL))
+			var logs strings.Builder
+			p, _ := cloudflare.New(cloudflare.WithAPIKey("k"), cloudflare.WithAccountID("a"), cloudflare.WithBaseURL(s.URL),
+				cloudflare.WithLogger(slog.New(slog.NewJSONHandler(&logs, nil))))
 			if _, err := p.Classify(context.Background(), request("typesafe/jev")); !errors.Is(err, llm.ErrServer) {
 				t.Fatalf("err = %v", err)
+			}
+			// Response text reaches the caller's error, never the log.
+			if !strings.Contains(logs.String(), "classify failed") || strings.Contains(logs.String(), "PRIVATE_RESPONSE_MARKER") || strings.Contains(logs.String(), "No route") {
+				t.Fatalf("log = %s", logs.String())
 			}
 		})
 	}

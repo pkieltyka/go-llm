@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -362,5 +363,72 @@ func TestServiceErrorCodesAndPreflight(t *testing.T) {
 	limit := func(*llm.ClassifyRequest) error { return fmt.Errorf("%w: too many", llm.ErrBadRequest) }
 	if _, err := engine(t, Config{BaseURL: counted.URL, Preflight: limit}).Classify(context.Background(), threeQuestions()); !errors.Is(err, llm.ErrBadRequest) || calls != 0 {
 		t.Fatalf("preflight = %v (calls %d)", err, calls)
+	}
+}
+
+// TestResponseTextStaysOutOfLogs: details quoted from the response (an
+// unknown answer type, an undeclared choice) reach the caller's error but
+// not the operational log, which keeps the safe summary.
+func TestResponseTextStaysOutOfLogs(t *testing.T) {
+	const marker = "PRIVATE_RESPONSE_MARKER"
+	for name, body := range map[string]string{
+		"answer type": `{"answers":{"approved":{"type":"` + marker + `"}},"usage":{"input_tokens":10}}`,
+		"choice":      `{"answers":{"category":{"type":"choice","choice":"` + marker + `","confidence":1}},"usage":{"input_tokens":10}}`,
+		"unreadable":  `{"answers":"` + marker + `"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server, _ := serve(t, http.StatusOK, []byte(body))
+			var logs strings.Builder
+			logger := slog.New(slog.NewJSONHandler(&logs, nil))
+			_, err := engine(t, Config{BaseURL: server.URL, Logger: logger}).Classify(context.Background(), threeQuestions())
+			if !errors.Is(err, llm.ErrServer) {
+				t.Fatalf("err = %v", err)
+			}
+			if name != "unreadable" && !strings.Contains(err.Error(), marker) {
+				t.Fatalf("the caller's error lost the details: %v", err)
+			}
+			if !strings.Contains(logs.String(), "classify failed") || strings.Contains(logs.String(), marker) {
+				t.Fatalf("log = %s", logs.String())
+			}
+		})
+	}
+}
+
+// TestMalformedLevelProbabilities: a present score distribution needs one
+// canonical key per level; a bad one drops that answer (keeping usage and
+// the others), while an absent one is still accepted.
+func TestMalformedLevelProbabilities(t *testing.T) {
+	answers := func(probabilities string) string {
+		return `{"answers":{"category":{"type":"choice","choice":"approval","confidence":1},` +
+			`"satisfaction":{"type":"score","score":1,"confidence":0.9` + probabilities + `},` +
+			`"approved":{"type":"noul","noul":0.9}},"usage":{"input_tokens":10}}`
+	}
+	for name, probabilities := range map[string]string{
+		"too few":       `,"probabilities":{"0":1}`,
+		"out of range":  `,"probabilities":{"0":0.4,"1":0.3,"3":0.3}`,
+		"non-canonical": `,"probabilities":{"0":0.4,"01":0.3,"2":0.3}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server, _ := serve(t, http.StatusOK, []byte(answers(probabilities)))
+			result, err := engine(t, Config{BaseURL: server.URL}).Classify(context.Background(), threeQuestions())
+			if !errors.Is(err, llm.ErrServer) || result == nil || result.Usage.InputTokens != 10 {
+				t.Fatalf("result %+v err %v", result, err)
+			}
+			if _, ok := result.Answers["satisfaction"]; ok || len(result.Answers) != 2 {
+				t.Fatalf("answers = %+v", result.Answers)
+			}
+		})
+	}
+	for name, probabilities := range map[string]string{"absent": ``, "empty": `,"probabilities":{}`} {
+		server, _ := serve(t, http.StatusOK, []byte(answers(probabilities)))
+		result, err := engine(t, Config{BaseURL: server.URL}).Classify(context.Background(), threeQuestions())
+		if err != nil || result.Answers["satisfaction"].LevelProbabilities != nil {
+			t.Fatalf("%s: result %+v err %v", name, result, err)
+		}
+	}
+	server, _ := serve(t, http.StatusOK, []byte(answers(`,"probabilities":{"2":0.5,"0":0.2,"1":0.3}`)))
+	result, err := engine(t, Config{BaseURL: server.URL}).Classify(context.Background(), threeQuestions())
+	if err != nil || fmt.Sprint(result.Answers["satisfaction"].LevelProbabilities) != "[0.2 0.3 0.5]" {
+		t.Fatalf("result %+v err %v", result, err)
 	}
 }

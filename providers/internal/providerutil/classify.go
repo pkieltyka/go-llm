@@ -2,6 +2,7 @@ package providerutil
 
 import (
 	"slices"
+	"strings"
 
 	llm "github.com/pkieltyka/go-llm"
 )
@@ -24,4 +25,15 @@ func EstimateClassifierCost(table llm.PriceTable, provider, model string, usage 
 		return usage
 	}
 	return llm.EstimateCost(usage, *info.Pricing)
+}
+
+// ResponseError reports a classify response that could not be used
+// (unreadable, malformed, or holding invalid answers) as a ProviderError of
+// kind ErrServer. Its Message keeps err's details, which may quote the
+// response, so callers see them while llm.SafeError keeps them out of
+// operational logs. A leading ErrServer text in err is dropped, since Kind
+// already says it.
+func ResponseError(provider string, err error) error {
+	message := strings.TrimPrefix(err.Error(), llm.ErrServer.Error()+": ")
+	return &llm.ProviderError{Provider: provider, Message: message, Kind: llm.ErrServer}
 }

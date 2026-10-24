@@ -71,6 +71,31 @@ func TestStoreReadModifyDelete(t *testing.T) {
 	}
 }
 
+// TestNoWriteModifyReturnsStoredEnv: an Env edit fn declines to write is not
+// in Modify's result, which matches the stored credential.
+func TestNoWriteModifyReturnsStoredEnv(t *testing.T) {
+	ctx := context.Background()
+	for name, newStore := range stores(t) {
+		t.Run(name, func(t *testing.T) {
+			store := newStore()
+			seed := llm.AuthCredential{Type: "api_key", Key: "k", Env: map[string]string{"SETTING": "original"}}
+			if _, _, err := store.Modify(ctx, "typesafe", func(llm.AuthCredential, bool) (llm.AuthCredential, bool, error) { return seed, true, nil }); err != nil {
+				t.Fatal(err)
+			}
+			got, _, err := store.Modify(ctx, "typesafe", func(current llm.AuthCredential, _ bool) (llm.AuthCredential, bool, error) {
+				current.Env["SETTING"] = "discarded"
+				return current, false, nil
+			})
+			if err != nil || got.Env["SETTING"] != "original" {
+				t.Fatalf("no-write Modify = %+v, %v", got, err)
+			}
+			if read, _, _ := store.Read(ctx, "typesafe"); read.Env["SETTING"] != "original" {
+				t.Fatalf("Read = %+v", read)
+			}
+		})
+	}
+}
+
 func TestStoreModifySerializesConcurrentWriters(t *testing.T) {
 	for name, newStore := range stores(t) {
 		t.Run(name, func(t *testing.T) {

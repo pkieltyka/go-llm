@@ -34,11 +34,12 @@ type wireAnswer struct {
 // ParseOutput reads a System One output ({model?, id?, answers, usage}) for
 // req. Usage is recorded before the answers are checked, so a billed
 // response with malformed answers returns the result with its usage and an
-// error wrapping ErrServer.
+// error wrapping ErrServer. Errors about the response are ProviderErrors
+// (providerutil.ResponseError), keeping response text out of logs.
 func ParseOutput(provider string, req *llm.ClassifyRequest, output json.RawMessage, table llm.PriceTable) (*llm.ClassifyResult, error) {
 	var wire wireOutput
 	if err := json.Unmarshal(output, &wire); err != nil {
-		return nil, fmt.Errorf("%w: %s returned an unreadable classify response: %v", llm.ErrServer, provider, err)
+		return nil, providerutil.ResponseError(provider, fmt.Errorf("unreadable classify response: %w", err))
 	}
 	result := &llm.ClassifyResult{Provider: provider, Model: req.Model, ID: wire.ID, Answers: map[string]llm.Answer{}}
 	if wire.Model != "" {
@@ -54,7 +55,7 @@ func ParseOutput(provider string, req *llm.ClassifyRequest, output json.RawMessa
 		answer, err := parseAnswer(q, raw)
 		if err != nil {
 			if parseErr == nil {
-				parseErr = fmt.Errorf("%w: %s answer for %q: %v", llm.ErrServer, provider, q.Name, err)
+				parseErr = providerutil.ResponseError(provider, fmt.Errorf("answer for %q: %w", q.Name, err))
 			}
 			continue
 		}
@@ -65,7 +66,7 @@ func ParseOutput(provider string, req *llm.ClassifyRequest, output json.RawMessa
 		return result, parseErr
 	}
 	if checkErr != nil {
-		return result, fmt.Errorf("%s: %w", provider, checkErr)
+		return result, providerutil.ResponseError(provider, checkErr)
 	}
 	return result, nil
 }
@@ -85,7 +86,11 @@ func parseAnswer(q llm.Question, raw json.RawMessage) (llm.Answer, error) {
 		if wire.Score == nil || wire.Confidence == nil {
 			return llm.Answer{}, fmt.Errorf("score answer lacks score or confidence")
 		}
-		return llm.Answer{Type: llm.QuestionScore, Score: *wire.Score, LevelProbabilities: levelProbabilities(wire.Probabilities, len(q.Levels)), Confidence: *wire.Confidence}, nil
+		levels, err := levelProbabilities(wire.Probabilities, len(q.Levels))
+		if err != nil {
+			return llm.Answer{}, err
+		}
+		return llm.Answer{Type: llm.QuestionScore, Score: *wire.Score, LevelProbabilities: levels, Confidence: *wire.Confidence}, nil
 	case "noul":
 		if wire.Noul == nil {
 			return llm.Answer{}, fmt.Errorf("bool answer lacks noul")
@@ -97,20 +102,24 @@ func parseAnswer(q llm.Question, raw json.RawMessage) (llm.Answer, error) {
 }
 
 // levelProbabilities turns {"0": p, "1": p, ...} into a slice by level
-// index; a missing or out-of-range index leaves it unknown (nil).
-func levelProbabilities(byIndex map[string]float64, levels int) []float64 {
-	if len(byIndex) != levels || levels == 0 {
-		return nil
+// index. An absent (or empty) distribution is unknown (nil); a present one
+// needs exactly one canonical key ("0", not "00") per level.
+func levelProbabilities(byIndex map[string]float64, levels int) ([]float64, error) {
+	if len(byIndex) == 0 {
+		return nil, nil
+	}
+	if len(byIndex) != levels {
+		return nil, fmt.Errorf("%d level probabilities for %d levels", len(byIndex), levels)
 	}
 	out := make([]float64, levels)
 	for key, p := range byIndex {
 		index, err := strconv.Atoi(key)
-		if err != nil || index < 0 || index >= levels {
-			return nil
+		if err != nil || index < 0 || index >= levels || strconv.Itoa(index) != key {
+			return nil, fmt.Errorf("level probability key %q is not a level index in [0, %d]", key, levels-1)
 		}
 		out[index] = p
 	}
-	return out
+	return out, nil
 }
 
 // usageFor maps the wire usage: tokens as reported, a native cost when the

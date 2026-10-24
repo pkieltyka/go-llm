@@ -450,7 +450,8 @@ func TestClassifySpanAndMetrics(t *testing.T) {
 	cost := 0.00002
 	fake.EnqueueClassifyResult(&llm.ClassifyResult{Provider: "openrouter", Model: "typesafe/jev-1.14", ID: "gen-1",
 		Answers: map[string]llm.Answer{"approved": {Type: llm.QuestionBool, Probability: 0.8}},
-		Usage:   llm.Usage{InputTokens: 40, TotalTokens: 40, CostUSD: &cost, CostSource: llm.CostSourceNative}})
+		Usage: llm.Usage{InputTokens: 40, CacheReadTokens: 60, CacheWriteTokens: 10, OutputTokens: 6, ReasoningTokens: 4,
+			TotalTokens: 116, CostUSD: &cost, CostSource: llm.CostSourceNative}})
 	p := llm.Wrap(fake, h.mw)
 	if _, err := llm.Classify(context.Background(), p, classifyRequest()); err != nil {
 		t.Fatal(err)
@@ -460,7 +461,9 @@ func TestClassifySpanAndMetrics(t *testing.T) {
 	if span.Name != "classify jev" || span.SpanKind != trace.SpanKindClient ||
 		attrs["gen_ai.operation.name"].AsString() != "classify" || attrs["gen_ai.request.model"].AsString() != "jev" ||
 		attrs["gen_ai.response.model"].AsString() != "typesafe/jev-1.14" || attrs["gen_ai.response.id"].AsString() != "gen-1" ||
-		attrs["gen_ai.usage.input_tokens"].AsInt64() != 40 || attrs["go_llm.request.questions"].AsInt64() != 1 ||
+		attrs["gen_ai.usage.input_tokens"].AsInt64() != 110 || attrs["gen_ai.usage.output_tokens"].AsInt64() != 6 ||
+		attrs["gen_ai.usage.cache_read.input_tokens"].AsInt64() != 60 || attrs["gen_ai.usage.cache_creation.input_tokens"].AsInt64() != 10 ||
+		attrs["gen_ai.usage.reasoning.output_tokens"].AsInt64() != 4 || attrs["go_llm.request.questions"].AsInt64() != 1 ||
 		attrs["go_llm.usage.cost_usd"].AsFloat64() != cost {
 		t.Fatalf("span %s attrs %v", span.Name, attrs)
 	}
@@ -481,14 +484,15 @@ func TestClassifyErrorKeepsBilledUsage(t *testing.T) {
 	h := newHarness(t)
 	fake := llmtest.New(llmtest.WithName("openai"))
 	fake.EnqueueClassifyError(fmt.Errorf("%w: refused", llm.ErrContentFiltered), &llm.ClassifyResult{Provider: "openai", Model: "gpt-6-luna",
-		Usage: llm.Usage{InputTokens: 9, TotalTokens: 9}})
+		Usage: llm.Usage{InputTokens: 9, CacheWriteTokens: 3, ReasoningTokens: 2, OutputTokens: 2, TotalTokens: 14}})
 	_, err := llm.Classify(context.Background(), llm.Wrap(fake, h.mw), classifyRequest())
 	if !errors.Is(err, llm.ErrContentFiltered) {
 		t.Fatalf("err = %v", err)
 	}
 	span := h.onlySpan(t)
 	attrs := attrMap(span.Attributes)
-	if span.Status.Code != codes.Error || attrs["error.type"].AsString() == "" || attrs["gen_ai.usage.input_tokens"].AsInt64() != 9 {
+	if span.Status.Code != codes.Error || attrs["error.type"].AsString() == "" || attrs["gen_ai.usage.input_tokens"].AsInt64() != 12 ||
+		attrs["gen_ai.usage.cache_creation.input_tokens"].AsInt64() != 3 || attrs["gen_ai.usage.reasoning.output_tokens"].AsInt64() != 2 {
 		t.Fatalf("status %+v attrs %v", span.Status, attrs)
 	}
 }

@@ -303,21 +303,12 @@ func (c *call) endClassify(result *llm.ClassifyResult, err error) {
 		return
 	}
 	usage := result.Usage
-	var attrs []attribute.KeyValue
-	if prompt := usage.InputTokens + usage.CacheReadTokens + usage.CacheWriteTokens; prompt > 0 || usage.OutputTokens > 0 {
-		attrs = append(attrs, attribute.Int64(attrInputTokens, prompt), attribute.Int64(attrOutputTokens, usage.OutputTokens))
-	}
-	if usage.CacheReadTokens > 0 {
-		attrs = append(attrs, attribute.Int64(attrCacheReadTokens, usage.CacheReadTokens))
-	}
+	attrs := usageAttributes(usage)
 	if result.ID != "" {
 		attrs = append(attrs, attribute.String(attrResponseID, result.ID))
 	}
 	if result.Model != "" {
 		attrs = append(attrs, attribute.String(attrResponseModel, result.Model))
-	}
-	if usage.CostUSD != nil {
-		attrs = append(attrs, attribute.Float64(attrGoLLMCostUSD, *usage.CostUSD), attribute.String(attrGoLLMCostSource, usage.CostSource))
 	}
 	c.span.SetAttributes(attrs...)
 	c.finish(result.Model, &usage, err)
@@ -416,20 +407,12 @@ func (c *call) finish(responseModel string, usage *llm.Usage, err error) {
 	c.span.End()
 }
 
-func (c *call) recordResponse(resp *llm.Response) {
-	usage := resp.Usage
+// usageAttributes are the span's token and cost attributes, shared by chat
+// and classify.
+func usageAttributes(usage llm.Usage) []attribute.KeyValue {
 	var attrs []attribute.KeyValue
 	if prompt := usage.InputTokens + usage.CacheReadTokens + usage.CacheWriteTokens; prompt > 0 || usage.OutputTokens > 0 {
 		attrs = append(attrs, attribute.Int64(attrInputTokens, prompt), attribute.Int64(attrOutputTokens, usage.OutputTokens))
-	}
-	if resp.ID != "" {
-		attrs = append(attrs, attribute.String(attrResponseID, resp.ID))
-	}
-	if resp.Model != "" {
-		attrs = append(attrs, attribute.String(attrResponseModel, resp.Model))
-	}
-	if resp.StopReason != "" {
-		attrs = append(attrs, attribute.StringSlice(attrFinishReasons, []string{string(resp.StopReason)}))
 	}
 	if usage.CacheReadTokens > 0 {
 		attrs = append(attrs, attribute.Int64(attrCacheReadTokens, usage.CacheReadTokens))
@@ -442,6 +425,20 @@ func (c *call) recordResponse(resp *llm.Response) {
 	}
 	if usage.CostUSD != nil {
 		attrs = append(attrs, attribute.Float64(attrGoLLMCostUSD, *usage.CostUSD), attribute.String(attrGoLLMCostSource, usage.CostSource))
+	}
+	return attrs
+}
+
+func (c *call) recordResponse(resp *llm.Response) {
+	attrs := usageAttributes(resp.Usage)
+	if resp.ID != "" {
+		attrs = append(attrs, attribute.String(attrResponseID, resp.ID))
+	}
+	if resp.Model != "" {
+		attrs = append(attrs, attribute.String(attrResponseModel, resp.Model))
+	}
+	if resp.StopReason != "" {
+		attrs = append(attrs, attribute.StringSlice(attrFinishReasons, []string{string(resp.StopReason)}))
 	}
 	if n := len(resp.DroppedToolCalls); n > 0 {
 		attrs = append(attrs, attribute.Int(attrGoLLMDroppedCalls, n))

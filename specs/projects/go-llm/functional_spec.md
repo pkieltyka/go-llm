@@ -1047,7 +1047,9 @@ Liquid d1 and others. go-llm follows pi's names (classifier, `classify`).
   probabilities and confidence within [0, 1], a declared choice (and
   probabilities only for declared values), a score within the level
   indices [0, len(Levels)-1] and, when present, one level probability per
-  level; `CheckClassifyAnswers` enforces this and drops invalid and
+  level (a reported distribution of the wrong size, or with an index that
+  is not a level, is a malformed answer, not an absent one);
+  `CheckClassifyAnswers` enforces this and drops invalid and
   unrequested answers, so `err == nil` means every requested answer is
   valid, and on an error every answer left is valid.
   `Usage` holds the tokens (OpenAI Decisions' cache reads and writes split
@@ -1060,7 +1062,10 @@ Liquid d1 and others. go-llm follows pi's names (classifier, `classify`).
   the valid answers, together with an error, in this precedence: a refusal
   of a requested question (OpenAI) wraps `ErrContentFiltered`; a malformed,
   missing or invalid answer wraps `ErrServer`. Unrequested answers,
-  refusals included, are ignored.
+  refusals and malformed ones included, are ignored, and each requested
+  answer is read on its own, so one malformed answer keeps the usage and
+  the others. These response errors are `ProviderError`s, so their details
+  (which may quote the response) stay out of operational logs (§16).
 - **Bound model.** `llm.NewClassifierModel(p, model, opts...)` binds a
   provider and model (and optionally default questions,
   `WithClassifierQuestions`, and `WithClassifierProviderOptions`);

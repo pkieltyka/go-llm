@@ -640,6 +640,8 @@ test("rejects classifier catalogs below their minimums", async () => {
   };
   for (const [name, broken] of [
     ["openRouterDecisions", { data: [] }],
+    // The ordinary chat listing, given by mistake: no row lists decisions output.
+    ["openRouterDecisions", await fixture("openrouter-models.json")],
     ["modelsDevDecisions", { "liquid/d1": { type: "decision" } }],
     ["vercel", { data: [{ id: "x", type: "language" }] }],
   ] as const) {
@@ -653,4 +655,71 @@ test("rejects classifier catalogs below their minimums", async () => {
       name,
     );
   }
+});
+
+test("admits OpenRouter decision rows only with decisions output", async () => {
+  const decisions = (await fixture("openrouter-decisions.json")) as { data: unknown[] };
+  decisions.data.push({
+    id: "openai/gpt-chat",
+    architecture: { input_modalities: ["text"], output_modalities: ["text"] },
+    pricing: { prompt: "0.000001", completion: "0.000002" },
+  });
+  const snapshot = buildSnapshot(
+    await fixture("models-dev.json"),
+    await fixture("openrouter-models.json"),
+    await fixture("overrides.json"),
+    {
+      minimums: fixtureMinimums,
+      classifiers: {
+        openRouterDecisions: decisions,
+        modelsDevDecisions: await fixture("models-dev-decisions.json"),
+        vercel: await fixture("vercel-models.json"),
+      },
+    },
+  );
+  const ids = snapshot.models.filter((row) => row.capabilities?.includes("classify")).map((row) => row.id);
+  assert.ok(ids.includes("typesafe/jev-1.14"));
+  assert.equal(ids.includes("openai/gpt-chat"), false, "a text-output row is not a classifier");
+});
+
+test("guards classifier-only providers against destructive updates", () => {
+  const previous: SnapshotDocument = {
+    generated_at: "before",
+    models: Array.from({ length: 8 }, (_, index) => ({
+      provider: "typesafe",
+      id: `jev-${index + 1}`,
+      context_window: 64000,
+      pricing: { input_per_mtok: 0.042 },
+      capabilities: ["classify"],
+    })),
+  };
+  const replacement: SnapshotDocument = {
+    generated_at: "after",
+    models: previous.models.map((row) => ({ ...row, id: `replacement/${row.id}` })),
+  };
+  assert.throws(() => assertNonDestructive(previous, replacement), /typesafe: all 8 previous model IDs/);
+  const stripped: SnapshotDocument = {
+    generated_at: "after",
+    models: previous.models.map(({ provider, id, capabilities }) => ({ provider, id, capabilities })),
+  };
+  assert.throws(() => assertNonDestructive(previous, stripped), /typesafe: lost context_window for 8\/8/);
+});
+
+test("overrides can correct classifier-only provider rows", async () => {
+  const snapshot = buildSnapshot(
+    await fixture("models-dev.json"),
+    await fixture("openrouter-models.json"),
+    { models: [{ provider: "typesafe", id: "jev-latest", pricing: { input_per_mtok: 0.1 } }] },
+    {
+      minimums: fixtureMinimums,
+      classifiers: {
+        openRouterDecisions: await fixture("openrouter-decisions.json"),
+        modelsDevDecisions: await fixture("models-dev-decisions.json"),
+        vercel: await fixture("vercel-models.json"),
+      },
+    },
+  );
+  const jev = snapshot.models.find((row) => row.provider === "typesafe" && row.id === "jev-latest");
+  assert.equal(jev?.pricing?.input_per_mtok, 0.1);
+  assert.deepEqual(jev?.capabilities, ["classify", "image-input"]);
 });

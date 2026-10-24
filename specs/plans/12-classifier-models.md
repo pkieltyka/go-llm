@@ -642,6 +642,23 @@ DC-14–DC-17. Not adopted: classify-specific `ProviderOptions` validation
 evidence rule suffices while no catalog source gives one model separate
 chat and classifier prices).
 
+### After the Codex PR review (`reviews/projects/pr-52-classifier/`)
+
+All nine findings were fixed, each with a regression test that fails on
+the reviewed head. Response errors (unreadable output, malformed or
+invalid answers, Cloudflare envelopes, Decisions refusals) are
+`ProviderError`s via `providerutil.ResponseError`, so `WithLogger` output
+keeps the safe summary (R1). Decisions decodes each requested answer on
+its own and ignores unrequested ones, keeping usage and valid siblings
+(R2). A reported System One level distribution must have one canonical key
+per level; otherwise the answer is malformed (R3). OpenAI's `WithTimeout`
+covers the classify credential read (R4). `Modify` passes its callback a
+private `Env`, so a declined edit is not returned (R5). Classify spans
+record cache-write and reasoning tokens through the attribute builder
+shared with chat (R6). The catalog generator admits an OpenRouter decision
+row only when it lists `decisions` output (R7), and its destructive-update
+checks and overrides cover TypeSafe and Vercel (R8/R9).
+
 ## Deferred
 
 - The System One `box` question type (image localization), found in Phase 1;

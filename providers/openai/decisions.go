@@ -64,6 +64,9 @@ func (p *Provider) classify(ctx context.Context, req *llm.ClassifyRequest) (*llm
 	if err := llm.ValidateClassifyRequest(req); err != nil {
 		return nil, err
 	}
+	// The timeout covers the credential read too, as in Chat.
+	ctx, cancel := p.contextWithTimeout(ctx)
+	defer cancel()
 	ctx, signIn, err := p.signInWithChatGPT(ctx)
 	if err != nil {
 		return nil, err
@@ -82,8 +85,6 @@ func (p *Provider) classify(ctx context.Context, req *llm.ClassifyRequest) (*llm
 	for i, q := range req.Questions {
 		questions[i] = wireDecisionQuestion(q)
 	}
-	ctx, cancel := p.contextWithTimeout(ctx)
-	defer cancel()
 	var body []byte
 	params := map[string]any{"model": req.Model, "input": input, "questions": questions}
 	if err := p.client.Post(ctx, "decisions", params, &body); err != nil {
@@ -188,10 +189,12 @@ func decisionError(err error) error {
 	return mapError(err)
 }
 
+// decisionsResponse keeps the answers raw, so one malformed answer does
+// not lose the usage or the other answers.
 type decisionsResponse struct {
-	ID      string           `json:"id"`
-	Model   string           `json:"model"`
-	Answers []decisionAnswer `json:"answers"`
+	ID      string          `json:"id"`
+	Model   string          `json:"model"`
+	Answers json.RawMessage `json:"answers"`
 	Usage   *struct {
 		InputTokens        int64 `json:"input_tokens"`
 		InputTokensDetails struct {
@@ -220,13 +223,16 @@ type decisionAnswer struct {
 }
 
 // parseDecisions maps the Decisions response. Usage is recorded before the
-// answers are checked. Precedence: a refusal of a requested question fails
-// with ErrContentFiltered, else a malformed, missing or invalid answer with
-// ErrServer; either way the valid answers stay in the result.
+// answers are read, and each requested answer is decoded on its own;
+// unrequested answers are ignored. Precedence: a refusal of a requested
+// question fails with ErrContentFiltered, else a malformed, missing or
+// invalid answer with ErrServer; either way the valid answers stay in the
+// result. Errors about the response are ProviderErrors, keeping response
+// text out of logs.
 func parseDecisions(req *llm.ClassifyRequest, body []byte, table llm.PriceTable) (*llm.ClassifyResult, error) {
 	var wire decisionsResponse
 	if err := json.Unmarshal(body, &wire); err != nil {
-		return nil, fmt.Errorf("%w: OpenAI Decisions returned an unreadable response: %v", llm.ErrServer, err)
+		return nil, providerutil.ResponseError(providerName, fmt.Errorf("unreadable Decisions response: %w", err))
 	}
 	result := &llm.ClassifyResult{Provider: providerName, Model: req.Model, ID: wire.ID, Answers: map[string]llm.Answer{}}
 	if wire.Model != "" {
@@ -235,25 +241,38 @@ func parseDecisions(req *llm.ClassifyRequest, body []byte, table llm.PriceTable)
 	if wire.Usage != nil {
 		result.Usage = providerutil.EstimateClassifierCost(table, providerName, req.Model, decisionUsage(wire))
 	}
-	byName := make(map[string]decisionAnswer, len(wire.Answers))
-	for _, answer := range wire.Answers {
-		byName[answer.Name] = answer
+	var malformed error
+	var raws []json.RawMessage
+	if err := json.Unmarshal(wire.Answers, &raws); err != nil && len(wire.Answers) > 0 {
+		malformed = providerutil.ResponseError(providerName, fmt.Errorf("unreadable Decisions answers: %w", err))
+	}
+	// An answer whose name or type cannot be read is unidentifiable; a
+	// requested one is then reported missing.
+	byName := make(map[string]json.RawMessage, len(raws))
+	types := make(map[string]string, len(raws))
+	for _, raw := range raws {
+		var head struct {
+			Name string `json:"name"`
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(raw, &head) == nil {
+			byName[head.Name], types[head.Name] = raw, head.Type
+		}
 	}
 	var refused []string
-	var malformed error
 	for _, q := range req.Questions {
-		answer, ok := byName[q.Name]
+		raw, ok := byName[q.Name]
 		if !ok {
 			continue // CheckClassifyAnswers reports it
 		}
-		if answer.Type == "refusal" {
+		if types[q.Name] == "refusal" {
 			refused = append(refused, strconv.Quote(q.Name))
 			continue
 		}
-		mapped, err := mapDecisionAnswer(answer)
+		mapped, err := mapDecisionAnswer(raw)
 		if err != nil {
 			if malformed == nil {
-				malformed = fmt.Errorf("%w: OpenAI Decisions answer for %q: %v", llm.ErrServer, q.Name, err)
+				malformed = providerutil.ResponseError(providerName, fmt.Errorf("Decisions answer for %q: %w", q.Name, err))
 			}
 			continue
 		}
@@ -262,11 +281,11 @@ func parseDecisions(req *llm.ClassifyRequest, body []byte, table llm.PriceTable)
 	checkErr := llm.CheckClassifyAnswers(req, result.Answers)
 	switch {
 	case len(refused) > 0:
-		return result, fmt.Errorf("%w: OpenAI Decisions refused to answer %s", llm.ErrContentFiltered, strings.Join(refused, ", "))
+		return result, &llm.ProviderError{Provider: providerName, Message: "OpenAI Decisions refused to answer " + strings.Join(refused, ", "), Kind: llm.ErrContentFiltered}
 	case malformed != nil:
 		return result, malformed
 	case checkErr != nil:
-		return result, fmt.Errorf("openai: %w", checkErr)
+		return result, providerutil.ResponseError(providerName, checkErr)
 	}
 	return result, nil
 }
@@ -298,7 +317,11 @@ func decisionUsage(wire decisionsResponse) llm.Usage {
 	return usage
 }
 
-func mapDecisionAnswer(answer decisionAnswer) (llm.Answer, error) {
+func mapDecisionAnswer(raw json.RawMessage) (llm.Answer, error) {
+	var answer decisionAnswer
+	if err := json.Unmarshal(raw, &answer); err != nil {
+		return llm.Answer{}, err
+	}
 	switch answer.Type {
 	case "choice":
 		if answer.Choice == nil || answer.Confidence == nil {

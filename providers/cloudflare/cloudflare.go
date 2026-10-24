@@ -16,6 +16,7 @@ package cloudflare
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"iter"
 	"log/slog"
@@ -26,6 +27,7 @@ import (
 	"time"
 
 	llm "github.com/pkieltyka/go-llm"
+	"github.com/pkieltyka/go-llm/providers/internal/providerutil"
 	"github.com/pkieltyka/go-llm/providers/internal/systemone"
 )
 
@@ -261,7 +263,7 @@ func output(status int, body []byte) (json.RawMessage, error) {
 		Result json.RawMessage `json:"result"`
 	}
 	if err := json.Unmarshal(body, &envelope); err != nil {
-		return nil, fmt.Errorf("%w: %s returned an unreadable response: %v", llm.ErrServer, providerName, err)
+		return nil, providerutil.ResponseError(providerName, fmt.Errorf("unreadable response: %w", err))
 	}
 	if envelope.Success != nil && !*envelope.Success {
 		var code string
@@ -290,13 +292,13 @@ func output(status int, body []byte) (json.RawMessage, error) {
 		Result  json.RawMessage `json:"result"`
 	}
 	if err := json.Unmarshal(envelope.Result, &result); err != nil {
-		return nil, fmt.Errorf("%w: %s returned an unexpected response", llm.ErrServer, providerName)
+		return nil, providerutil.ResponseError(providerName, errors.New("unexpected response"))
 	}
 	if len(result.Answers) > 0 {
 		return envelope.Result, nil // Cloudflare-hosted models answer directly
 	}
 	if result.State != "Completed" {
-		return nil, fmt.Errorf("%w: %s run did not complete (state %q)", llm.ErrServer, providerName, result.State)
+		return nil, providerutil.ResponseError(providerName, fmt.Errorf("run did not complete (state %q)", result.State))
 	}
 	return result.Result, nil
 }

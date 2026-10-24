@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -210,4 +211,78 @@ func TestDecisionsConformance(t *testing.T) {
 		}
 		return p
 	})
+}
+
+// TestDecisionsMalformedAnswerKeepsTheRest: each requested answer decodes on
+// its own, so a malformed one keeps the usage and its valid siblings, a
+// requested refusal still takes precedence, and a malformed unrequested
+// answer is ignored. Response text stays out of the operational log.
+func TestDecisionsMalformedAnswerKeepsTheRest(t *testing.T) {
+	const marker = "PRIVATE_RESPONSE_MARKER"
+	var logs strings.Builder
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	s, _, _ := decisionsServer(t, http.StatusOK, `{"answers":[
+		{"name":"category","type":"refusal"},
+		{"name":"satisfaction","type":"score","score":"bad","confidence":0.9},
+		{"name":"approved","type":"predicate","probability":0.7}],"usage":{"input_tokens":123}}`)
+	p, _ := New(WithAPIKey("sk-test"), WithBaseURL(s.URL+"/v1"), WithHTTPClient(s.Client()), WithLogger(logger))
+	result, err := p.Classify(context.Background(), decisionsRequest())
+	if !errors.Is(err, llm.ErrContentFiltered) || result == nil || result.Usage.InputTokens != 123 || result.Answers["approved"].Probability != 0.7 {
+		t.Fatalf("result %+v err %v", result, err)
+	}
+
+	s, _, _ = decisionsServer(t, http.StatusOK, `{"answers":[
+		{"name":"category","type":"choice","choice":"approval","confidence":0.9},
+		{"name":"satisfaction","type":"score","score":"`+marker+`","confidence":0.9},
+		{"name":"approved","type":"predicate","probability":0.7},
+		{"name":"extra","type":"predicate","probability":"bad"}],"usage":{"input_tokens":123}}`)
+	p, _ = New(WithAPIKey("sk-test"), WithBaseURL(s.URL+"/v1"), WithHTTPClient(s.Client()), WithLogger(logger))
+	result, err = p.Classify(context.Background(), decisionsRequest())
+	if !errors.Is(err, llm.ErrServer) || !strings.Contains(err.Error(), "satisfaction") || result == nil || result.Usage.InputTokens != 123 || len(result.Answers) != 2 {
+		t.Fatalf("result %+v err %v", result, err)
+	}
+
+	s, _, _ = decisionsServer(t, http.StatusOK, `{"answers":[
+		{"name":"category","type":"choice","choice":"`+marker+`","confidence":0.9},
+		{"name":"satisfaction","type":"score","score":1,"confidence":0.9},
+		{"name":"approved","type":"predicate","probability":0.7}]}`)
+	p, _ = New(WithAPIKey("sk-test"), WithBaseURL(s.URL+"/v1"), WithHTTPClient(s.Client()), WithLogger(logger))
+	if _, err = p.Classify(context.Background(), decisionsRequest()); !errors.Is(err, llm.ErrServer) || !strings.Contains(err.Error(), marker) {
+		t.Fatalf("undeclared choice = %v", err)
+	}
+	if strings.Count(logs.String(), "classify failed") != 3 || strings.Contains(logs.String(), marker) {
+		t.Fatalf("log = %s", logs.String())
+	}
+
+	s, _, _ = decisionsServer(t, http.StatusOK, `{"answers":[
+		{"name":"category","type":"choice","choice":"approval","confidence":0.9},
+		{"name":"satisfaction","type":"score","score":1,"confidence":0.9},
+		{"name":"approved","type":"predicate","probability":0.7},
+		{"name":"extra","type":"predicate","probability":"bad"},
+		"unreadable"]}`)
+	p, _ = New(WithAPIKey("sk-test"), WithBaseURL(s.URL+"/v1"), WithHTTPClient(s.Client()))
+	if result, err = p.Classify(context.Background(), decisionsRequest()); err != nil || len(result.Answers) != 3 {
+		t.Fatalf("unrequested malformed answers: result %+v err %v", result, err)
+	}
+}
+
+// blockingStore blocks every read until its context ends.
+type blockingStore struct{ llm.CredentialStore }
+
+func (blockingStore) Read(ctx context.Context, _ string) (llm.AuthCredential, bool, error) {
+	<-ctx.Done()
+	return llm.AuthCredential{}, false, ctx.Err()
+}
+
+// TestDecisionsTimeoutCoversCredentialRead: WithTimeout bounds the
+// credential read, as it does for Chat.
+func TestDecisionsTimeoutCoversCredentialRead(t *testing.T) {
+	p, err := New(WithCredentials(blockingStore{}), WithBaseURL("http://127.0.0.1:1/v1"), WithTimeout(10*time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if _, err := p.Classify(context.Background(), decisionsRequest()); !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 5*time.Second {
+		t.Fatalf("classify = %v after %v", err, time.Since(start))
+	}
 }

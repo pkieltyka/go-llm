@@ -88,7 +88,10 @@ const currentProviders = ["anthropic", "openai", "openrouter"] as const;
 const currentProviderSet = new Set<string>(currentProviders);
 // classifierProviders serve only classifier rows, from ClassifierSources.
 const classifierProviders = ["typesafe", "vercel-ai-gateway"] as const;
-const outputProviderSet = new Set<string>([...currentProviders, ...classifierProviders]);
+// outputProviders are every provider the snapshot holds rows for.
+const outputProviders = [...currentProviders, ...classifierProviders] as const;
+type OutputProvider = (typeof outputProviders)[number];
+const outputProviderSet = new Set<string>(outputProviders);
 const productionMinimums: SourceMinimums = {
   modelsDev: { anthropic: 5, openai: 10, openrouter: 50 },
   openRouter: 50,
@@ -304,7 +307,7 @@ export function assertNonDestructive(
   if (!previous) return;
 
   const problems: string[] = [];
-  for (const provider of currentProviders) {
+  for (const provider of outputProviders) {
     const before = rowsByID(previous.models, provider);
     const after = rowsByID(next.models, provider);
     if (before.size === 0) continue;
@@ -352,7 +355,7 @@ const metadataFields = [
 ] as const;
 
 function metadataLossProblems(
-  provider: Provider,
+  provider: OutputProvider,
   before: Map<string, ModelRow>,
   after: Map<string, ModelRow>,
   retained: string[],
@@ -393,7 +396,7 @@ function metadataLossProblems(
   return [];
 }
 
-function rowsByID(rows: ModelRow[], provider: Provider): Map<string, ModelRow> {
+function rowsByID(rows: ModelRow[], provider: OutputProvider): Map<string, ModelRow> {
   return new Map(rows.filter((row) => row.provider === provider).map((row) => [row.id, row]));
 }
 
@@ -519,16 +522,19 @@ function classifierCapabilities(inputModalities: unknown): string[] {
 function rowsFromOpenRouterDecisions(input: unknown, minimumRows: number): ModelRow[] {
   const source = objectValue(input, "OpenRouter decisions root");
   if (!Array.isArray(source.data)) throw new Error("OpenRouter decisions root.data must be an array");
-  if (source.data.length < minimumRows) {
-    throw new Error(`OpenRouter decisions: ${source.data.length} models, want at least ${minimumRows}`);
-  }
-  return source.data.map((value, index) => {
+  // Only a row that lists decisions output is classifier evidence: a mirror
+  // that ignores the listing's filter, or the chat capture passed by
+  // mistake, must not turn chat rows (and their prices) into classifiers.
+  const rows: ModelRow[] = [];
+  source.data.forEach((value, index) => {
     const label = `OpenRouter decisions data[${index}]`;
     const record = objectValue(value, label);
     const id = requiredString(record, "id", label);
     const architecture = optionalObject(record, "architecture", label);
+    const outputs = architecture?.output_modalities;
+    if (!Array.isArray(outputs) || !outputs.includes("decisions")) return;
     const topProvider = optionalObject(record, "top_provider", label);
-    return compactRow({
+    rows.push(compactRow({
       provider: "openrouter",
       id,
       canonical_id: canonicalFromOpenRouterID(id),
@@ -538,8 +544,12 @@ function rowsFromOpenRouterDecisions(input: unknown, minimumRows: number): Model
         optionalAvailablePositiveNumber(topProvider, ["context_length"]),
       pricing: pricingFromOpenRouter(optionalObject(record, "pricing", label)),
       capabilities: classifierCapabilities(architecture?.input_modalities),
-    });
+    }));
   });
+  if (rows.length < minimumRows) {
+    throw new Error(`OpenRouter decisions: ${rows.length} decision models, want at least ${minimumRows}`);
+  }
+  return rows;
 }
 
 // rowsFromModelsDevDecisions maps models.dev's canonical decision models
@@ -614,7 +624,7 @@ function rowsFromOverrides(input: unknown): ModelRow[] {
     const label = `overrides.models[${index}]`;
     const record = objectValue(value, label);
     const provider = requiredString(record, "provider", label);
-    if (!currentProviderSet.has(provider)) {
+    if (!outputProviderSet.has(provider)) {
       throw new Error(`${label}.provider ${JSON.stringify(provider)} is not a current provider`);
     }
     const pricing = optionalObject(record, "pricing", label);

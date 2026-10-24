@@ -121,7 +121,11 @@ func (f *File) Modify(ctx context.Context, providerID string, fn func(llm.AuthCr
 		if err != nil {
 			return false, err
 		}
-		next, write, err := fn(current, ok)
+		// fn gets its own Env, so an edit it declines to write does not
+		// leak into the returned credential.
+		staged := current
+		staged.Env = current.CloneEnv()
+		next, write, err := fn(staged, ok)
 		if err != nil {
 			return false, err
 		}
