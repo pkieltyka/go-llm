@@ -23,13 +23,6 @@ func (p *Provider) buildParams(req *llm.Request) (sdk.MessageNewParams, []sdkopt
 	return p.buildParamsAfterValidation(req)
 }
 
-func (p *Provider) buildStreamParams(req *llm.Request) (sdk.MessageNewParams, []sdkoption.RequestOption, error) {
-	if err := validateRequest(req, true); err != nil {
-		return sdk.MessageNewParams{}, nil, err
-	}
-	return p.buildParamsAfterValidation(req)
-}
-
 func validateRequest(req *llm.Request, stream bool) error {
 	var err error
 	if stream {

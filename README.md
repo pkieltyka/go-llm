@@ -191,14 +191,27 @@ The callback binds only `127.0.0.1:1455`. A Sign in with ChatGPT token
 reaches only the subscription's models (`Models` lists them) and a
 streaming-only endpoint. So, as pi does, `Chat` drains a stream there, and
 `MaxTokens`, `Temperature`, `TopP` and prompt-cache retention are not sent.
-Anthropic and OpenRouter accept `api_key` credentials only; a stored
-Anthropic subscription login (pi's Claude Pro/Max OAuth) fails with an
-`ErrAuth` that says to use an API key, because Anthropic limits subscription
-credentials to its own apps.
+Anthropic also accepts typed Pi-compatible `oauth` credentials through
+`anthropic.WithCredentials(store)`, with locked refresh persistence. Its
+`anthropic.NewLoginFlow()` supports browser login and
+`anthropic.WithLoginMethod(anthropic.LoginCopyCode)` selects the copy-code page.
+Both return only a private local launch URL: remote browsers require forwarding
+that launch port, even in copy-code mode. A missing local listener is an error.
+The host persists the returned credential. Pi's fixed client does not require
+an issued `ClientID`; conflicting explicit client IDs are rejected.
+
+Anthropic OAuth uses Pi's pinned request headers and system/tool adaptations.
+Use the prepared `Chat`, `ChatStream`, `Models` and `CountTokens` methods;
+raw `Client()` SDK requests with stored OAuth fail closed. API-key SDK access is
+unchanged. Compatibility does not establish account eligibility or included-plan
+allowances: eligible third-party usage may be charged to usage credits. See
+[Claude authentication guidance](https://support.claude.com/en/articles/13189465-log-in-to-your-claude-account).
+OpenRouter accepts stored `api_key` credentials only.
 
 Provider-specific request extensions live in
 each provider's `Options` type, passed through `Request.ProviderOptions`; the
-raw SDK client is always reachable via each provider's `Client()`. Ordinary
+raw SDK client is reachable via each provider's `Client()` (Anthropic OAuth
+requires the prepared provider operations described above). Ordinary
 `openai.Options` fields use go-llm and standard-library types; only advanced
 escape hatches such as `Provider.Client`, `chatcompletions.Dialect`,
 `chatcompletions.Config`, and `Provider.BuildParams` are vendor-coupled and

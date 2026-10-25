@@ -329,7 +329,7 @@ func modelsUsage(fs *flag.FlagSet) {
 List the models a provider exposes as a table (--json for machine output).
 
 Credentials work as for chat: --auth-file (pi-compatible auth.json, API
-keys or Sign in with ChatGPT OAuth for openai), else the provider's
+keys, Sign in with ChatGPT OAuth for openai, or stored OAuth for anthropic), else the provider's
 environment variable. An --api-key value is exposed through process argv.
 
 Flags:
@@ -344,7 +344,7 @@ Example:
 func bindCommonFlags(fs *flag.FlagSet, provider, apiKey, authFile, baseURL *string, timeout *time.Duration, version, authFileCommands *bool) {
 	fs.StringVar(provider, "p", "", "provider: anthropic|openai|openrouter|vllm|chatcompletions; classify also typesafe|cloudflare-workers-ai|vercel-ai-gateway|opencode|systemone")
 	fs.StringVar(provider, "provider", "", "provider (alias of -p)")
-	fs.StringVar(authFile, "auth-file", "", "pi-compatible auth.json credential store (API keys; Sign in with ChatGPT OAuth for openai)")
+	fs.StringVar(authFile, "auth-file", "", "pi-compatible auth.json credential store (API keys; Sign in with ChatGPT OAuth for openai; stored OAuth for anthropic)")
 	fs.BoolVar(authFileCommands, "auth-file-commands", false, `let --auth-file api_key values run shell commands ("!op read ..."), as pi does`)
 	fs.StringVar(apiKey, "api-key", "", "provider API key (exposed via argv; prefer --auth-file or the environment)")
 	fs.StringVar(baseURL, "base-url", "", "provider base URL (required for vllm, chatcompletions and systemone: the server's /v1 root)")

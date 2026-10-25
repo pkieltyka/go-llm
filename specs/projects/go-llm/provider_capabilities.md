@@ -217,3 +217,13 @@ CC-shaped adapter.
 reasoning items round-tripped via `ReasoningPart.Raw`). OpenRouter stays on
 the shared CC-shaped `chatcompletions` adapter. The ZAI observations remain
 research for a possible future provider and do not describe shipped code.
+
+
+### Anthropic OAuth amendment (2026-10-25)
+
+Plan 14 adds typed Pi-compatible OAuth to the same Anthropic provider. API-key
+capabilities remain unchanged. Chat, ChatStream, Models and CountTokens prepare
+and revalidate the selected auth mode; live availability is determined by the
+provider, not inferred from an OAuth token. Raw Client SDK calls require API-key
+authentication; unprepared OAuth calls fail locally. OAuth support does not prove
+account eligibility, subscription allowance, model entitlement or billing.

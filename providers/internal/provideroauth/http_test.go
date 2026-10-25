@@ -3,9 +3,11 @@ package provideroauth
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 
 	llm "github.com/pkieltyka/go-llm"
@@ -150,5 +152,72 @@ func stringResponse(status int, body string) *http.Response {
 		StatusCode: status,
 		Body:       io.NopCloser(strings.NewReader(body)),
 		Header:     http.Header{},
+	}
+}
+
+type endlessAuthBody struct {
+	read   int
+	closed bool
+}
+
+func (b *endlessAuthBody) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 'x'
+	}
+	b.read += len(p)
+	return len(p), nil
+}
+func (b *endlessAuthBody) Close() error { b.closed = true; return nil }
+func TestUnauthorizedDrainIsBounded(t *testing.T) {
+	body := &endlessAuthBody{}
+	closeUnauthorizedBody(body)
+	if !body.closed || body.read != 0 {
+		t.Fatalf("drain read=%d closed=%v", body.read, body.closed)
+	}
+}
+
+type dispatchTestKey struct{}
+type dispatchTestSource struct{ t *testing.T }
+
+func (s dispatchTestSource) Credential(context.Context) (llm.AuthCredential, error) {
+	return llm.AuthCredential{Access: "initial"}, nil
+}
+func (s dispatchTestSource) ForceRefreshIfCurrent(ctx context.Context, failed string) (llm.AuthCredential, error) {
+	if failed != ctx.Value(dispatchTestKey{}).(string) {
+		s.t.Error("refresh used another attempt's bearer")
+	}
+	return llm.AuthCredential{Access: "renewed"}, nil
+}
+func TestDispatchTrackingIsOperationLocal(t *testing.T) {
+	var wg sync.WaitGroup
+	for i := range 16 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			selected := fmt.Sprintf("synthetic-dispatch-%d", i)
+			req := mustRequest(t, "").WithContext(context.WithValue(context.Background(), dispatchTestKey{}, selected))
+			calls := 0
+			resp, err := DoWithAuthRetry(req, func(r *http.Request) (*http.Response, error) {
+				calls++
+				if calls == 1 {
+					RecordDispatchedAccess(r.Context(), selected)
+					return stringResponse(http.StatusUnauthorized, "rejected"), nil
+				}
+				return stringResponse(http.StatusOK, "ok"), nil
+			}, dispatchTestSource{t}, bearer)
+			if err != nil || calls != 2 {
+				t.Errorf("retry failed: calls=%d error=%v", calls, err)
+			}
+			if resp != nil {
+				resp.Body.Close()
+			}
+		}()
+	}
+	wg.Wait()
+	value := "synthetic-secret"
+	attempt := &dispatchedAccess{}
+	attempt.value.Store(&value)
+	if strings.Contains(fmt.Sprintf("%v %#v", attempt, attempt), value) {
+		t.Fatal("dispatch metadata exposes bearer")
 	}
 }

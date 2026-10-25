@@ -43,6 +43,7 @@ type config struct {
 	apiKeySet        bool
 	apiKeyFunc       apiKeyFunc
 	credentials      llm.CredentialStore
+	oauthTokenURL    string
 	baseURL          string
 	httpClient       *http.Client
 	maxRetries       *int
@@ -71,29 +72,11 @@ func WithAPIKey(key string) Option {
 	}
 }
 
-// WithCredentials resolves the API key on every request from store's
-// "anthropic" entry, which must be an "api_key" credential (this provider
-// does not accept subscription OAuth). A stored credential owns the
-// provider; with nothing stored, ANTHROPIC_API_KEY is used if set.
+// WithCredentials resolves typed API-key or OAuth credentials from the exact
+// "anthropic" entry. An owned entry never falls back to another identity.
 // WithCredentials is mutually exclusive with WithAPIKey and WithAPIKeyFunc.
 func WithCredentials(store llm.CredentialStore) Option {
 	return func(c *config) { c.credentials = store }
-}
-
-// storedAPIKey is providerutil.StoredAPIKey with a specific error for the
-// OAuth entry pi's Claude Pro/Max login writes under "anthropic".
-func storedAPIKey(store llm.CredentialStore, ambient string) apiKeyFunc {
-	return func(ctx context.Context) (string, error) {
-		cred, ok, err := store.Read(ctx, providerName)
-		if err != nil {
-			return "", fmt.Errorf("%w: read %s credential: %w", llm.ErrAuth, providerName, err)
-		}
-		if ok && cred.Type == "oauth" {
-			return "", fmt.Errorf("%w: stored %s credential is a Claude subscription (OAuth) login, which Anthropic permits only in its own apps; "+
-				"replace it with an \"api_key\" credential from console.anthropic.com, or remove it to use %s", llm.ErrAuth, providerName, apiKeyEnv)
-		}
-		return providerutil.APIKeyFromCredential(providerName, cred, ok, ambient)
-	}
 }
 
 // WithAPIKeyFunc sets a per-request key resolver. It wins over WithAPIKey.
@@ -142,7 +125,9 @@ func WithLogger(logger *slog.Logger) Option {
 	return func(c *config) { c.logger = logger }
 }
 
-// WithWireCapture enables redacted wire capture.
+// WithWireCapture enables redacted wire capture. OAuth captures contain only
+// request/status/timing metadata and sanitized errors; payloads and headers
+// are withheld because remote responses can echo credentials.
 func WithWireCapture(fn func(llm.WireCapture)) Option {
 	return func(c *config) { c.wireCapture = fn }
 }
@@ -171,12 +156,41 @@ func (c config) validate() error {
 	return nil
 }
 
-func (c config) sdkOptions() []sdkoption.RequestOption {
+func (c config) sdkOptions(p *Provider) []sdkoption.RequestOption {
 	maxRetries := 2
 	if c.maxRetries != nil {
 		maxRetries = *c.maxRetries
 	}
-	observed := providerutil.ObservedHTTPClient(c.httpClient, providerName, c.logger, c.wireCapture)
+	httpClient := c.httpClient
+	if c.credentials != nil {
+		copied := *httpClient
+		next := copied.Transport
+		if next == nil {
+			next = http.DefaultTransport
+		}
+		copied.Transport = &operationCaptureTransport{
+			next:    llm.NewRetryLogger(&ownedAuthTransport{provider: p, next: next}, providerName, c.logger),
+			capture: c.wireCapture,
+		}
+		originalRedirect := copied.CheckRedirect
+		copied.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			if op, ok := req.Context().Value(operationKey{}).(*preparedOperation); ok && op.provider == p && op.oauth {
+				return http.ErrUseLastResponse
+			}
+			if originalRedirect != nil {
+				return originalRedirect(req, via)
+			}
+			if len(via) >= 10 {
+				return fmt.Errorf("stopped after 10 redirects")
+			}
+			return nil
+		}
+		httpClient = &copied
+	}
+	observed := httpClient
+	if c.credentials == nil {
+		observed = providerutil.ObservedHTTPClient(httpClient, providerName, c.logger, c.wireCapture)
+	}
 	client := providerutil.SafeRetryHTTPClient(observed, maxRetries, c.responseRetries)
 
 	opts := []sdkoption.RequestOption{
@@ -189,7 +203,9 @@ func (c config) sdkOptions() []sdkoption.RequestOption {
 	if c.baseURL != "" {
 		opts = append(opts, sdkoption.WithBaseURL(c.baseURL))
 	}
-	if c.apiKeyFunc != nil {
+	if c.credentials != nil {
+		opts = append(opts, sdkoption.WithAPIKey(""), sdkoption.WithMiddleware(p.authMiddleware))
+	} else if c.apiKeyFunc != nil {
 		opts = append(opts, sdkoption.WithMiddleware(func(req *http.Request, next sdkoption.MiddlewareNext) (*http.Response, error) {
 			key, err := c.apiKeyFunc(req.Context())
 			if err != nil {
@@ -205,9 +221,14 @@ func (c config) sdkOptions() []sdkoption.RequestOption {
 }
 
 // Provider is the Anthropic Messages API implementation of llm.Provider. It
-// wraps anthropic-sdk-go directly using API-key authentication.
+// wraps anthropic-sdk-go with typed API-key or OAuth authentication.
 type Provider struct {
 	client           *sdk.Client
+	credentials      llm.CredentialStore
+	ambient          string
+	baseURL          string
+	oauthTokenURL    string
+	httpClient       *http.Client
 	defaultMaxTokens int
 	priceTable       llm.PriceTable
 	logger           *slog.Logger
@@ -223,20 +244,20 @@ func New(opts ...Option) (*Provider, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
-	if cfg.credentials != nil {
-		cfg.apiKeyFunc = storedAPIKey(cfg.credentials, cfg.apiKey)
+	p := &Provider{
+		credentials: cfg.credentials, ambient: cfg.apiKey, baseURL: cfg.baseURL,
+		oauthTokenURL: cfg.oauthTokenURL, httpClient: cfg.httpClient,
+		defaultMaxTokens: cfg.defaultMaxTokens, priceTable: cfg.priceTable,
+		logger: cfg.logger, timeout: cfg.timeout,
 	}
-	client := sdk.NewClient(cfg.sdkOptions()...)
-	return &Provider{
-		client:           &client,
-		defaultMaxTokens: cfg.defaultMaxTokens,
-		priceTable:       cfg.priceTable,
-		logger:           cfg.logger,
-		timeout:          cfg.timeout,
-	}, nil
+	client := sdk.NewClient(cfg.sdkOptions(p)...)
+	p.client = &client
+	return p, nil
 }
 
-// Client exposes the underlying Anthropic SDK client.
+// Client exposes the underlying Anthropic SDK client. Raw SDK operations support
+// API keys only; stored OAuth requires Chat, ChatStream, Models or CountTokens
+// so provider-owned request preparation cannot be bypassed.
 func (p *Provider) Client() *sdk.Client {
 	if p == nil {
 		return nil

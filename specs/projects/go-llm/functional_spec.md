@@ -58,7 +58,9 @@ Decisions:
   provider accepts Sign in with ChatGPT OAuth credentials from a
   `CredentialStore`, refreshes them, and mints them through a browser PKCE
   login (`openai.NewLoginFlow`). The former `openai-codex` provider was
-  removed (2026-10-22), mirroring pi. Anthropic supports API keys only.
+  removed (2026-10-22), mirroring pi. The 2026-10-25 user amendment adds
+  Anthropic Pi-compatible OAuth through the existing typed store and login API
+  (Plan 14), while preserving API-key behavior.
 
 ## 3. In Scope / Out of Scope
 
@@ -1581,10 +1583,9 @@ go-llm mirrors pi's authentication model (pi v1.4, `packages/ai/src/auth`).
     pi), the provider's environment variable is used.
   - `WithCredentials` is mutually exclusive with `WithAPIKey`/
     `WithAPIKeyFunc`.
-  - Anthropic and OpenRouter accept stored `api_key` credentials only.
-    Anthropic explains a stored `oauth` entry (pi's Claude Pro/Max login):
-    subscription credentials are limited to Anthropic's own apps, so the
-    entry must be replaced with an API key or removed.
+  - Anthropic accepts stored `api_key` or `oauth` credentials. OAuth uses the
+    fixed public Pi client; absent ClientID is valid and a conflicting identity
+    fails before any OAuth operation. OpenRouter accepts `api_key` only.
 - **OAuth refresh** (`provideroauth.Resolver`) mirrors pi's
   `resolveStoredOAuth`:
   - An optimistic `Read`; a token with less than five minutes left, or
@@ -1652,12 +1653,19 @@ go-llm mirrors pi's authentication model (pi v1.4, `packages/ai/src/auth`).
   - The provider owns endpoints, parameters, and exchange.
   - The returned credential is never persisted by go-llm: the host writes
     it with `store.Modify`.
-- **Anthropic** — API-key authentication only. go-llm does not consume or
-  mint Anthropic subscription credentials and does not emulate Claude Code
-  identity (pi does; go-llm deliberately does not, because Anthropic
-  restricts subscription credentials to its own clients). An Agent SDK
-  layer, if desired by a host application, belongs outside this transport
-  library.
+- **Anthropic (2026-10-25 amendment; Plan 14)** — API keys and typed Pi OAuth.
+  `NewLoginFlow` implements browser/copy-code PKCE with Pi's fixed client,
+  scopes, redirects and token protocol. Remote browsers require forwarding to
+  the private local launch URL, even for copy-code mode; unavailable listeners
+  fail locally. The host persists initial credentials. Locked store refresh
+  writes Pi-adjusted Expires (five minutes early) with zero additional resolver
+  margin. Prepared operations revalidate the owned store before dispatch and
+  apply Pi's pinned OAuth headers, request-only system preamble and operation-
+  local reversible tool casing. Raw SDK OAuth calls without preparation fail
+  closed; API-key behavior is unchanged. No account eligibility, included-plan
+  allowance or billing outcome is inferred. Eligible third-party usage may draw
+  paid usage credits. This deliberately supersedes historical API-key-only
+  clauses without rewriting their completed history.
 - **Removed:** the `openai-codex` provider (ChatGPT backend at
   `chatgpt.com/backend-api/codex`), `WithOAuth(cred, persist)`, and
   `llm.OAuthPersistenceFunc`. pi superseded its Codex provider with Sign in

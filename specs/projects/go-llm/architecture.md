@@ -604,8 +604,16 @@ syntaxes/message splicing are explicitly rejected feature requests.
   header honored).
 - `Models()`: `GET /v1/models` via SDK, mapped to `ModelInfo` (context
   window, max output, capabilities available on that endpoint).
-- Authentication is API-key only. Subscription OAuth and Claude Code identity
-  emulation are intentionally absent (FS §17C).
+- Authentication supports API keys and typed Pi-compatible OAuth (2026-10-25
+  amendment, FS §17C and Plan 14). Initial login uses the existing LoginFlow
+  contract; fixed-client refresh uses CredentialStore.Modify and Pi's adjusted
+  expiry with an explicit zero extra margin. Per-operation preparation owns
+  auth mode, request transforms and reverse tool mapping; every dispatch
+  revalidates the exact store. Raw SDK OAuth calls fail closed without the
+  provider-owned prepared context. API-key behavior remains unchanged.
+- Both browser and copy-code login retain the private loopback launch URL.
+  Remote browsers require port forwarding; no listener means a local failure.
+  Request compatibility is distinct from account eligibility or billing.
 
 ### 3.2 OpenAI (direct wrap, Responses API)
 

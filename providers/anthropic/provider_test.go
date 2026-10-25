@@ -1816,20 +1816,15 @@ func TestAnthropicWithCredentialsIsExclusiveWithAPIKey(t *testing.T) {
 	}
 }
 
-func TestAnthropicStoredSubscriptionOAuthExplainsRejection(t *testing.T) {
-	store := authstore.NewMemory(llm.AuthFile{providerName: {Type: "oauth", Access: "a", Refresh: "r"}})
-	_, err := storedAPIKey(store, "ambient-key")(context.Background())
-	if !errors.Is(err, llm.ErrAuth) {
-		t.Fatalf("err = %v, want ErrAuth", err)
+func TestAnthropicStoredOAuthAcceptedForPreparation(t *testing.T) {
+	store := authstore.NewMemory(llm.AuthFile{providerName: {Type: "oauth", Access: "synthetic-access", Refresh: "synthetic-refresh", Expires: time.Now().Add(time.Hour).UnixMilli()}})
+	p, err := New(WithCredentials(store))
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, want := range []string{"Claude subscription (OAuth)", `"api_key"`, apiKeyEnv} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("err = %q, want it to mention %q", err, want)
-		}
-	}
-	key, err := storedAPIKey(authstore.NewMemory(llm.AuthFile{providerName: {Type: "api_key", Key: "k"}}), "")(context.Background())
-	if err != nil || key != "k" {
-		t.Fatalf("stored api_key = %q, %v", key, err)
+	_, op, err := p.prepareOperation(context.Background())
+	if err != nil || !op.oauth {
+		t.Fatalf("OAuth preparation: %v", err)
 	}
 }
 

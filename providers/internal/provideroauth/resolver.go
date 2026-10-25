@@ -25,12 +25,14 @@ type RefreshFunc func(context.Context, llm.AuthCredential) (llm.AuthCredential, 
 // inside CredentialStore.Modify so concurrent requests and processes refresh
 // exactly once and the renewed credential is stored before it is used.
 type Resolver struct {
-	Store          llm.CredentialStore
-	ProviderID     string
-	Refresh        RefreshFunc
-	RefreshBefore  time.Duration
-	RefreshTimeout time.Duration
-	Now            func() time.Time
+	Store         llm.CredentialStore
+	ProviderID    string
+	Refresh       RefreshFunc
+	RefreshBefore time.Duration
+	// RefreshBeforeSet permits an explicit zero margin for already-adjusted expiries.
+	RefreshBeforeSet bool
+	RefreshTimeout   time.Duration
+	Now              func() time.Time
 }
 
 // Credential returns a usable OAuth credential: the stored one, or a renewed
@@ -126,7 +128,7 @@ func (r *Resolver) expiresSoon(cred llm.AuthCredential) bool {
 		return true
 	}
 	before := r.RefreshBefore
-	if before <= 0 {
+	if before <= 0 && !r.RefreshBeforeSet {
 		before = DefaultRefreshBefore
 	}
 	now := time.Now

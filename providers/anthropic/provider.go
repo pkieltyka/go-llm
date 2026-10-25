@@ -41,6 +41,10 @@ func (p *Provider) Models(ctx context.Context) ([]llm.ModelInfo, error) {
 	ctx, cancel := p.contextWithTimeout(ctx)
 	defer cancel()
 
+	ctx, op, err := p.prepareOperation(ctx)
+	if err != nil {
+		return nil, err
+	}
 	pager := p.client.Models.ListAutoPaging(ctx, sdk.ModelListParams{})
 	var models []llm.ModelInfo
 	for pager.Next() {
@@ -61,7 +65,7 @@ func (p *Provider) Models(ctx context.Context) ([]llm.ModelInfo, error) {
 		}
 	}
 	if err := pager.Err(); err != nil {
-		return nil, mapError(err)
+		return nil, op.mapError(err)
 	}
 	return models, nil
 }
@@ -72,7 +76,12 @@ func (p *Provider) Chat(ctx context.Context, req *llm.Request) (*llm.Response, e
 	ctx, cancel := p.contextWithTimeout(ctx)
 	defer cancel()
 
-	params, requestOptions, err := p.buildParams(req)
+	ctx, op, err := p.prepareOperation(ctx)
+	if err != nil {
+		p.logFailure(ctx, req, start, err)
+		return nil, err
+	}
+	params, requestOptions, err := p.buildOperationParams(req, op, false)
 	if err != nil {
 		p.logFailure(ctx, req, start, err)
 		return nil, err
@@ -80,7 +89,7 @@ func (p *Provider) Chat(ctx context.Context, req *llm.Request) (*llm.Response, e
 
 	msg, err := p.client.Messages.New(ctx, params, requestOptions...)
 	if err != nil {
-		err = mapError(err)
+		err = op.mapError(err)
 		p.logFailure(ctx, req, start, err)
 		return nil, err
 	}
@@ -89,6 +98,7 @@ func (p *Provider) Chat(ctx context.Context, req *llm.Request) (*llm.Response, e
 		p.logFailure(ctx, req, start, err)
 		return nil, err
 	}
+	op.restoreResponse(resp)
 	p.logSuccess(ctx, resp, start)
 	return resp, nil
 }
@@ -100,7 +110,13 @@ func (p *Provider) ChatStream(ctx context.Context, req *llm.Request) iter.Seq2[l
 		ctx, cancel := p.contextWithTimeout(ctx)
 		defer cancel()
 
-		params, requestOptions, err := p.buildStreamParams(req)
+		ctx, op, err := p.prepareOperation(ctx)
+		if err != nil {
+			p.logFailure(ctx, req, start, err)
+			yield(nil, err)
+			return
+		}
+		params, requestOptions, err := p.buildOperationParams(req, op, true)
 		if err != nil {
 			p.logFailure(ctx, req, start, err)
 			yield(nil, err)
@@ -113,6 +129,7 @@ func (p *Provider) ChatStream(ctx context.Context, req *llm.Request) iter.Seq2[l
 		defer stream.Close()
 
 		state := newStreamState(p)
+		state.operation = op
 		remote := providerutil.StreamContract(providerName, func(remoteYield func(llm.Event, error) bool) {
 			settleBlocks := func() bool {
 				for _, event := range state.settleBlocksOnError() {
@@ -128,7 +145,7 @@ func (p *Provider) ChatStream(ctx context.Context, req *llm.Request) iter.Seq2[l
 					if !settleBlocks() {
 						return
 					}
-					remoteYield(nil, mapError(err))
+					remoteYield(nil, op.mapError(err))
 					return
 				}
 				for _, event := range events {
@@ -141,7 +158,7 @@ func (p *Provider) ChatStream(ctx context.Context, req *llm.Request) iter.Seq2[l
 				if !settleBlocks() {
 					return
 				}
-				remoteYield(nil, mapError(err))
+				remoteYield(nil, op.mapError(err))
 				return
 			}
 			if err := ctx.Err(); err != nil {

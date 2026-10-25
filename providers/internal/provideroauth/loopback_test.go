@@ -117,7 +117,7 @@ func TestLoopbackFlowCompletesWithCallback(t *testing.T) {
 		t.Fatalf("Complete = %+v, %v", cred, err)
 	}
 	got := h.exchanges[0]
-	if got.Get("code") != "the-code" || got.Get("verifier") == "" || got.Get("extra") != "issued" {
+	if got.Get("code") != "the-code" || got.Get("verifier") == "" || got.Get("verifier") == q.Get("state") || got.Get("extra") != "issued" {
 		t.Fatalf("exchange = %v", got)
 	}
 	if _, err := h.flow.Complete(context.Background()); !errors.Is(err, llm.ErrLoginClosed) {
@@ -257,5 +257,34 @@ func TestLoopbackFlowKeepsMintedCredentialWhenContextEndsAfterExchange(t *testin
 	h.callback(t, "code=c&state="+url.QueryEscape(q.Get("state")))
 	if cred, err := h.flow.Complete(ctx); err != nil || cred.Access != "minted" {
 		t.Fatalf("Complete = %+v, %v; a minted credential must not be dropped", cred, err)
+	}
+}
+
+func TestLoopbackOptInEphemeralPortAndManualVerifierState(t *testing.T) {
+	h := newLoopbackHarness(t, func(c *LoopbackConfig) {
+		c.Ports = []int{0}
+		c.AllowEphemeralPort = true
+		c.StateIsVerifier = true
+		c.AllowManualCode = true
+	})
+	q := h.begin(t)
+	redirect, err := url.Parse(q.Get("redirect_uri"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if redirect.Port() == "0" || redirect.Port() == "" {
+		t.Fatal("ephemeral redirect must use bound port")
+	}
+	if err := h.flow.Submit(context.Background(), "synthetic-code#wrong"); !errors.Is(err, llm.ErrLoginStateMismatch) {
+		t.Fatalf("bad state: %v", err)
+	}
+	if err := h.flow.Submit(context.Background(), "synthetic-code"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.flow.Complete(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if h.exchanges[0].Get("verifier") != q.Get("state") {
+		t.Fatal("opted-in state must match verifier")
 	}
 }
