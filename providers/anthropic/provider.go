@@ -99,7 +99,13 @@ func (p *Provider) Chat(ctx context.Context, req *llm.Request) (*llm.Response, e
 		return nil, err
 	}
 	op.restoreResponse(resp)
-	p.logSuccess(ctx, resp, start)
+	if op.oauth {
+		logResp := *resp
+		logResp.Model = req.Model
+		p.logSuccess(ctx, &logResp, start)
+	} else {
+		p.logSuccess(ctx, resp, start)
+	}
 	return resp, nil
 }
 
@@ -178,7 +184,11 @@ func (p *Provider) ChatStream(ctx context.Context, req *llm.Request) iter.Seq2[l
 			}
 			end, ended := providerutil.DerefEvent(event).(llm.MessageEnd)
 			if ended {
-				p.logStreamEnd(ctx, req, end, state.model, start)
+				model := state.model
+				if op.oauth {
+					model = req.Model
+				}
+				p.logStreamEnd(ctx, req, end, model, start)
 			}
 			more := yield(event, nil)
 			if ended {

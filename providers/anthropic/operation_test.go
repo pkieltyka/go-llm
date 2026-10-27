@@ -1,11 +1,13 @@
 package anthropic
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -17,6 +19,80 @@ import (
 	llm "github.com/pkieltyka/go-llm"
 	"github.com/pkieltyka/go-llm/authstore"
 )
+
+func TestAnthropicResponseModelLogging(t *testing.T) {
+	for _, oauth := range []bool{true, false} {
+		for _, streaming := range []bool{false, true} {
+			t.Run(fmt.Sprintf("oauth=%t/streaming=%t", oauth, streaming), func(t *testing.T) {
+				cred := operationCredential()
+				if !oauth {
+					cred = llm.AuthCredential{Type: "api_key", Key: "synthetic-key"}
+				}
+				var logs bytes.Buffer
+				logger := slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+				p := operationProvider(t, authstore.NewMemory(llm.AuthFile{providerName: cred}), func(req *http.Request) (*http.Response, error) {
+					model := "synthetic-access"
+					if streaming {
+						events := fmt.Sprintf("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg\",\"type\":\"message\",\"role\":\"assistant\",\"model\":%q,\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n", model)
+						r := operationReply(req, 200, events)
+						r.Header.Set("Content-Type", "text/event-stream")
+						return r, nil
+					}
+					return operationReply(req, 200, strings.Replace(operationMessage, "claude-test", model, 1)), nil
+				}, WithLogger(logger))
+				if streaming {
+					started := false
+					ended := false
+					for event, err := range p.ChatStream(context.Background(), operationRequest()) {
+						if err != nil {
+							t.Fatal(err)
+						}
+						if start, ok := event.(llm.MessageStart); ok {
+							started = true
+							if start.Model != "synthetic-access" {
+								t.Fatalf("stream response model changed: %q", start.Model)
+							}
+						}
+						if _, ok := event.(llm.MessageEnd); ok {
+							ended = true
+						}
+					}
+					if !started {
+						t.Fatal("missing stream start")
+					}
+					if !ended {
+						t.Fatal("missing stream end")
+					}
+				} else {
+					resp, err := p.Chat(context.Background(), operationRequest())
+					if err != nil {
+						t.Fatal(err)
+					}
+					if resp.Model != "synthetic-access" {
+						t.Fatalf("response model changed: %q", resp.Model)
+					}
+				}
+				var record map[string]any
+				if err := json.Unmarshal(logs.Bytes(), &record); err != nil {
+					t.Fatalf("missing or invalid log: %v", err)
+				}
+				want := "synthetic-access"
+				if oauth {
+					want = "claude-test"
+				}
+				if record["model"] != want {
+					t.Errorf("logged model = %v, want %q", record["model"], want)
+				}
+				if oauth && strings.Contains(logs.String(), "synthetic-access") {
+					t.Error("OAuth bearer leaked into log")
+				}
+				if record["provider"] != providerName || record["input_tokens"] != float64(1) || record["output_tokens"] != float64(1) {
+					t.Errorf("missing useful diagnostic fields: %v", record)
+				}
+			})
+		}
+	}
+}
 
 type operationTransport func(*http.Request) (*http.Response, error)
 
