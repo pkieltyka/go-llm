@@ -28,7 +28,7 @@ import (
 const (
 	TypeSafeBaseURL        = "https://api.typesafe.ai/v1"
 	VercelAIGatewayBaseURL = "https://ai-gateway.vercel.sh/typesafe/v1"
-	OpenCodeBaseURL        = "https://opencode.ai/inference/v1"
+	OpenCodeBaseURL        = "https://opencode.ai/inference/systemone/v1"
 
 	typeSafeKeyEnv = "TYPESAFE_API_KEY"
 	vercelKeyEnv   = "AI_GATEWAY_API_KEY"
