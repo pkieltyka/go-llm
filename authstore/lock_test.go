@@ -18,6 +18,15 @@ func shortenLockTimings(t *testing.T) {
 	t.Cleanup(func() { staleLockAge, lockUpdateEvery, maxFileLockWait = stale, update, wait })
 }
 
+// shortenLockTimingsForUnrefreshedHolder is for tests whose stand-in holder
+// never refreshes its lock: a short stale age would let a waiter take the
+// lock whenever a slow CI runner delays the holder's release.
+func shortenLockTimingsForUnrefreshedHolder(t *testing.T) {
+	t.Helper()
+	shortenLockTimings(t)
+	staleLockAge, maxFileLockWait = 10*time.Second, 15*time.Second
+}
+
 func writeKey(ctx context.Context, f *File) error {
 	_, _, err := f.Modify(ctx, "p", func(llm.AuthCredential, bool) (llm.AuthCredential, bool, error) {
 		return llm.AuthCredential{Type: "api_key", Key: "k"}, true, nil
@@ -27,7 +36,7 @@ func writeKey(ctx context.Context, f *File) error {
 
 // A pi process holds the lock as a "<path>.lock" directory (proper-lockfile).
 func TestFileWaitsForPiHeldLockDirectory(t *testing.T) {
-	shortenLockTimings(t)
+	shortenLockTimingsForUnrefreshedHolder(t)
 	path := filepath.Join(t.TempDir(), "auth.json")
 	if err := os.Mkdir(path+".lock", 0o700); err != nil {
 		t.Fatal(err)
@@ -155,7 +164,7 @@ func TestCompromisedLockWritesNothingAndKeepsForeignLock(t *testing.T) {
 // pi rewrites auth.json in place under its lock; a read that catches the
 // truncated file waits for the lock and sees the finished write.
 func TestFileReadWaitsOutInPlaceWriter(t *testing.T) {
-	shortenLockTimings(t)
+	shortenLockTimingsForUnrefreshedHolder(t)
 	path := filepath.Join(t.TempDir(), "auth.json")
 	for name, partial := range map[string]string{"empty": "", "partial": `{"p": {"type": "api_`} {
 		t.Run(name, func(t *testing.T) {
