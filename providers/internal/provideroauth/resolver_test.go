@@ -146,31 +146,3 @@ func TestForceRefreshIfCurrentSkipsWhenAlreadyRotated(t *testing.T) {
 }
 
 func inAnHour() int64 { return time.Now().Add(time.Hour).UnixMilli() }
-
-func TestResolverExplicitZeroMarginUsesAdjustedExpiry(t *testing.T) {
-	now := time.Unix(1700000000, 0)
-	for _, explicit := range []bool{false, true} {
-		calls := 0
-		resolver := newTestResolver(t, llm.AuthCredential{Type: "oauth", Access: "valid", Refresh: "refresh", Expires: now.Add(time.Second).UnixMilli()}, func(context.Context, llm.AuthCredential) (llm.AuthCredential, error) {
-			calls++
-			return llm.AuthCredential{Type: "oauth", Access: "renewed", Refresh: "rotated", Expires: now.Add(time.Hour).UnixMilli()}, nil
-		})
-		resolver.Now = func() time.Time { return now }
-		resolver.RefreshBeforeSet = explicit
-		if _, err := resolver.Credential(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-		if explicit && calls != 0 || !explicit && calls != 1 {
-			t.Fatalf("explicit=%v refresh calls=%d", explicit, calls)
-		}
-		if explicit {
-			resolver.Now = func() time.Time { return now.Add(time.Second) }
-			if _, err := resolver.Credential(context.Background()); err != nil {
-				t.Fatal(err)
-			}
-			if calls != 1 {
-				t.Fatal("adjusted expiry equality must refresh")
-			}
-		}
-	}
-}

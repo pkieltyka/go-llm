@@ -5,7 +5,6 @@ import (
 	"context"
 	"io"
 	"net/http"
-	"sync/atomic"
 
 	llm "github.com/pkieltyka/go-llm"
 )
@@ -23,25 +22,6 @@ type CredentialSource interface {
 	ForceRefreshIfCurrent(ctx context.Context, failedAccess string) (llm.AuthCredential, error)
 }
 
-type dispatchedAccessKey struct{}
-
-// dispatchedAccess belongs to one auth attempt, including its bounded transport
-// retries. A provider that rereads credentials immediately before dispatch can
-// report the actual bearer without mutating the middleware's original request.
-type dispatchedAccess struct{ value atomic.Pointer[string] }
-
-func (*dispatchedAccess) String() string   { return "OAuth dispatch (redacted)" }
-func (*dispatchedAccess) GoString() string { return "OAuth dispatch (redacted)" }
-
-// RecordDispatchedAccess records the bearer chosen by a provider transport after
-// its authoritative store read. Calls outside an auth-retry attempt are ignored.
-// State is attempt-local; concurrent provider operations never share it.
-func RecordDispatchedAccess(ctx context.Context, access string) {
-	if attempt, ok := ctx.Value(dispatchedAccessKey{}).(*dispatchedAccess); ok {
-		attempt.value.Store(&access)
-	}
-}
-
 // DoWithAuthRetry applies OAuth headers and retries exactly once after a 401
 // with a forced refresh.
 func DoWithAuthRetry(req *http.Request, next MiddlewareNext, source CredentialSource, apply ApplyHeadersFunc) (*http.Response, error) {
@@ -57,11 +37,7 @@ func DoWithAuthRetry(req *http.Request, next MiddlewareNext, source CredentialSo
 	if err != nil {
 		return nil, err
 	}
-	attempt := &dispatchedAccess{}
-	initialAccess := cred.Access
-	attempt.value.Store(&initialAccess)
 	first := cloneRequest(req, body)
-	first = first.WithContext(context.WithValue(first.Context(), dispatchedAccessKey{}, attempt))
 	apply(first, cred)
 	resp, err := next(first)
 	if err != nil || resp == nil || resp.StatusCode != http.StatusUnauthorized {
@@ -69,12 +45,9 @@ func DoWithAuthRetry(req *http.Request, next MiddlewareNext, source CredentialSo
 	}
 	closeUnauthorizedBody(resp.Body)
 
-	cred, refreshErr := source.ForceRefreshIfCurrent(requestContext(req), *attempt.value.Load())
+	cred, refreshErr := source.ForceRefreshIfCurrent(requestContext(req), cred.Access)
 	if refreshErr != nil {
 		return nil, refreshErr
-	}
-	if err := requestContext(req).Err(); err != nil {
-		return nil, err
 	}
 	second := cloneRequest(req, body)
 	apply(second, cred)
@@ -121,9 +94,7 @@ func cloneRequest(req *http.Request, body []byte) *http.Request {
 	return cloned
 }
 
-// closeUnauthorizedBody does not drain an untrusted authentication failure.
-// LLM clients may intentionally have no total timeout, so even a byte-capped
-// drain could block forever on a stalled body. Sacrifice connection reuse.
+// Closing without draining avoids blocking on a stalled authentication response.
 func closeUnauthorizedBody(body io.ReadCloser) {
 	if body != nil {
 		_ = body.Close()

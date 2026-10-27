@@ -87,7 +87,7 @@ func TestValidateLiveProviderConfigDistinguishesMissingAndInvalid(t *testing.T) 
 		{name: "missing API key", provider: "anthropic", missing: true},
 		{name: "valid API key", provider: "anthropic", config: ProviderConfig{Auth: llm.AuthCredential{Type: "api_key", Key: "key"}}},
 		{name: "configured rejected API key is not missing", provider: "openai", config: ProviderConfig{Auth: llm.AuthCredential{Type: "api_key", Key: "invalid-key"}}},
-		{name: "ordinary Anthropic suite requires an API key", provider: "anthropic", config: ProviderConfig{Auth: llm.AuthCredential{Type: "oauth", Access: "access"}}, invalid: true},
+		{name: "unsupported Anthropic OAuth", provider: "anthropic", config: ProviderConfig{Auth: llm.AuthCredential{Type: "oauth", Access: "access"}}, invalid: true},
 		{name: "missing OpenAI credential", provider: "openai", missing: true},
 		{name: "OpenAI OAuth without client ID", provider: "openai", config: ProviderConfig{Auth: llm.AuthCredential{Type: "oauth", Access: "a", Refresh: "refresh"}}, invalid: true},
 		{name: "OpenAI OAuth without tokens", provider: "openai", config: ProviderConfig{Auth: llm.AuthCredential{Type: "oauth"}}, invalid: true},

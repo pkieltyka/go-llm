@@ -43,8 +43,8 @@ type loginProvider struct {
 
 // loginProviders lists the providers in display order: the chat
 // providers, then the classifier-only ones (FS §13C). Anthropic has no
-// OAuth sign-in command here; applications use anthropic.NewLoginFlow.
-// Existing Anthropic OAuth entries are consumed by the provider factory.
+// OAuth sign-in here: its subscription credentials are limited to its own
+// apps.
 var loginProviders = []loginProvider{
 	{id: "openai", name: "OpenAI", oauthLabel: "Sign in with ChatGPT", keyName: "OpenAI API key"},
 	{id: "anthropic", name: "Anthropic", keyName: "Anthropic API key"},

@@ -29,11 +29,7 @@ func (p *Provider) CountTokens(ctx context.Context, req *llm.Request) (llm.Token
 	ctx, cancel := p.contextWithTimeout(ctx)
 	defer cancel()
 
-	ctx, op, err := p.prepareOperation(ctx)
-	if err != nil {
-		return llm.TokenCount{}, err
-	}
-	params, requestOptions, err := p.buildOperationParams(req, op, false)
+	params, requestOptions, err := p.buildParams(req)
 	if err != nil {
 		return llm.TokenCount{}, err
 	}
@@ -57,7 +53,7 @@ func (p *Provider) CountTokens(ctx context.Context, req *llm.Request) (llm.Token
 	}
 	result, err := p.client.Messages.CountTokens(ctx, sdkparam.Override[sdk.MessageCountTokensParams](json.RawMessage(raw)), requestOptions...)
 	if err != nil {
-		return llm.TokenCount{}, op.mapError(err)
+		return llm.TokenCount{}, mapError(err)
 	}
 	return llm.TokenCount{Tokens: result.InputTokens, Exact: true}, nil
 }

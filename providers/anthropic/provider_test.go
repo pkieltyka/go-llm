@@ -1816,15 +1816,66 @@ func TestAnthropicWithCredentialsIsExclusiveWithAPIKey(t *testing.T) {
 	}
 }
 
-func TestAnthropicStoredOAuthAcceptedForPreparation(t *testing.T) {
-	store := authstore.NewMemory(llm.AuthFile{providerName: {Type: "oauth", Access: "synthetic-access", Refresh: "synthetic-refresh", Expires: time.Now().Add(time.Hour).UnixMilli()}})
-	p, err := New(WithCredentials(store))
-	if err != nil {
-		t.Fatal(err)
+func TestAnthropicStoredSubscriptionOAuthExplainsRejection(t *testing.T) {
+	store := authstore.NewMemory(llm.AuthFile{providerName: {Type: "oauth", Access: "a", Refresh: "r"}})
+	_, err := storedAPIKey(store, "ambient-key")(context.Background())
+	if !errors.Is(err, llm.ErrAuth) {
+		t.Fatalf("err = %v, want ErrAuth", err)
 	}
-	_, op, err := p.prepareOperation(context.Background())
-	if err != nil || !op.oauth {
-		t.Fatalf("OAuth preparation: %v", err)
+	for _, want := range []string{"Claude subscription (OAuth)", `"api_key"`, apiKeyEnv} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("err = %q, want it to mention %q", err, want)
+		}
+	}
+	key, err := storedAPIKey(authstore.NewMemory(llm.AuthFile{providerName: {Type: "api_key", Key: "k"}}), "")(context.Background())
+	if err != nil || key != "k" {
+		t.Fatalf("stored api_key = %q, %v", key, err)
+	}
+}
+
+func TestAnthropicStoredCredentialsOnChat(t *testing.T) {
+	requests := make(chan http.Header, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests <- r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"msg_1","type":"message","role":"assistant","model":"claude-test","content":[{"type":"text","text":"pong"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+	}))
+	defer server.Close()
+	request := &llm.Request{Model: "claude-test", Messages: []llm.Message{llm.UserText("ping")}}
+	for _, tc := range []struct {
+		name       string
+		credential llm.AuthCredential
+		wantErr    bool
+	}{
+		{"api key", llm.AuthCredential{Type: "api_key", Key: "stored-key"}, false},
+		{"subscription oauth", llm.AuthCredential{Type: "oauth", Access: "subscription-token"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := authstore.NewMemory(llm.AuthFile{providerName: tc.credential})
+			p, err := New(WithCredentials(store), WithBaseURL(server.URL), WithHTTPClient(server.Client()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = p.Chat(context.Background(), request)
+			if tc.wantErr {
+				if !errors.Is(err, llm.ErrAuth) {
+					t.Fatalf("Chat error = %v, want ErrAuth", err)
+				}
+				select {
+				case <-requests:
+					t.Fatal("OAuth request reached the server")
+				default:
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			headers := <-requests
+			if headers.Get("X-Api-Key") != "stored-key" || headers.Get("Authorization") != "" {
+				t.Fatalf("unexpected authentication headers: %v", headers)
+			}
+		})
 	}
 }
 

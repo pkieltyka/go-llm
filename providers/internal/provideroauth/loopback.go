@@ -53,12 +53,6 @@ type LoopbackConfig struct {
 	Label string
 	// Ports are tried in order on 127.0.0.1.
 	Ports []int
-	// AllowEphemeralPort enables a port-zero fallback with its actual bound port.
-	AllowEphemeralPort bool
-	// StateIsVerifier matches fixed-client protocols that reuse PKCE as state.
-	StateIsVerifier bool
-	// AllowManualCode accepts code or code#state in addition to full callbacks.
-	AllowManualCode bool
 	// RedirectURI builds the registered redirect URI for the bound port.
 	RedirectURI func(port int) string
 	// CallbackPath is the redirect path; LaunchPath, when set, serves a
@@ -136,7 +130,7 @@ func NewLoopbackFlow(config LoopbackConfig) (*LoopbackFlow, error) {
 		return nil, fmt.Errorf("%w: %s login timeouts must be positive", llm.ErrBadRequest, config.Label)
 	}
 	for _, port := range config.Ports {
-		if port < 0 || port > 65535 || (port == 0 && !config.AllowEphemeralPort) {
+		if port <= 0 || port > 65535 {
 			return nil, fmt.Errorf("%w: invalid %s login callback port %d", llm.ErrBadRequest, config.Label, port)
 		}
 	}
@@ -199,10 +193,6 @@ func (flow *LoopbackFlow) Begin(ctx context.Context) (llm.LoginAuthorization, er
 		flow.failStart()
 		return llm.LoginAuthorization{}, fmt.Errorf("%s: generate login state", flow.config.Label)
 	}
-	if flow.config.StateIsVerifier {
-		state = verifier
-	}
-
 	nonce, err := randomBase64URL(flow.config.Random, 32)
 	if err != nil {
 		flow.failStart()
@@ -393,14 +383,6 @@ func (flow *LoopbackFlow) listenLoopback() (net.Listener, int, error) {
 	for _, port := range flow.config.Ports {
 		listener, err := flow.config.Listen("tcp4", "127.0.0.1:"+strconv.Itoa(port))
 		if err == nil {
-			if port == 0 {
-				address, ok := listener.Addr().(*net.TCPAddr)
-				if !ok || address.Port <= 0 {
-					_ = listener.Close()
-					return nil, 0, errors.New("invalid loopback listener address")
-				}
-				port = address.Port
-			}
 			return listener, port, nil
 		}
 		lastErr = err
@@ -485,20 +467,6 @@ func (flow *LoopbackFlow) parseSubmittedCallback(response string) (url.Values, e
 	if response == "" {
 		return nil, fmt.Errorf("%w: %s login callback is empty", llm.ErrBadRequest, label)
 	}
-	if flow.config.AllowManualCode && !strings.Contains(response, "://") && !strings.Contains(response, "code=") && !strings.Contains(response, "error=") && !strings.HasPrefix(response, "?") {
-		flow.mu.Lock()
-		state := flow.state
-		flow.mu.Unlock()
-		code := response
-		if strings.Contains(response, "#") {
-			parts := strings.Split(response, "#")
-			if len(parts) != 2 || parts[1] == "" {
-				return nil, fmt.Errorf("%w: %s login code is invalid", llm.ErrBadRequest, label)
-			}
-			code, state = parts[0], parts[1]
-		}
-		return url.Values{"code": {code}, "state": {state}}, nil
-	}
 	rawQuery := response
 	if strings.HasPrefix(response, "http://") || strings.HasPrefix(response, "https://") {
 		parsed, err := url.Parse(response)
@@ -512,11 +480,6 @@ func (flow *LoopbackFlow) parseSubmittedCallback(response string) (url.Values, e
 	values, err := url.ParseQuery(rawQuery)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s login callback query is invalid", llm.ErrBadRequest, label)
-	}
-	if flow.config.AllowManualCode && len(values["state"]) == 0 && values.Get("code") != "" {
-		flow.mu.Lock()
-		values.Set("state", flow.state)
-		flow.mu.Unlock()
 	}
 	return values, nil
 }

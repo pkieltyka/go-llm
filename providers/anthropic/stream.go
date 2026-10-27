@@ -13,7 +13,6 @@ import (
 
 type streamState struct {
 	provider        *Provider
-	operation       *preparedOperation
 	model           string
 	usage           llm.Usage
 	tools           map[int]*streamToolCall
@@ -143,9 +142,6 @@ func (s *streamState) mapContentBlockStart(event sdk.MessageStreamEventUnion) ([
 		}
 		if block.Name != "" {
 			call.name = block.Name
-			if s.operation != nil {
-				call.name = s.operation.originalTool(block.Name)
-			}
 		}
 		if block.Input != nil {
 			raw, err := json.Marshal(block.Input)

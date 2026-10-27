@@ -33,9 +33,7 @@ func (pc ProviderConfig) Configured() bool {
 	return pc.Auth.Key != "" || pc.Auth.Access != "" || pc.BaseURL != ""
 }
 
-// ValidateLiveProviderConfig validates the ordinary live suites (Anthropic
-// OAuth has its own explicitly selected named-profile runner). It distinguishes
-// an absent live-test setup from a
+// ValidateLiveProviderConfig distinguishes an absent live-test setup from a
 // present but malformed one. Callers may skip only errLiveCredentialsMissing;
 // malformed or remotely rejected configured credentials are test failures.
 func ValidateLiveProviderConfig(provider string, pc ProviderConfig) error {
