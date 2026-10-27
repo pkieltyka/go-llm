@@ -155,9 +155,9 @@ func TestUsageTrackerCostSourcePassthrough(t *testing.T) {
 	}
 }
 
-// A token-bearing call with unknown cost demotes an otherwise-native dollar
-// total: the sum no longer covers every call, so it is not billing-grade.
-func TestUsageTrackerNilCostComponentDemotesNativeSum(t *testing.T) {
+// Unknown-price usage makes a native subtotal incomplete without changing
+// the provenance of the known dollars.
+func TestUsageTrackerNilCostComponentMarksNativeSubtotalIncomplete(t *testing.T) {
 	p := llmtest.New(llmtest.WithName("fake"))
 	nativeCost := 0.5
 	p.EnqueueResponse(&llm.Response{
@@ -180,8 +180,8 @@ func TestUsageTrackerNilCostComponentDemotesNativeSum(t *testing.T) {
 		}
 	}
 	stats := tracker.Stats()
-	if stats.Usage.CostSource != llm.CostSourceEstimated {
-		t.Fatalf("CostSource = %q, want estimated after nil-cost component", stats.Usage.CostSource)
+	if stats.Usage.CostSource != llm.CostSourceNative || !stats.Usage.CostIncomplete {
+		t.Fatalf("usage = %+v, want incomplete native subtotal", stats.Usage)
 	}
 	if stats.Usage.CostUSD == nil || *stats.Usage.CostUSD != nativeCost {
 		t.Fatalf("CostUSD = %v, want %v", stats.Usage.CostUSD, nativeCost)
@@ -200,17 +200,18 @@ func TestUsageTrackerCostProvenanceIsCommutative(t *testing.T) {
 	estimated := withCost(5, 0.25, llm.CostSourceEstimated)
 
 	tests := []struct {
-		name       string
-		components []llm.Usage
-		wantCost   float64
-		wantSource string
+		name           string
+		components     []llm.Usage
+		wantCost       float64
+		wantSource     string
+		wantIncomplete bool
 	}{
-		{name: "native then missing", components: []llm.Usage{native, missing}, wantCost: 0.5, wantSource: llm.CostSourceEstimated},
-		{name: "missing then native", components: []llm.Usage{missing, native}, wantCost: 0.5, wantSource: llm.CostSourceEstimated},
+		{name: "native then missing", components: []llm.Usage{native, missing}, wantCost: 0.5, wantSource: llm.CostSourceNative, wantIncomplete: true},
+		{name: "missing then native", components: []llm.Usage{missing, native}, wantCost: 0.5, wantSource: llm.CostSourceNative, wantIncomplete: true},
 		{name: "native then estimated", components: []llm.Usage{native, estimated}, wantCost: 0.75, wantSource: llm.CostSourceEstimated},
 		{name: "estimated then native", components: []llm.Usage{estimated, native}, wantCost: 0.75, wantSource: llm.CostSourceEstimated},
-		{name: "estimated then missing", components: []llm.Usage{estimated, missing}, wantCost: 0.25, wantSource: llm.CostSourceEstimated},
-		{name: "missing then estimated", components: []llm.Usage{missing, estimated}, wantCost: 0.25, wantSource: llm.CostSourceEstimated},
+		{name: "estimated then missing", components: []llm.Usage{estimated, missing}, wantCost: 0.25, wantSource: llm.CostSourceEstimated, wantIncomplete: true},
+		{name: "missing then estimated", components: []llm.Usage{missing, estimated}, wantCost: 0.25, wantSource: llm.CostSourceEstimated, wantIncomplete: true},
 		{name: "all native", components: []llm.Usage{native, withCost(2, 0.1, llm.CostSourceNative)}, wantCost: 0.6, wantSource: llm.CostSourceNative},
 	}
 
@@ -229,7 +230,7 @@ func TestUsageTrackerCostProvenanceIsCommutative(t *testing.T) {
 				}
 			}
 			usage := tracker.Stats().Usage
-			if usage.CostUSD == nil || *usage.CostUSD != tt.wantCost || usage.CostSource != tt.wantSource {
+			if usage.CostUSD == nil || *usage.CostUSD != tt.wantCost || usage.CostSource != tt.wantSource || usage.CostIncomplete != tt.wantIncomplete {
 				t.Fatalf("usage cost = %v (%q), want %v (%q)", usage.CostUSD, usage.CostSource, tt.wantCost, tt.wantSource)
 			}
 		})

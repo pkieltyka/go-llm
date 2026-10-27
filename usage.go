@@ -20,7 +20,6 @@ type usageAccumulator struct {
 	Usage         Usage
 	TotalDuration time.Duration
 	streamStats   streamStats
-	cost          usageCostAggregation
 }
 
 // streamStats aggregates streaming latency telemetry. Averages are the
@@ -41,12 +40,6 @@ type streamTimings struct {
 	messageStartSeen   bool
 	timeToFirstContent time.Duration
 	firstContentSeen   bool
-}
-
-type usageCostAggregation struct {
-	initialized    bool
-	allTokensCost  bool
-	allCostsNative bool
 }
 
 // UsageStats is a snapshot of aggregated usage.
@@ -232,7 +225,7 @@ func (a *usageAccumulator) add(usage Usage, isErr bool, duration time.Duration, 
 	if isErr {
 		a.Errors++
 	}
-	a.Usage = sumUsage(a.Usage, usage, &a.cost)
+	a.Usage = a.Usage.Add(usage)
 	a.TotalDuration += duration
 	if timings != nil {
 		a.streamStats.StreamCalls++
@@ -286,16 +279,24 @@ func requestModel(req *Request) string {
 	return req.Model
 }
 
-// sumUsage adds next into total. CostSource provenance: a sum of all-native
-// costs stays native; mixing native and estimated components (or adding any
-// estimated cost) marks the sum estimated — a total is only billing-grade
-// when every part of it is.
-func sumUsage(total, next Usage, state *usageCostAggregation) Usage {
-	totalCostState := *state
-	if !totalCostState.initialized {
-		totalCostState = usageCostAggregationFor(total)
-	}
-	nextCostState := usageCostAggregationFor(next)
+// Add returns summed token counters and known costs without mutating either
+// input. CacheWrite1hTokens and ReasoningTokens remain informational subsets.
+// Token-bearing usage with unknown cost, or an explicit CostIncomplete flag,
+// makes the result incomplete; it never estimates the missing charge. A nil
+// cost stays nil unless at least one input has a known cost, including zero.
+// CostSource describes only the known costs: all-native costs stay native;
+// any estimated or unspecified source makes the subtotal estimated.
+//
+// The result is self-contained for further aggregation or JSON persistence;
+// no hidden accumulator state is needed. Adding empty Usage preserves accounting
+// while normalizing legacy cost metadata according to the rules above.
+// Raw is discarded because a sum has no single provider payload.
+func (total Usage) Add(next Usage) Usage {
+	allCostsNative := (total.CostUSD == nil || total.CostSource == CostSourceNative) &&
+		(next.CostUSD == nil || next.CostSource == CostSourceNative)
+	total.CostIncomplete = total.CostIncomplete || next.CostIncomplete ||
+		(total.CostUSD == nil && usageHasTokens(total)) ||
+		(next.CostUSD == nil && usageHasTokens(next))
 
 	total.InputTokens += next.InputTokens
 	total.OutputTokens += next.OutputTokens
@@ -310,34 +311,25 @@ func sumUsage(total, next Usage, state *usageCostAggregation) Usage {
 			sum += *total.CostUSD
 		}
 		total.CostUSD = &sum
-	}
-	*state = usageCostAggregation{
-		initialized:    true,
-		allTokensCost:  totalCostState.allTokensCost && nextCostState.allTokensCost,
-		allCostsNative: totalCostState.allCostsNative && nextCostState.allCostsNative,
+	} else {
+		// Return independent cost storage even when only total has a cost.
+		total = cloneUsage(total)
 	}
 	if total.CostUSD == nil {
 		total.CostSource = ""
-	} else if state.allTokensCost && state.allCostsNative {
+	} else if allCostsNative {
 		total.CostSource = CostSourceNative
 	} else {
 		total.CostSource = CostSourceEstimated
 	}
+	total.Raw = nil
 	return total
-}
-
-func usageCostAggregationFor(usage Usage) usageCostAggregation {
-	hasCost := usage.CostUSD != nil
-	return usageCostAggregation{
-		initialized:    true,
-		allTokensCost:  !usageHasTokens(usage) || hasCost,
-		allCostsNative: !hasCost || usage.CostSource == CostSourceNative,
-	}
 }
 
 func usageHasTokens(u Usage) bool {
 	return u.InputTokens > 0 || u.OutputTokens > 0 || u.TotalTokens > 0 ||
-		u.CacheReadTokens > 0 || u.CacheWriteTokens > 0
+		u.CacheReadTokens > 0 || u.CacheWriteTokens > 0 ||
+		u.CacheWrite1hTokens > 0 || u.ReasoningTokens > 0
 }
 
 func cloneUsage(usage Usage) Usage {

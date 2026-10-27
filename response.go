@@ -141,13 +141,20 @@ type Usage struct {
 	// property (observed on OpenRouter for some upstreams), adapters pass
 	// the native values through without clamping.
 	ReasoningTokens int64
-	// CostUSD is the request cost in US dollars; nil when unknown (neither
-	// provider-reported nor estimable from a price table).
+	// CostUSD is the known cost in US dollars; nil when unknown (neither
+	// provider-reported nor estimable from a price table). When CostIncomplete
+	// is true, a non-nil value is a subtotal, not the full charge.
 	CostUSD *float64
 	// CostSource says where CostUSD came from: CostSourceNative for
 	// provider-reported billing, CostSourceEstimated for price-table
 	// estimates. Empty when CostUSD is nil.
 	CostSource string
+	// CostIncomplete marks missing charges independently of CostSource. A
+	// known subtotal can be native or estimated. False preserves legacy
+	// provider values: non-nil CostUSD covers that usage, while nil still
+	// means unknown. Add detects token-bearing usage with nil CostUSD and
+	// retains explicit incompleteness, even without tokens or a known cost.
+	CostIncomplete bool
 	// Raw is the provider's native usage payload; not serialized.
 	Raw any
 }

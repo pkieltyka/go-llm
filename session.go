@@ -21,7 +21,6 @@ type Session struct {
 	history    *History
 	usage      Usage
 	lastUsage  Usage
-	usageCost  usageCostAggregation
 }
 
 // SessionOption configures a Session.
@@ -249,7 +248,7 @@ func (s *Session) appendResponse(resp *Response) {
 	}
 	s.history.AddResponse(resp)
 	s.lastUsage = cloneUsage(resp.Usage)
-	s.usage = sumUsage(s.usage, resp.Usage, &s.usageCost)
+	s.usage = s.usage.Add(resp.Usage)
 }
 
 func randomSessionID() string {

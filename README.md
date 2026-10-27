@@ -479,12 +479,25 @@ one-hour cache writes are tracked separately (`CacheWrite1hTokens`); no price
 table publishes their rate, so an estimated cost containing them is reported
 as unknown rather than understated.
 
+`Usage.Add` combines token counters and known costs without losing missing-price
+information. `CostIncomplete` is independent of `CostSource`: native charges
+plus unknown-price usage produce a **native subtotal**, marked incomplete,
+while mixed native/estimated charges have estimated provenance. A non-nil zero
+cost stays known zero; nil stays unknown. `UsageTracker` and `Session` use this
+same aggregation contract, and `cost_incomplete` survives JSON round trips.
+
 ### Capabilities
 
 Provider-wide `Capabilities()` discovery with pre-flight request validation,
 plus advisory per-model capabilities from rich live catalogs such as
 OpenRouter. Unsupported provider features fail fast with `ErrUnsupported`;
 incomplete model metadata never blocks a call.
+
+OpenAI API-key catalogs also carry positive image-input metadata for an exact
+set of aliases and snapshots proved by official OpenAI model documentation;
+unmapped IDs stay unknown. ChatGPT catalogs use their own live input modalities.
+The API-key `/models` response itself has no modality fields. See the dated
+[source and compatibility contract](specs/amendments/2026-10-27-cost-completeness-openai-image.md).
 
 ### Conveniences and observability
 

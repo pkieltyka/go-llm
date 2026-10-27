@@ -745,9 +745,21 @@ Every response (and `MessageEnd` stream event) carries a normalized `Usage`:
   billing-grade) or `"estimated"` (price-table estimate); empty when
   `CostUSD` is nil. Serialized as `cost_source` (omitempty; additive key,
   no envelope version bump). `UsageTracker` sums keep `native` only when
-  every component is native; any estimated component marks the sum
+  every known-dollar component is native; any estimated component marks the sum
   estimated.
 - Raw provider usage accessible underneath
+
+**2026-10-27 accounting amendment:** `CostIncomplete bool` tracks missing
+charges independently of provenance; serialized as `cost_incomplete,omitempty`
+without an envelope version bump. `Usage.Add(next)` sums normalized counters
+and known dollar components, marks a subtotal incomplete when any input is
+explicitly incomplete or has tokens but nil cost, and retains native provenance
+when every known dollar component is native. Mixed/unspecified cost provenance
+is estimated. Nil cost remains unknown, distinct from a known zero. Existing
+provider values and durable JSON without the new key retain their meaning;
+false alone never makes nil cost known. Tracker and Session share the public
+aggregation implementation. See the [dated contract amendment](../../amendments/2026-10-27-cost-completeness-openai-image.md)
+for grouping, persistence and OpenAI image-authority rules.
 
 **Normalization invariant** (binding on every adapter — providers disagree
 natively, so this is where cross-adapter drift is prevented):

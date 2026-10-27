@@ -76,6 +76,10 @@ func mapError(err error) error {
 func (p *Provider) Models(ctx context.Context) ([]llm.ModelInfo, error) {
 	ctx, cancel := p.contextWithTimeout(ctx)
 	defer cancel()
+	ctx, signIn, err := p.signInWithChatGPT(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	var body []byte
 	if err := p.client.Get(ctx, "models", nil, &body); err != nil {
@@ -91,6 +95,9 @@ func (p *Provider) Models(ctx context.Context) ([]llm.ModelInfo, error) {
 	models := make([]llm.ModelInfo, 0, len(page.Data)+len(page.Models))
 	for _, model := range page.Data {
 		info := llm.ModelInfo{ID: model.ID, Raw: model}
+		if !signIn {
+			info.Capabilities = apiModelCapabilities(model.ID)
+		}
 		if embedded, ok := llm.LookupModelInfo(providerName, model.ID); ok {
 			info.DisplayName = embedded.DisplayName
 			info.ContextWindow = embedded.ContextWindow

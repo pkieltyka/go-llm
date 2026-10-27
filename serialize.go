@@ -526,6 +526,7 @@ func (u Usage) MarshalJSON() ([]byte, error) {
 		ReasoningTokens:  u.ReasoningTokens,
 		CostUSD:          u.CostUSD,
 		CostSource:       u.CostSource,
+		CostIncomplete:   u.CostIncomplete,
 	})
 }
 
@@ -544,11 +545,12 @@ func (u *Usage) UnmarshalJSON(data []byte) error {
 		ReasoningTokens:    wire.ReasoningTokens,
 		CostUSD:            wire.CostUSD,
 		CostSource:         wire.CostSource,
+		CostIncomplete:     wire.CostIncomplete,
 	}
 	return nil
 }
 
-// usageJSON adds cost_source and cache_write_1h_tokens with omitempty: the
+// usageJSON adds cost_source, cost_incomplete and cache_write_1h_tokens with omitempty: the
 // canonical envelope is forward-compatible for additive optional keys, so no
 // version bump.
 type usageJSON struct {
@@ -561,6 +563,7 @@ type usageJSON struct {
 	ReasoningTokens  int64    `json:"reasoning_tokens"`
 	CostUSD          *float64 `json:"cost_usd,omitempty"`
 	CostSource       string   `json:"cost_source,omitempty"`
+	CostIncomplete   bool     `json:"cost_incomplete,omitempty"`
 }
 
 type cacheHintJSON struct {

@@ -222,8 +222,11 @@ type Usage struct {
     ReasoningTokens                        int64
     CostUSD    *float64 // nil = unknown
     CostSource string   // CostSourceNative | CostSourceEstimated; "" when CostUSD nil
+    CostIncomplete bool // missing charges; independent of known-dollar provenance
     Raw        any
 }
+
+func (u Usage) Add(next Usage) Usage // self-contained aggregate; no hidden state
 ```
 
 ### 2.4 Provider interface

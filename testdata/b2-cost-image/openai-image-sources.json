@@ -1,0 +1,139 @@
+[
+  {
+    "model": "gpt-4.1",
+    "url": "https://developers.openai.com/api/docs/models/gpt-4.1",
+    "fetched_on": "2026-10-27",
+    "markdown_sha256": "baa0f3aa720c9ab9faf3d060d56549ecc6273dd366336d7269c92bebe95b3389",
+    "input_modalities": [
+      "text",
+      "image"
+    ],
+    "endpoint": "v1/responses",
+    "exact_ids": [
+      "gpt-4.1",
+      "gpt-4.1-2025-04-14"
+    ]
+  },
+  {
+    "model": "gpt-4.1-mini",
+    "url": "https://developers.openai.com/api/docs/models/gpt-4.1-mini",
+    "fetched_on": "2026-10-27",
+    "markdown_sha256": "ac583e48898086366c346ecc76a2f46c489f7144ea4f2482688209238eb0ba3d",
+    "input_modalities": [
+      "text",
+      "image"
+    ],
+    "endpoint": "v1/responses",
+    "exact_ids": [
+      "gpt-4.1-mini",
+      "gpt-4.1-mini-2025-04-14"
+    ]
+  },
+  {
+    "model": "gpt-4.1-nano",
+    "url": "https://developers.openai.com/api/docs/models/gpt-4.1-nano",
+    "fetched_on": "2026-10-27",
+    "markdown_sha256": "5b4b61b8b7cdd94378d852a7c96803860829db784a82eec1f8af5b2603894ba0",
+    "input_modalities": [
+      "text",
+      "image"
+    ],
+    "endpoint": "v1/responses",
+    "exact_ids": [
+      "gpt-4.1-nano",
+      "gpt-4.1-nano-2025-04-14"
+    ]
+  },
+  {
+    "model": "gpt-4o",
+    "url": "https://developers.openai.com/api/docs/models/gpt-4o",
+    "fetched_on": "2026-10-27",
+    "markdown_sha256": "22950725c1d75a0098d1c5f046f10c946ffdd41e76d37d14b44e80a6dab8abee",
+    "input_modalities": [
+      "text",
+      "image"
+    ],
+    "endpoint": "v1/responses",
+    "exact_ids": [
+      "gpt-4o",
+      "gpt-4o-2024-11-20",
+      "gpt-4o-2024-08-06",
+      "gpt-4o-2024-05-13"
+    ]
+  },
+  {
+    "model": "gpt-4o-mini",
+    "url": "https://developers.openai.com/api/docs/models/gpt-4o-mini",
+    "fetched_on": "2026-10-27",
+    "markdown_sha256": "93e14f848cf90f35dd77a270998a9b2b440ef08d724da11947b0dee26179f09b",
+    "input_modalities": [
+      "text",
+      "image"
+    ],
+    "endpoint": "v1/responses",
+    "exact_ids": [
+      "gpt-4o-mini",
+      "gpt-4o-mini-2024-07-18"
+    ]
+  },
+  {
+    "model": "gpt-5",
+    "url": "https://developers.openai.com/api/docs/models/gpt-5",
+    "fetched_on": "2026-10-27",
+    "markdown_sha256": "9a43b63c9b63dfc74104eba1739f72dabb8ac7a5b8d697e88aa1466f96092059",
+    "input_modalities": [
+      "text",
+      "image"
+    ],
+    "endpoint": "v1/responses",
+    "exact_ids": [
+      "gpt-5",
+      "gpt-5-2025-08-07"
+    ]
+  },
+  {
+    "model": "gpt-5-mini",
+    "url": "https://developers.openai.com/api/docs/models/gpt-5-mini",
+    "fetched_on": "2026-10-27",
+    "markdown_sha256": "a483623704a4cfcc090feaed29cc3b5a9af61ad64e8925a6ed0593e07ca2695c",
+    "input_modalities": [
+      "text",
+      "image"
+    ],
+    "endpoint": "v1/responses",
+    "exact_ids": [
+      "gpt-5-mini",
+      "gpt-5-mini-2025-08-07"
+    ]
+  },
+  {
+    "model": "gpt-5-nano",
+    "url": "https://developers.openai.com/api/docs/models/gpt-5-nano",
+    "fetched_on": "2026-10-27",
+    "markdown_sha256": "d839d997770a65c2f3061e04776633c26fa9f0f5da9a9df6ebad635b3c62176d",
+    "input_modalities": [
+      "text",
+      "image"
+    ],
+    "endpoint": "v1/responses",
+    "exact_ids": [
+      "gpt-5-nano",
+      "gpt-5-nano-2025-08-07"
+    ]
+  },
+  {
+    "model": "gpt-5.1",
+    "url": "https://developers.openai.com/api/docs/models/gpt-5.1",
+    "fetched_on": "2026-10-27",
+    "markdown_sha256": "f74abd8073ae69ffeffa8f4773ef63d9a1224badecc717682db9fb1911dcfb7e",
+    "input_modalities": [
+      "text",
+      "image"
+    ],
+    "endpoint": "v1/responses",
+    "exact_ids": [
+      "gpt-5.1",
+      "gpt-5.1-2025-11-13"
+    ]
+  }
+]
