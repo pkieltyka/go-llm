@@ -570,6 +570,28 @@ test("behavior rules mark positional models and leave others unset", async () =>
   assert.equal("behavior" in row("claude-fixture"), false);
 });
 
+test("Terra positional behavior reaches the OpenAI snapshot row only", async () => {
+  const behavior = { positional_instructions: true, positional_tools: true };
+  assert.deepEqual(modelBehavior("openai", "gpt-6.1-terra"), behavior);
+  assert.equal(modelBehavior("openai", "gpt-6.1-terra-pro"), undefined);
+  assert.equal(modelBehavior("openrouter", "openai/gpt-6.1-terra"), undefined);
+
+  const modelsDev = structuredClone(await fixture("models-dev.json")) as any;
+  modelsDev.openai.models["gpt-6.1-terra"] = { ...modelsDev.openai.models["gpt-fixture"], id: "gpt-6.1-terra" };
+  modelsDev.openrouter.models["openai/gpt-6.1-terra"] = {
+    ...modelsDev.openrouter.models["openai/gpt-fixture"],
+    id: "openai/gpt-6.1-terra",
+  };
+  const snapshot = buildSnapshot(modelsDev, await fixture("openrouter-models.json"), await fixture("overrides.json"), {
+    generatedAt: "2026-10-27T00:00:00Z",
+    minimums: fixtureMinimums,
+  });
+  const terra = snapshot.models.find((row) => row.provider === "openai" && row.id === "gpt-6.1-terra")!;
+  const proxy = snapshot.models.find((row) => row.provider === "openrouter" && row.id === "openai/gpt-6.1-terra")!;
+  assert.deepEqual(terra.behavior, behavior);
+  assert.equal("behavior" in proxy, false);
+});
+
 test("adds classifier rows from the three classifier catalogs", async () => {
   const snapshot = buildSnapshot(
     await fixture("models-dev.json"),

@@ -29,6 +29,7 @@ const anthropicInstructionsOnly = [new RegExp(String.raw`^claude-sonnet-5${dated
 // OpenAI Responses: pi's OPENAI_MID_CONVO_SYSTEM_MESSAGE_MODEL_IDS and
 // OPENAI_ADDITIONAL_TOOLS_MODEL_IDS (the same set). Probed 2026-10-22 on
 // gpt-5.6-luna and gpt-6-luna under Sign in with ChatGPT.
+// gpt-6.1-terra is included in both sets at pi commit 363ad78bf.
 const openAIPositional = new Set([
   "gpt-5.4",
   "gpt-5.4-mini",
@@ -41,6 +42,7 @@ const openAIPositional = new Set([
   "gpt-6-sol",
   "gpt-6-luna",
   "gpt-6.1-sol",
+  "gpt-6.1-terra",
 ]);
 
 export function modelBehavior(provider: string, id: string): ModelBehavior | undefined {
