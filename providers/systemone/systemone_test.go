@@ -20,6 +20,10 @@ type seen struct {
 	path, auth, optIn, extra, body string
 }
 
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
 func server(t *testing.T) (*httptest.Server, *seen) {
 	t.Helper()
 	got := &seen{}
@@ -120,6 +124,29 @@ func TestPresets(t *testing.T) {
 }
 
 func withBase(url string) systemone.Option { return systemone.WithBaseURL(url) }
+
+func TestOpenCodeDefaultEndpoint(t *testing.T) {
+	t.Setenv("OPENCODE_API_KEY", "opencode-key")
+	var gotURL, gotAuth, gotMethod string
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		gotURL, gotAuth, gotMethod = r.URL.String(), r.Header.Get("Authorization"), r.Method
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"model":"jev-1.13","answers":{"approved":{"type":"noul","noul":0.8}}}`)),
+		}, nil
+	})}
+	p, err := systemone.NewOpenCode(systemone.WithHTTPClient(client))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Classify(context.Background(), request()); err != nil {
+		t.Fatal(err)
+	}
+	if gotURL != "https://opencode.ai/inference/systemone/v1/systemone" || gotAuth != "Bearer opencode-key" || gotMethod != http.MethodPost {
+		t.Fatalf("request: method %q URL %q auth %q", gotMethod, gotURL, gotAuth)
+	}
+}
 
 func TestCredentials(t *testing.T) {
 	clearEnv(t)

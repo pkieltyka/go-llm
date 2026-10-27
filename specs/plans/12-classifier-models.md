@@ -597,9 +597,11 @@ All phases landed on `next`. Where the result differs from the text above:
   (`systemone.WithImageForm`), not per request.
 - CLI and auth IDs follow pi: `cloudflare-workers-ai`, not `cloudflare`.
   `llm-cli login systemone` stores the optional key of a System One server.
-- OpenCode's base URL is `https://opencode.ai/inference/v1`, as pi's model
-  data and tests have it (pi's code comment says `/zen/v1`); unverified live,
-  as no OpenCode credential was available.
+- OpenCode's base URL is `https://opencode.ai/inference/systemone/v1`
+  (updated 2026-10-27). The client appends `/systemone`, matching the full
+  endpoint in [OpenCode's official model documentation](https://opencode.ai/v2/docs/console/models/#jev)
+  for `jev-1.13` and `jev-1.13-free`. The default request URL is covered by an
+  intercepted-request test; no live OpenCode request was made.
 - A Cloudflare base URL without `{account}` (a proxy) needs no account ID.
 - OpenRouter's `Models` tolerates a failed decisions listing.
 - An OpenAI Decisions refusal keeps the other questions' answers.

@@ -43,7 +43,7 @@ func DoWithAuthRetry(req *http.Request, next MiddlewareNext, source CredentialSo
 	if err != nil || resp == nil || resp.StatusCode != http.StatusUnauthorized {
 		return resp, err
 	}
-	drainAndClose(resp.Body)
+	closeUnauthorizedBody(resp.Body)
 
 	cred, refreshErr := source.ForceRefreshIfCurrent(requestContext(req), cred.Access)
 	if refreshErr != nil {
@@ -94,13 +94,9 @@ func cloneRequest(req *http.Request, body []byte) *http.Request {
 	return cloned
 }
 
-// drainAndClose releases the connection for reuse. The bodies drained here
-// are 401 responses from provider APIs — small JSON error envelopes — so no
-// read limit is applied.
-func drainAndClose(body io.ReadCloser) {
-	if body == nil {
-		return
+// Closing without draining avoids blocking on a stalled authentication response.
+func closeUnauthorizedBody(body io.ReadCloser) {
+	if body != nil {
+		_ = body.Close()
 	}
-	_, _ = io.Copy(io.Discard, body)
-	_ = body.Close()
 }

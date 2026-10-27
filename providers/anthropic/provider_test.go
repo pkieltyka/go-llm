@@ -1833,6 +1833,52 @@ func TestAnthropicStoredSubscriptionOAuthExplainsRejection(t *testing.T) {
 	}
 }
 
+func TestAnthropicStoredCredentialsOnChat(t *testing.T) {
+	requests := make(chan http.Header, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests <- r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"msg_1","type":"message","role":"assistant","model":"claude-test","content":[{"type":"text","text":"pong"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+	}))
+	defer server.Close()
+	request := &llm.Request{Model: "claude-test", Messages: []llm.Message{llm.UserText("ping")}}
+	for _, tc := range []struct {
+		name       string
+		credential llm.AuthCredential
+		wantErr    bool
+	}{
+		{"api key", llm.AuthCredential{Type: "api_key", Key: "stored-key"}, false},
+		{"subscription oauth", llm.AuthCredential{Type: "oauth", Access: "subscription-token"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := authstore.NewMemory(llm.AuthFile{providerName: tc.credential})
+			p, err := New(WithCredentials(store), WithBaseURL(server.URL), WithHTTPClient(server.Client()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = p.Chat(context.Background(), request)
+			if tc.wantErr {
+				if !errors.Is(err, llm.ErrAuth) {
+					t.Fatalf("Chat error = %v, want ErrAuth", err)
+				}
+				select {
+				case <-requests:
+					t.Fatal("OAuth request reached the server")
+				default:
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			headers := <-requests
+			if headers.Get("X-Api-Key") != "stored-key" || headers.Get("Authorization") != "" {
+				t.Fatalf("unexpected authentication headers: %v", headers)
+			}
+		})
+	}
+}
+
 // After message_stop the body is read to EOF, so the connection can be
 // reused and wire captures are complete.
 func TestAnthropicStreamReadsToEOFAfterMessageStop(t *testing.T) {

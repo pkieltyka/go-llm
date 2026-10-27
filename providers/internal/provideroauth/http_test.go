@@ -152,3 +152,22 @@ func stringResponse(status int, body string) *http.Response {
 		Header:     http.Header{},
 	}
 }
+
+type endlessAuthBody struct {
+	read   int
+	closed bool
+}
+
+func (b *endlessAuthBody) Read(p []byte) (int, error) {
+	b.read += len(p)
+	return len(p), nil
+}
+func (b *endlessAuthBody) Close() error { b.closed = true; return nil }
+
+func TestUnauthorizedBodyIsClosedWithoutReading(t *testing.T) {
+	body := &endlessAuthBody{}
+	closeUnauthorizedBody(body)
+	if !body.closed || body.read != 0 {
+		t.Fatalf("body read=%d closed=%v", body.read, body.closed)
+	}
+}

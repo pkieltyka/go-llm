@@ -43,8 +43,8 @@ const (
 	// and continues the tool loop on a different model family.
 	openRouterSwitchProducerModel = "anthropic/claude-haiku-4.5"
 	openRouterSwitchConsumerModel = "openai/gpt-5-mini"
-	// The classify scenario asks a classifier (decision) model, and an
-	// image-capable one (Cloudflare's Clef Flash, the cheapest) about images.
+	// The classify scenario exercises Jev on text and images, and Clef Flash
+	// on images.
 	openRouterClassifierModel      = "typesafe/jev-1.14"
 	openRouterClassifierImageModel = "cloudflare/clef-flash"
 )
@@ -229,8 +229,15 @@ func openRouterLiveScenarioRunners(reasoningModel, cacheModel, parallelToolsMode
 	}
 	runners["cost_reporting"] = liveOpenRouterCostScenario
 	runners["classify"] = func(ctx context.Context, t *testing.T, p llm.Provider, model string) {
-		liveClassifyScenario(openRouterClassifierModel)(ctx, t, p, model)
-		liveClassifyImagesScenario(openRouterClassifierImageModel)(ctx, t, p)
+		t.Run("text", func(t *testing.T) {
+			liveClassifyScenario(openRouterClassifierModel)(ctx, t, p, model)
+		})
+		t.Run("clef_images", func(t *testing.T) {
+			liveClassifyImagesScenario(openRouterClassifierImageModel)(ctx, t, p)
+		})
+		t.Run("jev_images", func(t *testing.T) {
+			liveClassifyImagesScenario(openRouterClassifierModel)(ctx, t, p)
+		})
 	}
 	runners["error_mapping"] = func(ctx context.Context, t *testing.T, p llm.Provider, model string) {
 		liveOpenRouterErrorMappingScenario(ctx, t, p, model, baseURL)
