@@ -94,6 +94,16 @@ func pricingForUsage(usage Usage, pricing ModelPricing) ModelPricing {
 		pricing.CacheWritePerMTok = availableRate(tier.CacheWritePerMTok, availability.CacheWritePerMTok)
 		pricing.Availability = &availability
 	}
+	// Without a separate cache-write charge, written tokens bill as
+	// uncached input at the selected tier's rate.
+	if pricing.CacheWritesAsInput && !pricing.HasCacheWritePrice() && pricing.HasInputPrice() {
+		pricing.CacheWritePerMTok = pricing.InputPerMTok
+		if pricing.Availability != nil {
+			availability := *pricing.Availability
+			availability.CacheWritePerMTok = true
+			pricing.Availability = &availability
+		}
+	}
 	return pricing
 }
 

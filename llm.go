@@ -104,6 +104,13 @@ type ModelPricing struct {
 	// from an unknown component. Nil means input and output rates are known
 	// and cache rates are known when non-zero.
 	Availability *ModelPricingAvailability `json:"availability,omitempty"`
+	// CacheWritesAsInput records a documented endpoint rule: the model has
+	// no separate cache-write charge, so tokens written to the cache bill at
+	// the (tier) input rate. It applies only while the cache-write rate is
+	// unknown; a known write rate wins, including a hand-built tier whose nil
+	// Availability declares a zero write rate known. Without the flag, an
+	// unknown write rate stays unknown (FS §11).
+	CacheWritesAsInput bool `json:"cache_writes_as_input,omitempty"`
 }
 
 // ModelPricingAvailability records which independently optional base or tier

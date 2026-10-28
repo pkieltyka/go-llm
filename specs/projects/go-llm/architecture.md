@@ -258,6 +258,7 @@ type ModelPricing struct {
     InputPerMTok, OutputPerMTok           float64
     CacheReadPerMTok, CacheWritePerMTok   float64
     Availability                          *ModelPricingAvailability
+    CacheWritesAsInput                    bool // documented no-write-charge rule (FS §11)
     // ...request-wide tiers...
 }
 
@@ -1208,6 +1209,8 @@ func LookupModelInfo(provider, modelID string) (ModelInfo, bool) // embedded sna
 type ModelBehavior struct { PositionalInstructions, PositionalTools bool } // ModelInfo.Behavior, FS §13B
 // models.json rows carry "behavior" written by scripts/model-behavior.ts
 // (pi-style rules with cited evidence); aggregator rows never inherit it.
+// Likewise pricing.cache_writes_as_input comes from
+// scripts/model-pricing-rules.ts, and each endpoint is listed explicitly.
 
 type ContextUsage struct { UsedTokens, Window, Remaining int64; UsedPercent float64 }
 func (u Usage) ContextUsage(window int64) ContextUsage

@@ -15,6 +15,7 @@ import {
   type SourceMinimums,
 } from "./snapshot-models-table.ts";
 import { modelBehavior } from "./model-behavior.ts";
+import { cacheWritesAsInput } from "./model-pricing-rules.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtureMinimums: SourceMinimums = {
@@ -590,6 +591,67 @@ test("Terra positional behavior reaches the OpenAI snapshot row only", async () 
   const proxy = snapshot.models.find((row) => row.provider === "openrouter" && row.id === "openai/gpt-6.1-terra")!;
   assert.deepEqual(terra.behavior, behavior);
   assert.equal("behavior" in proxy, false);
+});
+
+test("no-write-charge rule matches the documented OpenAI families only", () => {
+  for (const [provider, id] of [
+    ["openai", "gpt-4.1-mini"],
+    ["openai", "gpt-4o-2024-08-06"],
+    ["openai", "gpt-5.5"],
+    ["openrouter", "openai/gpt-4.1-mini"],
+    ["openrouter", "openai/gpt-4o-mini-2024-07-18"],
+  ]) {
+    assert.equal(cacheWritesAsInput(provider, id), true, `${provider}/${id}`);
+  }
+  for (const [provider, id] of [
+    ["openai", "gpt-5.6-luna"],
+    ["openai", "gpt-5.5-pro"],
+    ["openai", "gpt-5.3-codex"],
+    ["openai", "gpt-image-1"],
+    ["openai", "gpt-4.1-mini-preview"],
+    ["openrouter", "openai/gpt-4.1-mini:batch"],
+    ["openrouter", "openai/gpt-oss-120b"],
+    ["openrouter", "gpt-4.1-mini"],
+    ["vercel-ai-gateway", "openai/gpt-4.1-mini"],
+    ["anthropic", "gpt-4.1-mini"],
+  ]) {
+    assert.equal(cacheWritesAsInput(provider, id), false, `${provider}/${id}`);
+  }
+});
+
+test("no-write-charge rule marks matching snapshot rows and rejects contradictions", async () => {
+  const modelsDev = structuredClone(await fixture("models-dev.json")) as any;
+  const openAIRow = modelsDev.openai.models["gpt-fixture"];
+  modelsDev.openai.models["gpt-4.1-mini"] = { ...openAIRow, id: "gpt-4.1-mini" };
+  modelsDev.openai.models["gpt-5.6-luna"] = { ...openAIRow, id: "gpt-5.6-luna" };
+  modelsDev.openrouter.models["openai/gpt-4.1-mini"] = { ...modelsDev.openrouter.models["openai/gpt-fixture"], id: "openai/gpt-4.1-mini" };
+  const openRouterModels = await fixture("openrouter-models.json");
+  const build = () =>
+    buildSnapshot(modelsDev, structuredClone(openRouterModels), { models: [] }, {
+      generatedAt: "2026-10-28T00:00:00Z",
+      minimums: fixtureMinimums,
+    });
+  const row = (snapshot: SnapshotDocument, provider: string, id: string) =>
+    snapshot.models.find((model) => model.provider === provider && model.id === id)!;
+
+  const snapshot = build();
+  assert.equal(row(snapshot, "openai", "gpt-4.1-mini").pricing?.cache_writes_as_input, true);
+  assert.equal(row(snapshot, "openrouter", "openai/gpt-4.1-mini").pricing?.cache_writes_as_input, true);
+  assert.equal("cache_writes_as_input" in row(snapshot, "openai", "gpt-5.6-luna").pricing!, false);
+  assert.equal("cache_writes_as_input" in row(snapshot, "openai", "gpt-fixture").pricing!, false);
+
+  const overridden = buildSnapshot(
+    modelsDev,
+    structuredClone(openRouterModels),
+    { models: [{ provider: "openai", id: "gpt-fixture", pricing: { input_per_mtok: 2, cache_writes_as_input: true } }] },
+    { generatedAt: "2026-10-28T00:00:00Z", minimums: fixtureMinimums },
+  );
+  assert.equal("cache_writes_as_input" in row(overridden, "openai", "gpt-fixture").pricing!, false, "overrides cannot set the rule");
+
+  modelsDev.openai.models["gpt-4.1-mini"].cost = { ...openAIRow.cost, cache_write: 0.5 };
+  assert.throws(build, /openai\/gpt-4\.1-mini publishes a cache-write rate/);
+  modelsDev.openai.models["gpt-4.1-mini"].cost = { output: 8 };
+  assert.throws(build, /openai\/gpt-4\.1-mini matches a no-write-charge rule but has no input rate/);
 });
 
 test("adds classifier rows from the three classifier catalogs", async () => {

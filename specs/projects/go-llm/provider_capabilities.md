@@ -162,7 +162,8 @@ Completions.
 tools + parallel + tool_choice · structured output (`response_format`
 json_schema, upstream-dependent) · `reasoning.effort` → `Effort` ·
 `reasoning`/`reasoning_details` output → `ReasoningPart` (echo-back via
-`Raw`) · image input · usage + cached tokens · **`usage.cost` → `CostUSD`**
+`Raw`) · image input (user messages only; image/file tool results are
+`ErrUnsupported` before HTTP, FS §7) · usage + cached tokens · **`usage.cost` → `CostUSD`**
 (plus upstream inference cost under BYOK; the only provider with native cost) · `session_id` → `SessionID` ·
 `cache_control` passthrough → `CacheHint` (including live-verified cached
 text blocks inside role-tool results) · normalized + `native` finish

@@ -75,6 +75,9 @@ type modelTablePricing struct {
 	CacheReadPerMTok  *float64         `json:"cache_read_per_mtok,omitempty"`
 	CacheWritePerMTok *float64         `json:"cache_write_per_mtok,omitempty"`
 	Tiers             []modelTableTier `json:"tiers,omitempty"`
+	// CacheWritesAsInput is written by the generator's rules
+	// (scripts/model-pricing-rules.ts).
+	CacheWritesAsInput bool `json:"cache_writes_as_input,omitempty"`
 }
 
 type modelTableTier struct {
@@ -448,6 +451,7 @@ func (pricing *modelTablePricing) modelPricing() *ModelPricing {
 			CacheReadPerMTok:  pricing.CacheReadPerMTok != nil,
 			CacheWritePerMTok: pricing.CacheWritePerMTok != nil,
 		},
+		CacheWritesAsInput: pricing.CacheWritesAsInput,
 	}
 	if len(pricing.Tiers) > 0 {
 		out.Tiers = make([]ModelPricingTier, len(pricing.Tiers))

@@ -251,8 +251,9 @@ func findTokenCounter(p Provider) (TokenCounter, bool) {
 // exact ID, then by SameModel, preferring the lexically greatest ID, which is
 // the latest dated snapshot, when several rows match inexactly) wins, and a zero context window, zero max output,
 // nil pricing, nil effort ladder, or empty default effort is filled from
-// LookupModelInfo. Nothing is invented: a field neither source knows stays
-// zero. A Models() failure degrades to the table; the error is returned only
+// LookupModelInfo. The table's CacheWritesAsInput rule also applies to live
+// pricing that publishes no cache-write rate. Nothing is invented: a field
+// neither source knows stays zero. A Models() failure degrades to the table; the error is returned only
 // when neither source knows the model. Each call performs provider model
 // discovery, so callers should cache the result.
 func ResolveModelInfo(ctx context.Context, p Provider, model string) (ModelInfo, error) {
@@ -304,6 +305,12 @@ func mergeModelInfo(live, table ModelInfo) ModelInfo {
 	}
 	if live.Pricing == nil && table.Pricing != nil {
 		live.Pricing = table.Pricing.Clone()
+	} else if live.Pricing != nil && table.Pricing != nil && table.Pricing.CacheWritesAsInput &&
+		!live.Pricing.CacheWritesAsInput && !live.Pricing.HasCacheWritePrice() {
+		// Live catalogs don't carry the documented no-write-charge rule;
+		// a live write rate would win over it anyway.
+		live.Pricing = live.Pricing.Clone()
+		live.Pricing.CacheWritesAsInput = true
 	}
 	if live.SupportedEfforts == nil && table.SupportedEfforts != nil {
 		live.SupportedEfforts = append([]Effort(nil), table.SupportedEfforts...)
