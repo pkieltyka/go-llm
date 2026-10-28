@@ -75,6 +75,9 @@ type modelTablePricing struct {
 	CacheReadPerMTok  *float64         `json:"cache_read_per_mtok,omitempty"`
 	CacheWritePerMTok *float64         `json:"cache_write_per_mtok,omitempty"`
 	Tiers             []modelTableTier `json:"tiers,omitempty"`
+	// CacheWritesAsInput is written by the generator's rules
+	// (scripts/model-pricing-rules.ts).
+	CacheWritesAsInput bool `json:"cache_writes_as_input,omitempty"`
 }
 
 type modelTableTier struct {
@@ -270,8 +273,9 @@ func (t parsedModelTable) lookup(provider, modelID string) (ModelInfo, bool) {
 		return t.withCanonicalFallback(info), true
 	}
 	if info, ok := t.lookupSeparatorEquivalent(provider, modelID); ok {
+		rowID := info.ID
 		info.ID = modelID
-		return t.withCanonicalFallback(info), true
+		return restrictCacheWritesAsInput(t.withCanonicalFallback(info), rowID), true
 	}
 
 	var (
@@ -293,8 +297,29 @@ func (t parsedModelTable) lookup(provider, modelID string) (ModelInfo, bool) {
 	if !found {
 		return ModelInfo{}, false
 	}
+	rowID := best.ID
 	best.ID = modelID
-	return t.withCanonicalFallback(best), true
+	return restrictCacheWritesAsInput(t.withCanonicalFallback(best), rowID), true
+}
+
+// restrictCacheWritesAsInput keeps the no-write-charge rule only when the
+// requested ID (info.ID) is an identity the generator authorized for rowID:
+// the row's own ID or that ID plus one -YYYY-MM-DD snapshot date, as in
+// scripts/model-pricing-rules.ts. Fuzzy matches still resolve the rest of
+// the metadata (FS §11). info must own its pricing.
+func restrictCacheWritesAsInput(info ModelInfo, rowID string) ModelInfo {
+	if info.Pricing != nil && info.Pricing.CacheWritesAsInput && !cacheWritesAsInputIdentity(info.ID, rowID) {
+		info.Pricing.CacheWritesAsInput = false
+	}
+	return info
+}
+
+func cacheWritesAsInputIdentity(requested, rowID string) bool {
+	if requested == rowID {
+		return true
+	}
+	date, ok := strings.CutPrefix(requested, rowID+"-")
+	return ok && len(date) == len("2006-01-02") && hasDashedDatePrefix(date)
 }
 
 func (t parsedModelTable) lookupSeparatorEquivalent(provider, modelID string) (ModelInfo, bool) {
@@ -368,6 +393,8 @@ func (t parsedModelTable) withCanonicalFallback(info ModelInfo) ModelInfo {
 	}
 	if info.Pricing == nil && canonical.Pricing != nil {
 		info.Pricing = canonical.Pricing.Clone()
+		// The no-write-charge rule belongs to the canonical row's endpoint.
+		info.Pricing.CacheWritesAsInput = false
 	}
 	if info.SupportedEfforts == nil && canonical.SupportedEfforts != nil {
 		info.SupportedEfforts = cloneEfforts(canonical.SupportedEfforts)
@@ -448,6 +475,7 @@ func (pricing *modelTablePricing) modelPricing() *ModelPricing {
 			CacheReadPerMTok:  pricing.CacheReadPerMTok != nil,
 			CacheWritePerMTok: pricing.CacheWritePerMTok != nil,
 		},
+		CacheWritesAsInput: pricing.CacheWritesAsInput,
 	}
 	if len(pricing.Tiers) > 0 {
 		out.Tiers = make([]ModelPricingTier, len(pricing.Tiers))

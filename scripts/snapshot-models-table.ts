@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { type ModelBehavior, modelBehavior } from "./model-behavior.ts";
+import { cacheWritesAsInput } from "./model-pricing-rules.ts";
 
 export type Pricing = {
   input_per_mtok?: number;
@@ -12,6 +13,8 @@ export type Pricing = {
   cache_read_per_mtok?: number;
   cache_write_per_mtok?: number;
   tiers?: PricingTier[];
+  // cache_writes_as_input is owned by the rules in model-pricing-rules.ts.
+  cache_writes_as_input?: boolean;
 };
 
 export type PricingTier = {
@@ -248,6 +251,7 @@ export function buildSnapshot(
   const models = [...rows.values()]
     .map(finalizePricing)
     .map(applyBehavior)
+    .map(applyPricingRules)
     .sort((a, b) => compareStrings(key(a), key(b)));
   validateOutputProviders(models);
   const document = {
@@ -351,6 +355,7 @@ const metadataFields = [
   ["pricing.cache_read_per_mtok", (row: ModelRow) => row.pricing?.cache_read_per_mtok !== undefined],
   ["pricing.cache_write_per_mtok", (row: ModelRow) => row.pricing?.cache_write_per_mtok !== undefined],
   ["pricing.tiers", (row: ModelRow) => row.pricing?.tiers !== undefined],
+  ["pricing.cache_writes_as_input", (row: ModelRow) => row.pricing?.cache_writes_as_input !== undefined],
   ["supported_efforts", (row: ModelRow) => row.supported_efforts !== undefined],
   ["capabilities", (row: ModelRow) => row.capabilities !== undefined],
 ] as const;
@@ -850,6 +855,21 @@ function applyBehavior(row: ModelRow): ModelRow {
   const { behavior: _, ...rest } = row;
   const behavior = modelBehavior(row.provider, row.id);
   return behavior ? { ...rest, behavior } : rest;
+}
+
+// applyPricingRules sets cache_writes_as_input from model-pricing-rules.ts,
+// which owns the field (source parsers never read it). A matched row must
+// not publish a cache-write rate: the rule would then contradict the catalog.
+function applyPricingRules(row: ModelRow): ModelRow {
+  const pricing = row.pricing;
+  if (!pricing || !cacheWritesAsInput(row.provider, row.id)) return row;
+  if (pricing.cache_write_per_mtok !== undefined || pricing.tiers?.some((tier) => tier.cache_write_per_mtok !== undefined)) {
+    throw new Error(`${key(row)} publishes a cache-write rate but matches a no-write-charge rule`);
+  }
+  if (pricing.input_per_mtok === undefined) {
+    throw new Error(`${key(row)} matches a no-write-charge rule but has no input rate`);
+  }
+  return { ...row, pricing: { ...pricing, cache_writes_as_input: true } };
 }
 
 function compareStrings(left: string, right: string): number {

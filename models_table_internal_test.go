@@ -267,3 +267,26 @@ func TestEmbeddedClassifierRows(t *testing.T) {
 		t.Fatalf("unknown capability = %v", err)
 	}
 }
+
+// The no-write-charge rule belongs to one endpoint row; a canonical fill
+// copies another row's pricing and must leave it behind.
+func TestCanonicalFallbackDropsCacheWritesAsInput(t *testing.T) {
+	raw := catalogJSON(
+		`{"provider":"openai","id":"gpt-4.1-mini","pricing":{"input_per_mtok":0.4,"output_per_mtok":1.6,"cache_read_per_mtok":0.1,"cache_writes_as_input":true}}` +
+			`,{"provider":"openrouter","id":"openai/gpt-4.1-mini-proxy","canonical_id":"openai/gpt-4.1-mini"}`,
+	)
+	table, err := parseModelTable([]byte(raw))
+	if err != nil {
+		t.Fatalf("parseModelTable returned error: %v", err)
+	}
+	if own, ok := table.lookup("openai", "gpt-4.1-mini"); !ok || !own.Pricing.CacheWritesAsInput {
+		t.Fatalf("own row = %+v, %v; want the rule", own.Pricing, ok)
+	}
+	filled, ok := table.lookup("openrouter", "openai/gpt-4.1-mini-proxy")
+	if !ok || filled.Pricing == nil || filled.Pricing.InputPerMTok != 0.4 {
+		t.Fatalf("canonical fill = %+v, %v", filled.Pricing, ok)
+	}
+	if filled.Pricing.CacheWritesAsInput {
+		t.Fatal("canonical fill carried another endpoint's rule")
+	}
+}

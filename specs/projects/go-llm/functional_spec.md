@@ -380,7 +380,10 @@ to compatible servers such as Ollama.
   `ToolMessageContentBlocks` compatibility mode preserves text boundaries
   and `CacheHint` values as `cache_control` blocks; the OpenRouter preset
   enables this live-verified form. Image/file tool-result parts remain
-  `ErrUnsupported` on the Chat Completions surface.
+  `ErrUnsupported` on the Chat Completions surface, before any HTTP request
+  and regardless of the model's image input. That includes OpenRouter:
+  its schema accepts content arrays in tool messages, but nothing shows
+  that an upstream route delivers the image to the model (plan 14 B0).
 - **Malformed tool calls never fail the turn and are never silently
   swallowed**. Models and providers occasionally emit unusable calls:
   missing id/name, unparseable/truncated arguments, or duplicate ids.
@@ -865,6 +868,24 @@ Cost estimation remains unknown when usage consumes an unavailable component.
 `ModelPricingTier.Availability` follows the same contract for a selected
 request-wide tier (nil means all four tier rates are known), so a tier is
 estimable whenever the usage avoids its unavailable components.
+`ModelPricing.CacheWritesAsInput` records a documented endpoint rule: the
+model has no separate cache-write charge, so cache-write tokens are priced
+at the selected tier's input rate. It applies only while the write rate is
+unknown and the input rate is known. A known write rate, including an
+explicit zero, wins. Upstream catalogs do not publish the fact, so the
+`models.json` generator sets it from cited rules
+(`scripts/model-pricing-rules.ts`). Today these cover the OpenAI chat
+families before GPT-5.6, on `openai` and on OpenRouter's `openai/…` rows,
+per both endpoints' prompt-caching guides. An unknown write rate without
+the rule stays unknown. The flag follows only the identities the rule
+authorizes: the row's own ID, or that ID plus one `-YYYY-MM-DD` snapshot
+date. Fuzzy lookups still resolve the rest of the metadata, but they drop
+the flag. That covers separator spellings, compact dates, suffixes such as
+`:batch` or `-preview`, canonical fills from another row, and `SameModel`
+live matches. Live catalogs don't carry the flag either. `ResolveModelInfo`
+applies the table's rule to live pricing that publishes no write rate, when
+the live row has an authorized identity. The `openai` provider's `Models`
+clones the embedded pricing.
 `ReasoningRequired == false` means false or unknown. These per-model fields
 never reject or rewrite a request; provider-wide `Capabilities()` remains the
 sole request-preflight authority, and `Request.Effort` is forwarded unchanged.
@@ -966,7 +987,10 @@ asks (ARCH §10: no silent clamping).
   fits.
 - **`llm.EstimateCostBound(prompt, maxOutput, pricing)`** prices the prompt
   as uncached input, as cache reads, and as cache writes, and returns the
-  largest; it reports unknown when a rate is missing.
+  largest; it reports unknown when a rate is missing. Under
+  `CacheWritesAsInput` the cache-write case prices as input, so the bound
+  is known. The bound assumes the request's output cap is enforced, and it
+  covers token charges only.
 - **`llm.ContextGuard(GuardConfig{MaxOccupancy, Margin, ClampMaxTokens,
   OnNearFull, Window})`** is `Wrap` middleware. Per request:
   - It measures with `CountTokens`, falling back to the estimate if the
