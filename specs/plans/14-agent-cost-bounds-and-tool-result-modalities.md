@@ -371,6 +371,17 @@ add a test that pins it.
   - the mixture sweep now runs on tiered pricing too;
   - a test shows overrides can't set the flag;
   - a dead strip step was removed.
+- **Second review (PR #55):** the flag leaked through fuzzy model
+  resolution. `LookupModelInfo` gave it to
+  `gpt-4.1-mini-2025-04-14:batch` and `gpt-4.1-mini-20250414-preview`
+  through prefix matching. Separator spellings, canonical fills from
+  another endpoint's row, and a `SameModel`-matched live `:batch` row in
+  `ResolveModelInfo` leaked it too. The flag now follows only the row's
+  own ID or that ID plus one `-YYYY-MM-DD` date, mirroring the generator
+  rule, while fuzzy metadata lookup is unchanged. Tests:
+  `TestCacheWritesAsInputStaysOnAuthorizedIDs`,
+  `TestResolveModelInfoKeepsRuleOffExcludedLiveRows` and
+  `TestCanonicalFallbackDropsCacheWritesAsInput`.
 
 ## Delivery order and integration handoff
 

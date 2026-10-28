@@ -303,12 +303,16 @@ func mergeModelInfo(live, table ModelInfo) ModelInfo {
 	if live.MaxOutputTokens <= 0 {
 		live.MaxOutputTokens = table.MaxOutputTokens
 	}
+	// The table's no-write-charge rule was checked for the requested ID
+	// (table.ID); it reaches the live row only under the same identity
+	// rule, so a SameModel match such as a :batch row never inherits it.
+	ruled := table.Pricing != nil && table.Pricing.CacheWritesAsInput && cacheWritesAsInputIdentity(live.ID, table.ID)
 	if live.Pricing == nil && table.Pricing != nil {
 		live.Pricing = table.Pricing.Clone()
-	} else if live.Pricing != nil && table.Pricing != nil && table.Pricing.CacheWritesAsInput &&
-		!live.Pricing.CacheWritesAsInput && !live.Pricing.HasCacheWritePrice() {
-		// Live catalogs don't carry the documented no-write-charge rule;
-		// a live write rate would win over it anyway.
+		live.Pricing.CacheWritesAsInput = ruled
+	} else if live.Pricing != nil && ruled && !live.Pricing.CacheWritesAsInput && !live.Pricing.HasCacheWritePrice() {
+		// Live catalogs don't carry the documented rule; a live write rate
+		// would win over it anyway.
 		live.Pricing = live.Pricing.Clone()
 		live.Pricing.CacheWritesAsInput = true
 	}

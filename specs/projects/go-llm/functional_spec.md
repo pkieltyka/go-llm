@@ -877,10 +877,15 @@ explicit zero, wins. Upstream catalogs do not publish the fact, so the
 (`scripts/model-pricing-rules.ts`). Today these cover the OpenAI chat
 families before GPT-5.6, on `openai` and on OpenRouter's `openai/…` rows,
 per both endpoints' prompt-caching guides. An unknown write rate without
-the rule stays unknown. Live catalogs don't carry the flag, but
-`ResolveModelInfo` applies the table's rule to live pricing that publishes
-no write rate, and the `openai` provider's `Models` clones the embedded
-pricing.
+the rule stays unknown. The flag follows only the identities the rule
+authorizes: the row's own ID, or that ID plus one `-YYYY-MM-DD` snapshot
+date. Fuzzy lookups still resolve the rest of the metadata, but they drop
+the flag. That covers separator spellings, compact dates, suffixes such as
+`:batch` or `-preview`, canonical fills from another row, and `SameModel`
+live matches. Live catalogs don't carry the flag either. `ResolveModelInfo`
+applies the table's rule to live pricing that publishes no write rate, when
+the live row has an authorized identity. The `openai` provider's `Models`
+clones the embedded pricing.
 `ReasoningRequired == false` means false or unknown. These per-model fields
 never reject or rewrite a request; provider-wide `Capabilities()` remains the
 sole request-preflight authority, and `Request.Effort` is forwarded unchanged.

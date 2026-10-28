@@ -209,3 +209,75 @@ func TestResolveModelInfoCarriesCacheWritesAsInput(t *testing.T) {
 		t.Fatal("GPT-5.6 batch bound must stay unknown")
 	}
 }
+
+// Fuzzy lookups keep resolving metadata, but the billing rule only follows
+// the identities the generator authorizes: the row's own ID or that ID with
+// one -YYYY-MM-DD snapshot date.
+func TestCacheWritesAsInputStaysOnAuthorizedIDs(t *testing.T) {
+	base, _ := llm.LookupModelInfo("openai", "gpt-4.1-mini")
+	for _, tt := range []struct {
+		provider, id string
+		rule         bool
+	}{
+		{"openai", "gpt-4.1-mini", true},
+		{"openai", "gpt-4.1-mini-2025-04-14", true},
+		{"openai", "gpt-4o-2024-08-06", true},
+		{"openrouter", "openai/gpt-4.1-mini-2025-04-14", true},
+		{"openai", "gpt-4.1-mini-2025-04-14:batch", false},
+		{"openai", "gpt-4.1-mini-20250414-preview", false},
+		{"openai", "gpt-4.1-mini-20250414", false},
+		{"openai", "gpt-4.1-mini-2025-04-14-preview", false},
+		{"openai", "gpt-4-1-mini", false},
+		{"openai", "GPT-4.1-mini", false},
+		{"openrouter", "openai/gpt-4.1-mini-2025-04-14:batch", false},
+	} {
+		info, ok := llm.LookupModelInfo(tt.provider, tt.id)
+		if !ok || info.Pricing == nil {
+			t.Fatalf("%s/%s no longer resolves", tt.provider, tt.id)
+		}
+		if info.Pricing.CacheWritesAsInput != tt.rule {
+			t.Errorf("%s/%s CacheWritesAsInput = %v, want %v", tt.provider, tt.id, info.Pricing.CacheWritesAsInput, tt.rule)
+		}
+		if tt.provider == "openai" && tt.id != "gpt-4o-2024-08-06" && info.Pricing.InputPerMTok != base.Pricing.InputPerMTok {
+			t.Errorf("%s/%s input rate = %v, want the base row's %v", tt.provider, tt.id, info.Pricing.InputPerMTok, base.Pricing.InputPerMTok)
+		}
+		if _, ok := llm.EstimateCostBound(8192, 256, *info.Pricing); ok != tt.rule {
+			t.Errorf("%s/%s bound known = %v, want %v", tt.provider, tt.id, ok, tt.rule)
+		}
+	}
+	if again, _ := llm.LookupModelInfo("openai", "gpt-4.1-mini"); !again.Pricing.CacheWritesAsInput {
+		t.Fatal("a fuzzy lookup cleared the flag in the shared table")
+	}
+}
+
+// A live row that SameModel matches but the rule excludes (here :batch,
+// standing in for a missing base row) cannot inherit the base model's rule.
+func TestResolveModelInfoKeepsRuleOffExcludedLiveRows(t *testing.T) {
+	ctx := context.Background()
+	for name, pricing := range map[string]*llm.ModelPricing{
+		"live pricing":    func() *llm.ModelPricing { p := knownNoWrite(); return &p }(),
+		"no live pricing": nil,
+	} {
+		p := llmtest.New(llmtest.WithName("openrouter"), llmtest.WithModels(
+			llm.ModelInfo{ID: "openai/gpt-4.1-mini:batch", Pricing: pricing},
+		))
+		info, err := llm.ResolveModelInfo(ctx, p, "openai/gpt-4.1-mini")
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if info.ID != "openai/gpt-4.1-mini:batch" || info.Pricing == nil {
+			t.Fatalf("%s: resolved %+v, want the live :batch row", name, info)
+		}
+		if info.Pricing.CacheWritesAsInput {
+			t.Errorf("%s: the :batch row inherited the base model's rule", name)
+		}
+	}
+
+	dated := llmtest.New(llmtest.WithName("openrouter"), llmtest.WithModels(
+		llm.ModelInfo{ID: "openai/gpt-4.1-mini-2025-04-14", Pricing: func() *llm.ModelPricing { p := knownNoWrite(); return &p }()},
+	))
+	info, err := llm.ResolveModelInfo(ctx, dated, "openai/gpt-4.1-mini-2025-04-14")
+	if err != nil || !info.Pricing.CacheWritesAsInput {
+		t.Fatalf("dated live row = %+v, %v; want the rule", info.Pricing, err)
+	}
+}
