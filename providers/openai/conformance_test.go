@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	llm "github.com/pkieltyka/go-llm"
-	"github.com/pkieltyka/go-llm/internal/e2e"
 	"github.com/pkieltyka/go-llm/internal/testutil"
 	"github.com/pkieltyka/go-llm/llmtest"
 )
@@ -124,14 +123,40 @@ func TestOpenAICapabilityConformance(t *testing.T) {
 	}, profile)
 }
 
+func TestAssertOpenAIActivationRequestToolPlacement(t *testing.T) {
+	for _, capability := range []llm.Capability{llm.CapabilityTools, llm.CapabilityToolChoiceRequired} {
+		t.Run(string(capability), func(t *testing.T) {
+			tool := map[string]any{
+				"type": "function", "name": testutil.ActivationToolName, "strict": true,
+				"parameters": map[string]any{
+					"type": "object", "properties": map[string]any{"value": map[string]any{"type": "string"}},
+					"required": []any{"value"}, "additionalProperties": false,
+				},
+			}
+			body := map[string]any{
+				"model": "gpt-5.4-mini", "tools": []any{tool}, "tool_choice": "required",
+			}
+			invocation := llmtest.CapabilityInvocation{Capability: capability}
+			if err := assertOpenAIActivationRequest(body, invocation); err != nil {
+				t.Fatalf("valid top-level tool rejected: %v", err)
+			}
+			body["tools"] = []any{}
+			body["input"] = []any{map[string]any{"type": "additional_tools", "tools": []any{tool}}}
+			if err := assertOpenAIActivationRequest(body, invocation); err == nil {
+				t.Fatal("nested-only tool with empty top-level tools accepted")
+			}
+		})
+	}
+}
+
 func assertOpenAIActivationRequest(body map[string]any, invocation llmtest.CapabilityInvocation) error {
 	if body["model"] != "gpt-5.4-mini" {
 		return fmt.Errorf("model = %#v", body["model"])
 	}
 	switch invocation.Capability {
 	case llm.CapabilityTools, llm.CapabilityToolChoiceRequired:
-		tools := e2e.RequestTools(body)
-		if len(tools) != 1 || body["tools"] == nil {
+		tools, ok := body["tools"].([]any)
+		if !ok || len(tools) != 1 {
 			return fmt.Errorf("tools = %#v, input = %#v", body["tools"], body["input"])
 		}
 		tool, _ := tools[0].(map[string]any)
