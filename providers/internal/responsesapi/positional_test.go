@@ -109,6 +109,82 @@ func TestResponsesFoldsPositionalChangesForOtherModels(t *testing.T) {
 	}
 }
 
+func TestResponsesGPT54And55ReplayWithTopLevelTools(t *testing.T) {
+	for _, model := range []string{"gpt-5.4", "gpt-5.4-mini", "gpt-5.4-pro", "gpt-5.5"} {
+		for _, withDelta := range []bool{false, true} {
+			name := model + "/initial"
+			if withDelta {
+				name = model + "/tool-deltas"
+			}
+			t.Run(name, func(t *testing.T) {
+				tool := func(name string) llm.Tool {
+					return llm.Tool{Name: name, InputSchema: map[string]any{"type": "object"}}
+				}
+				req := &llm.Request{
+					Model: model, System: "base", Tools: []llm.Tool{tool("get_time")},
+					Messages: []llm.Message{
+						llm.UserText("time?"),
+						{Role: llm.RoleAssistant, Provider: "openai", Model: "gpt-5.6-luna", Parts: []llm.Part{
+							llm.ToolCallPart{ID: "call_time", Name: "get_time", Args: json.RawMessage(`{}`)},
+						}},
+						{Role: llm.RoleTool, Parts: []llm.Part{
+							llm.ToolResultPart{ToolCallID: "call_time", Name: "get_time", Content: []llm.Part{llm.Text("noon")}},
+						}},
+						{Role: llm.RoleSystem, Parts: []llm.Part{llm.SystemDeltaPart{Section: "style", Text: "Use French."}}},
+					},
+				}
+				wantTools := []string{"get_time"}
+				if withDelta {
+					req.Messages = append(req.Messages, llm.Message{Role: llm.RoleSystem, Parts: []llm.Part{
+						llm.ToolsDeltaPart{Added: []llm.Tool{tool("get_weather")}, Removed: []string{"get_time"}},
+					}})
+					wantTools = []string{"get_weather"}
+				}
+				req.Messages = append(req.Messages, llm.UserText("continue"))
+				params, err := positionalAdapter().BuildParams(req, false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var wire struct {
+					Instructions string           `json:"instructions"`
+					Input        []map[string]any `json:"input"`
+					Tools        []struct {
+						Name string `json:"name"`
+					} `json:"tools"`
+				}
+				if err := json.Unmarshal([]byte(testutil.MustCompactJSON(t, params)), &wire); err != nil {
+					t.Fatal(err)
+				}
+				var tools []string
+				for _, tool := range wire.Tools {
+					tools = append(tools, tool.Name)
+				}
+				if !slices.Equal(tools, wantTools) || wire.Instructions != "base" {
+					t.Fatalf("top-level tools = %q, instructions = %q; want %q and base", tools, wire.Instructions, wantTools)
+				}
+				if len(wire.Input) != 5 {
+					t.Fatalf("unexpected input: %+v", wire.Input)
+				}
+				call, result, developer := wire.Input[1], wire.Input[2], wire.Input[3]
+				if call["type"] != "function_call" || call["call_id"] != "call_time" || call["name"] != "get_time" || call["arguments"] != "{}" {
+					t.Fatalf("replayed call = %+v", call)
+				}
+				if result["type"] != "function_call_output" || result["call_id"] != "call_time" || result["output"] != "noon" {
+					t.Fatalf("replayed result = %+v", result)
+				}
+				if developer["role"] != "developer" || developer["content"] != "Updated system prompt section \"style\":\n\nUse French." {
+					t.Fatalf("positional instruction = %+v", developer)
+				}
+				for _, item := range wire.Input {
+					if item["type"] == "additional_tools" {
+						t.Fatalf("unexpected positional tool declaration: %+v", item)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestResponsesPositionalEdgeCases(t *testing.T) {
 	tool := func(name string) llm.Tool { return llm.Tool{Name: name, InputSchema: map[string]any{"type": "object"}} }
 	req := positionalRequest("gpt-5.6-luna")

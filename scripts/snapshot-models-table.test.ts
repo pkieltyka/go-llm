@@ -571,6 +571,26 @@ test("behavior rules mark positional models and leave others unset", async () =>
   assert.equal("behavior" in row("claude-fixture"), false);
 });
 
+test("GPT-5.4 and GPT-5.5 retain positional instructions with top-level tools", async () => {
+  const modelsDev = structuredClone(await fixture("models-dev.json")) as any;
+  const ids = ["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-pro", "gpt-5.5"];
+  for (const id of ids) {
+    assert.deepEqual(modelBehavior("openai", id), { positional_instructions: true }, id);
+    modelsDev.openai.models[id] = { ...modelsDev.openai.models["gpt-fixture"], id };
+  }
+  for (const id of ["gpt-5.4-nano", "gpt-5.5-pro", "gpt-5.4-20261001", "gpt-5.5-preview"]) {
+    assert.equal(modelBehavior("openai", id), undefined, id);
+  }
+  const snapshot = buildSnapshot(modelsDev, await fixture("openrouter-models.json"), await fixture("overrides.json"), {
+    generatedAt: "2026-10-27T00:00:00Z",
+    minimums: fixtureMinimums,
+  });
+  for (const id of ids) {
+    const row = snapshot.models.find((entry) => entry.provider === "openai" && entry.id === id)!;
+    assert.deepEqual(row.behavior, { positional_instructions: true }, id);
+  }
+});
+
 test("Terra positional behavior reaches the OpenAI snapshot row only", async () => {
   const behavior = { positional_instructions: true, positional_tools: true };
   assert.deepEqual(modelBehavior("openai", "gpt-6.1-terra"), behavior);

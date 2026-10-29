@@ -27,14 +27,28 @@ const anthropicPositional = [
 const anthropicInstructionsOnly = [new RegExp(String.raw`^claude-sonnet-5${dated}$`)];
 
 // OpenAI Responses: pi's OPENAI_MID_CONVO_SYSTEM_MESSAGE_MODEL_IDS and
-// OPENAI_ADDITIONAL_TOOLS_MODEL_IDS (the same set). Probed 2026-10-22 on
+// OPENAI_ADDITIONAL_TOOLS_MODEL_IDS. Probed 2026-10-22 on
 // gpt-5.6-luna and gpt-6-luna under Sign in with ChatGPT.
 // gpt-6.1-terra is included in both sets at pi commit 363ad78bf.
-const openAIPositional = new Set([
+const openAIPositionalInstructions = new Set([
   "gpt-5.4",
   "gpt-5.4-mini",
   "gpt-5.4-pro",
   "gpt-5.5",
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+  "gpt-6-astra",
+  "gpt-6-sol",
+  "gpt-6-luna",
+  "gpt-6.1-sol",
+  "gpt-6.1-terra",
+]);
+
+// pi 81d6759fc removed GPT-5.4/5.5 from additional_tools support while
+// retaining mid-conversation system messages. Replaying another model's
+// tool history otherwise fails with "Missing namespace for function_call".
+const openAIPositionalTools = new Set([
   "gpt-5.6-sol",
   "gpt-5.6-terra",
   "gpt-5.6-luna",
@@ -54,7 +68,12 @@ export function modelBehavior(provider: string, id: string): ModelBehavior | und
       if (anthropicInstructionsOnly.some((rule) => rule.test(id))) return { positional_instructions: true };
       return undefined;
     case "openai":
-      return openAIPositional.has(id) ? { positional_instructions: true, positional_tools: true } : undefined;
+      if (openAIPositionalInstructions.has(id)) {
+        return openAIPositionalTools.has(id)
+          ? { positional_instructions: true, positional_tools: true }
+          : { positional_instructions: true };
+      }
+      return undefined;
     default:
       return undefined;
   }

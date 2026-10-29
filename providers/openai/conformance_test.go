@@ -130,10 +130,8 @@ func assertOpenAIActivationRequest(body map[string]any, invocation llmtest.Capab
 	}
 	switch invocation.Capability {
 	case llm.CapabilityTools, llm.CapabilityToolChoiceRequired:
-		// gpt-5.4-mini takes tool changes in place, so its tools travel in
-		// an additional_tools item (FS §7A).
 		tools := e2e.RequestTools(body)
-		if len(tools) != 1 || body["tools"] != nil {
+		if len(tools) != 1 || body["tools"] == nil {
 			return fmt.Errorf("tools = %#v, input = %#v", body["tools"], body["input"])
 		}
 		tool, _ := tools[0].(map[string]any)
