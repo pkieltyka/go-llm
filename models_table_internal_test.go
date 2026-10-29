@@ -16,6 +16,31 @@ func TestEmbeddedModelTablePassesStrictValidation(t *testing.T) {
 	}
 }
 
+func TestEmbeddedModelPositionalSupport(t *testing.T) {
+	for _, tt := range []struct {
+		provider string
+		ids      []string
+		want     PositionalSupport
+	}{
+		{"openai", []string{"gpt-5.4", "gpt-5.4-mini", "gpt-5.4-pro", "gpt-5.5"}, PositionalSupport{Instructions: true}},
+		{"openai", []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol", "gpt-6.1-terra"}, PositionalSupport{Instructions: true, Tools: true}},
+		{"anthropic", []string{"claude-haiku-5-5", "claude-opus-4-8"}, PositionalSupport{Instructions: true, Tools: true}},
+		{"anthropic", []string{"claude-sonnet-5"}, PositionalSupport{Instructions: true}},
+	} {
+		for _, id := range tt.ids {
+			t.Run(tt.provider+"/"+id, func(t *testing.T) {
+				info, ok := LookupModelInfo(tt.provider, id)
+				if !ok {
+					t.Fatal("missing embedded model")
+				}
+				if got := info.Behavior.PositionalSupport(); got != tt.want {
+					t.Fatalf("positional support = %+v, want %+v", got, tt.want)
+				}
+			})
+		}
+	}
+}
+
 func TestParseModelTableRejectsMalformedCatalogs(t *testing.T) {
 	validRow := `{"provider":"openai","id":"gpt","context_window":1,"max_output_tokens":1,"pricing":{"input_per_mtok":1,"tiers":[{"input_tokens_above":100,"input_per_mtok":2,"output_per_mtok":3,"cache_read_per_mtok":4,"cache_write_per_mtok":5}]},"supported_efforts":["none","low","high"]}`
 	for _, tt := range []struct {

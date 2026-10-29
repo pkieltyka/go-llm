@@ -715,8 +715,7 @@
         "xhigh"
       ],
       "behavior": {
-        "positional_instructions": true,
-        "positional_tools": true
+        "positional_instructions": true
       }
     },
     {
@@ -739,8 +738,7 @@
         "xhigh"
       ],
       "behavior": {
-        "positional_instructions": true,
-        "positional_tools": true
+        "positional_instructions": true
       }
     },
     {
@@ -786,8 +784,7 @@
         "xhigh"
       ],
       "behavior": {
-        "positional_instructions": true,
-        "positional_tools": true
+        "positional_instructions": true
       }
     },
     {
@@ -818,8 +815,7 @@
         "xhigh"
       ],
       "behavior": {
-        "positional_instructions": true,
-        "positional_tools": true
+        "positional_instructions": true
       }
     },
     {

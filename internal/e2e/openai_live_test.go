@@ -21,7 +21,7 @@ const (
 	openAIReasoningModel = "gpt-5.1-mini"
 	// openAIPositionalModel takes system messages and tool changes in place
 	// with an API key; the Sign in with ChatGPT default already does.
-	openAIPositionalModel = "gpt-5.4-mini"
+	openAIPositionalModel = "gpt-5.6-luna"
 	// openAIClassifierModel is the Decisions API model (API keys only).
 	openAIClassifierModel = "gpt-6-luna"
 	openAIReasoningPrompt = "A store has three boxes. One is labeled apples, one oranges, and one mixed, " +
